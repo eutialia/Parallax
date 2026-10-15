@@ -48,74 +48,34 @@ struct PlayerReloadQueueTests {
 
     // MARK: - A pick made during a reload rides that reload out
 
-    @Test("an audio pick during a re-anchor reload rides it out: ONE further reload, carrying the seek target AND the new index")
-    func audioPickDuringAReanchorMerges() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-        let persisted = CallRecorder<TrackSelectionUpdate>()
-
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            rememberTrackSelection: { persisted.append($0) },
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                await gate.wait()
-                return PlayerFixtures.resolvedMultiTrackTranscode()
-            }
-        )
-        let audio4 = try audioTrack(vm, 4)
-        let standing = vm.selectedAudioTrack
-        let seeking = try await startReload(gate, on: vm, "the seek never reached the reload") {
-            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        }
-
-        await vm.selectAudioTrack(audio4)
-        // The label is optimistic from the tap, not from the landing: the menu must not
-        // read the outgoing track for the seconds the merged reload takes.
-        #expect(vm.selectedAudioTrack == audio4)
-        #expect(vm.selectedAudioTrack != standing)
-
-        gate.open()
-        await seeking.value
-
-        #expect(asks.values == [ResolveAsk(),
-                        ResolveAsk(start: 3_000, audio: 3, subtitle: 1),
-                        ResolveAsk(start: 3_000, audio: 4, subtitle: 1)])
-        #expect(vm.selectedAudioTrack == audio4)
-        #expect(vm.trackSwitchFailure == nil)
-        // The writer is fire-and-forget, so arrival is the assertion, not the tick it lands on.
-        try await requireEventually(
-            { persisted.values.contains { if case .audio = $0 { return true } else { return false } } },
-            "the landed pick was never persisted"
-        )
-    }
-
-    @Test("a scrub commit during an audio switch is queued, not dropped: one further reload AT the target on the new track")
-    func scrubCommitDuringAnAudioSwitchIsQueued() async throws {
+    @Test("a scrub commit during an audio switch costs no reload of its own: ONE reload, then an in-stream seek to the target")
+    func scrubCommitDuringAnAudioSwitchSeeksInStream() async throws {
         let gate = ResolveGate()
         let asks = CallRecorder<ResolveAsk>()
 
-        let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
             await gate.wait()
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
+        let engine = engines.live
         let audio4 = try audioTrack(vm, 4)
         let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
             await vm.selectAudioTrack(audio4)
         }
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        // The hold stands: the merged reload is going to honour this target, so the bar
-        // keeps showing it instead of snapping back to the pre-scrub clock.
+        // The hold stands: the target is honoured once the switch lands, so the bar keeps
+        // showing it instead of snapping back to the pre-scrub clock.
         #expect(vm.seekHold != nil)
 
         gate.open()
         await switching.value
 
-        #expect(asks.values == [ResolveAsk(),
-                        ResolveAsk(start: 600, audio: 4, subtitle: 1),
-                        ResolveAsk(start: 3_000, audio: 4, subtitle: 1)])
+        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 600, audio: 4, subtitle: 1)])
+        #expect(engines.engines.count == 1)
+        #expect(engine.calls.filter { $0.hasPrefix("seek(") }.last == "seek(3000.0)")
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
     }
 
     @Test("an audio pick and a burn-in pick made during one reload cost ONE further reload carrying both indices")
@@ -128,21 +88,22 @@ struct PlayerReloadQueueTests {
             await gate.wait()
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
+        let audio4 = try audioTrack(vm, 4)
         let audio5 = try audioTrack(vm, 5)
         let burnIn = try subtitleTrack(vm, 7)
-        let seeking = try await startReload(gate, on: vm, "the seek never reached the reload") {
-            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
+            await vm.selectAudioTrack(audio4)
         }
 
         await vm.selectAudioTrack(audio5)
         await vm.selectSubtitleTrack(burnIn)
 
         gate.open()
-        await seeking.value
+        await switching.value
 
         #expect(asks.values == [ResolveAsk(),
-                        ResolveAsk(start: 3_000, audio: 3, subtitle: 1),
-                        ResolveAsk(start: 3_000, audio: 5, subtitle: 7)])
+                        ResolveAsk(start: 600, audio: 4, subtitle: 1),
+                        ResolveAsk(start: 600, audio: 5, subtitle: 7)])
         #expect(vm.selectedAudioTrack == audio5)
         #expect(vm.selectedSubtitleTrack == burnIn)
     }
@@ -163,15 +124,16 @@ struct PlayerReloadQueueTests {
         let standing = try #require(vm.selectedAudioTrack)
         let audio4 = try audioTrack(vm, 4)
         let audio5 = try audioTrack(vm, 5)
-        let seeking = try await startReload(gate, on: vm, "the seek never reached the reload") {
-            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let burnIn = try subtitleTrack(vm, 7)
+        let picking = try await startReload(gate, on: vm, "the burn-in pick never reached the reload") {
+            await vm.selectSubtitleTrack(burnIn)
         }
 
         await vm.selectAudioTrack(audio4)
         await vm.selectAudioTrack(audio5)
 
         gate.open()
-        await seeking.value
+        await picking.value
 
         #expect(asks.values.map(\.audio) == [nil, 3, 5], "the superseded pick reloaded, or the merge never ran: \(asks.values)")
         #expect(vm.selectedAudioTrack == standing, "the label restored to the superseded pick, not the pre-pick track")
@@ -258,9 +220,8 @@ struct PlayerReloadQueueTests {
             PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
         })
         let engine = engines.live
-        // An out-of-buffer seek with no sidecar up goes in-stream and dirties the timeline,
-        // which is what makes the plain text pick below cost a reload.
-        await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        // Leaving an active burn-in is what makes the plain text pick below cost a reload.
+        await vm.selectSubtitleTrack(try subtitleTrack(vm, 7))
         let text = try subtitleTrack(vm, 1)
         engine.hold(.subtitleTrack)
 
@@ -394,25 +355,26 @@ struct PlayerReloadQueueTests {
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
             await gate.wait()
-            // The re-anchor's own re-resolve fails with the outgoing stream still mounted.
+            // The burn-in's own re-resolve fails with the outgoing stream still mounted.
             if asks.count == 2 { throw AppError.playback(.unsupportedFormat) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let standing = try #require(vm.selectedAudioTrack)
         let audio4 = try audioTrack(vm, 4)
-        let seeking = try await startReload(gate, on: vm, "the seek never reached the reload") {
-            await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let burnIn = try subtitleTrack(vm, 7)
+        let picking = try await startReload(gate, on: vm, "the burn-in pick never reached the reload") {
+            await vm.selectSubtitleTrack(burnIn)
         }
 
         await vm.selectAudioTrack(audio4)
         #expect(vm.selectedAudioTrack == audio4)   // optimistic while it is queued
 
         gate.open()
-        await seeking.value
+        await picking.value
 
         #expect(asks.count == 2, "the discarded pick reloaded anyway")
         #expect(vm.selectedAudioTrack == standing, "the discarded pick left its label on the menu")
-        #expect(vm.trackSwitchFailure == nil, "a position-only reload reported a failure it never had")
+        #expect(vm.trackSwitchFailure?.requested == .subtitle(burnIn), "the scrim named a pick the failed reload never carried")
 
         // The re-tap only passes `track != selectedAudioTrack` because the label went back.
         await vm.selectAudioTrack(audio4)
@@ -438,19 +400,19 @@ struct PlayerReloadQueueTests {
         // audio cut is the seam that holds a caller inside `loadAndPlay`.
         outgoing.hold(.endAudio)
 
-        let seeking = Task { @MainActor in await vm.seek(to: CMTime(seconds: 1_000, preferredTimescale: 600)) }
+        let audio5 = try audioTrack(vm, 5)
+        let switching = Task { @MainActor in await vm.selectAudioTrack(audio5) }
         try await requireEventually({ outgoing.hasParked(.endAudio) }, "the reload never reached the engine swap")
 
         let merged = await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(merged, "the seek took the in-stream road against an engine mid-load")
 
         outgoing.release(.endAudio)
-        _ = await seeking.value
+        await switching.value
 
-        #expect(asks.count == 3)
-        #expect(asks.last == ResolveAsk(start: 3_000, audio: 3, subtitle: 1))
-        #expect(engines.engines.allSatisfy { engine in !engine.calls.contains { $0.hasPrefix("seek(") } },
-                "an engine was sought mid-reload")
+        #expect(asks.count == 2, "the merged seek bought a reload of its own")
+        #expect(!outgoing.calls.contains { $0.hasPrefix("seek(") }, "the engine was sought mid-reload")
+        #expect(engines.live.calls.filter { $0.hasPrefix("seek(") } == ["seek(3000.0)"])
     }
 
     // MARK: - The declined burn-in
@@ -533,8 +495,8 @@ struct PlayerReloadQueueTests {
             }
         )
         let text = try subtitleTrack(vm, 1)
-        // The dirty timeline is what makes a plain text pick cost a reload.
-        await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        // Leaving an active burn-in is what makes a plain text pick cost a reload.
+        await vm.selectSubtitleTrack(try subtitleTrack(vm, 7))
         let picking = try await startReload(gate, on: vm, "the text pick never reached the reload") {
             await vm.selectSubtitleTrack(text)
         }
@@ -544,19 +506,19 @@ struct PlayerReloadQueueTests {
         gate.open()
         await picking.value
 
-        #expect(asks.values.map(\.subtitle) == [nil, 1, -1])
+        #expect(asks.values.map(\.subtitle) == [nil, 7, 1, -1])
         #expect(fetched.isEmpty, "the superseded track's overlay was installed anyway")
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(vm.sidecarSubtitleInfo == nil, "the queued Off never cleared the overlay")
     }
 
-    @Test("a seek merged into a text-sub reload fetches ONCE, against the session the LAST reload opened")
+    @Test("a seek merged into a text-sub reload costs no reload of its own: the sidecar comes from that reload, the seek goes to its engine")
     func seekMergedIntoATextReloadFetchesOnceAfterTheLastReload() async throws {
         let gate = ResolveGate()
         let asks = CallRecorder<ResolveAsk>()
         let fetched = CallRecorder<URL>()
 
-        let (vm, _) = try await makeReanchorVM(
+        let (vm, engines) = try await makeReanchorVM(
             at: 600,
             subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
             sidecarUp: false,
@@ -569,7 +531,7 @@ struct PlayerReloadQueueTests {
             }
         )
         let text = try subtitleTrack(vm, 1)
-        await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))   // dirties the timeline
+        await vm.selectSubtitleTrack(try subtitleTrack(vm, 7))   // leaving it makes the text pick reload
         let picking = try await startReload(gate, on: vm, "the text pick never reached the reload") {
             await vm.selectSubtitleTrack(text)
         }
@@ -581,9 +543,9 @@ struct PlayerReloadQueueTests {
         await picking.value
         try await requireEventually({ !fetched.isEmpty }, "the sidecar was never fetched")
 
-        #expect(asks.count == 3)
-        #expect(asks.last?.start == 4_200)
-        #expect(fetched.values == [sidecarURL(session: 3)], "the intermediate session's URL was fetched between reloads")
+        #expect(asks.count == 3, "the merged seek bought a reload of its own")
+        #expect(engines.live.calls.filter { $0.hasPrefix("seek(") }.last == "seek(4200.0)")
+        #expect(fetched.values == [sidecarURL(session: 3)])
     }
 
     // MARK: - A landing reload does not own a menu it is not carrying
@@ -607,8 +569,9 @@ struct PlayerReloadQueueTests {
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let audio4 = try audioTrack(vm, 4)
-        let seeking = try await startReload(first, on: vm, "the seek never reached the reload") {
-            await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let burnIn = try subtitleTrack(vm, 7)
+        let seeking = try await startReload(first, on: vm, "the burn-in pick never reached the reload") {
+            await vm.selectSubtitleTrack(burnIn)
         }
 
         await vm.selectAudioTrack(audio4)
@@ -639,13 +602,16 @@ struct PlayerReloadQueueTests {
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let audio4 = try audioTrack(vm, 4)
-        let seeking = try await startReload(first, on: vm, "the seek never reached the reload") {
-            await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let burnIn = try subtitleTrack(vm, 7)
+        let seeking = try await startReload(first, on: vm, "the burn-in pick never reached the reload") {
+            await vm.selectSubtitleTrack(burnIn)
         }
 
+        await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         await vm.selectAudioTrack(audio4)
         first.open()
         try await requireEventually({ asks.count == 3 }, "the merged reload never started")
+        #expect(asks.last?.start == 3_000)
 
         // The scrim over a merged reload names the track: the seek is incidental, the switch
         // is the several-second thing the user is waiting on.
@@ -669,25 +635,21 @@ struct PlayerReloadQueueTests {
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let standingAudio = try #require(vm.selectedAudioTrack)
-        let standingSubtitle = try #require(vm.selectedSubtitleTrack)
         let audio4 = try audioTrack(vm, 4)
         let burnIn = try subtitleTrack(vm, 7)
-        let seeking = try await startReload(gate, on: vm, "the seek never reached the reload") {
-            await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let picking = try await startReload(gate, on: vm, "the burn-in pick never reached the reload") {
+            await vm.selectSubtitleTrack(burnIn)
         }
 
         await vm.selectAudioTrack(audio4)
         await vm.selectAudioTrack(standingAudio)
-        await vm.selectSubtitleTrack(burnIn)
-        await vm.selectSubtitleTrack(standingSubtitle)
 
         #expect(vm.selectedAudioTrack == standingAudio)
-        #expect(vm.selectedSubtitleTrack == standingSubtitle)
 
         gate.open()
-        await seeking.value
+        await picking.value
 
-        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
+        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 600, audio: 3, subtitle: 7)],
                 "a reload was spent going back to where the stream already was")
     }
 
@@ -957,29 +919,6 @@ struct PlayerReloadQueueTests {
                 "the burn-in's scrim rose over the Off that landed after it")
     }
 
-    // MARK: - The loader caption reads the reload it is actually covering
-
-    /// `isReanchoring` derived from `reloadInFlight`, which the drain nils while `phase` is
-    /// still `.loading` — so the last few hundred ms of every scrub read "Switching audio ·
-    /// <track>" over a re-anchor that switched nothing.
-    @Test("a pure re-anchor reads as buffering through its TAIL, not as an audio switch")
-    func aReanchorTailStaysBuffering() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-
-        await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-
-        // The drain has returned; nothing has beaten on the new session yet.
-        #expect(vm.phase == .loading)
-        #expect(vm.isMidSessionReload)
-        #expect(vm.loaderTitle == PlayerViewModel.LoaderCaption.buffering,
-                "the tail of a scrub read as an audio switch")
-        #expect(vm.loaderSubtitle == nil)
-
-        engines.live.push(.playing(3_000))
-        try await engines.live.settle()
-        #expect(vm.isMidSessionReload == false)
-    }
-
     // MARK: - The in-flight merge outranks the method the reload came back with
 
     /// `selectAudioTrack`'s twin of `seek(to:)`'s rule: a reload the server answers with a
@@ -1000,14 +939,15 @@ struct PlayerReloadQueueTests {
         // audio cut is the seam that holds a caller inside `loadAndPlay`.
         outgoing.hold(.endAudio)
 
-        let seeking = Task { @MainActor in await vm.seek(to: CMTime(seconds: 1_000, preferredTimescale: 600)) }
+        let audio5 = try audioTrack(vm, 5)
+        let switching = Task { @MainActor in await vm.selectAudioTrack(audio5) }
         try await requireEventually({ outgoing.hasParked(.endAudio) }, "the reload never reached the engine swap")
 
         await vm.selectAudioTrack(audio4)
         #expect(vm.selectedAudioTrack == audio4)
 
         outgoing.release(.endAudio)
-        _ = await seeking.value
+        await switching.value
 
         #expect(asks.count == 3)
         #expect(asks.last?.audio == 4, "the pick was answered against the half-loaded session")
@@ -1036,17 +976,18 @@ struct PlayerReloadQueueTests {
         try #require(vm.selectedSubtitleTrack == text)
         try await requireEventually({ vm.sidecarSubtitleInfo != nil }, "the fixture's overlay never came up")
 
-        let seeking = try await startReload(gate, on: vm, "the seek never reached the reload") {
-            await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        let audio4 = try audioTrack(vm, 4)
+        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
+            await vm.selectAudioTrack(audio4)
         }
 
         await vm.selectSubtitleTrack(text)
         #expect(vm.sidecarSubtitleInfo != nil, "the re-tap dropped the overlay it was already showing")
 
         gate.open()
-        await seeking.value
+        await switching.value
 
-        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
+        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 600, audio: 4, subtitle: 1)],
                 "a reload was spent re-picking the row that was already checked")
     }
 

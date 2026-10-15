@@ -46,7 +46,7 @@ nonisolated struct SeekHold: Equatable, Sendable {
     ///
     /// A healthy session never reaches it. Sized above the longest a healthy session goes
     /// without a beat: a stream open, which the engine's `LoadWatchdog` (30 s) bounds by failing
-    /// the session, and a re-anchor's re-resolve (`reloadResolveDeadline`, 15 s), which starts
+    /// the session, and a reload's re-resolve (`reloadResolveDeadline`, 15 s), which starts
     /// silent at the pause the reload opens with and ends at the new session's `.loading` beat.
     /// If this ever fires on a working session, the number is wrong — not the engine.
     static let watchdog: Duration = .seconds(35)

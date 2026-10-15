@@ -43,20 +43,6 @@ private enum RoutingCase: String, CaseIterable, CustomTestStringConvertible {
     }
 }
 
-/// The two live-job shapes the seek gate must treat IDENTICALLY: a stream-copied video
-/// (remux) and a re-encoded one. One argument table so a delivery-based exemption can
-/// never sneak back in for only one of them.
-private let deliveryShapes = [
-    // Video stream-COPIED (remux) — audio is the only re-encode.
-    TranscodeDelivery(isVideoDirect: true, isAudioDirect: false,
-                      videoCodec: "hevc", audioCodec: "aac",
-                      transcodeReasons: ["AudioCodecNotSupported"]),
-    // Video RE-ENCODED — the #15845 accurate-seek drift failure mode.
-    TranscodeDelivery(isVideoDirect: false, isAudioDirect: true,
-                      videoCodec: "h264", audioCodec: "ac3",
-                      transcodeReasons: ["VideoCodecNotSupported"]),
-]
-
 @Suite("PlayerViewModel integration", .scaledTimeLimit())
 @MainActor
 struct PlayerViewModelTests {
@@ -777,197 +763,38 @@ struct PlayerViewModelTests {
         #expect(vm.trackSwitchFailure?.fallback?.id == .jellyfinStream(1))
     }
 
-    @Test("subs-aware transcode seek lifecycle: no sidecar → in-stream (dirty); sidecar pick on a dirty timeline → laundering reload; sidecar active → out-of-buffer re-anchors")
-    func transcodeSeekGateIsSidecarAware() async throws {
-        let reporting = StubPlaybackReporting()
+    @Test("a transcode seek goes in-stream with or without a sidecar up, and a sidecar pick after one spends no reload")
+    func transcodeSeekStaysInStream() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        // No server-default subtitle: the point is a session with NO sidecar up, and the
-        // default fixture's `defaultSubtitleStreamIndex` would auto-arm the overlay on
-        // first play (`applyTranscodeDefaultSubtitle`), silently flipping the gate.
+        // No server-default subtitle, so the first seek runs with no sidecar up.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
-        nonisolated(unsafe) var resolveCalls: [(start: CMTime?, audio: Int?, sub: Int?)] = []
+        nonisolated(unsafe) var resolveCalls = 0
         nonisolated(unsafe) var fetchedURLs: [URL] = []
         let vm = makePlayerVM(
-            reporting: reporting,
-            resolve: { _, _, start, selection in
-                resolveCalls.append((start, selection?.audioStreamIndex, selection?.subtitleStreamIndex))
-                return resolved
-            },
+            resolve: { _, _, _, _ in resolveCalls += 1; return resolved },
             engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return PlayerFixtures.landingSidecar(for: url) }
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(resolveCalls.count == 1)                         // initial resolve only
         let loadsAfterStart = engine.loadedAssets.count
         engine.push(.playing(10))
         try await engine.settle()
 
-        // Buffer covers 0…120s: a seek to 60s is IN buffer → in-stream seek, no reload,
-        // no fresh transcode — the segments are already aligned.
-        engine.bufferedRange = 0...120
-        await vm.seek(to: CMTime(seconds: 60, preferredTimescale: 600))
-        #expect(engine.calls.contains("seek(60.0)"))
-        #expect(resolveCalls.count == 1)
-        #expect(engine.loadedAssets.count == loadsAfterStart)
-
-        // OUT of buffer with NO sidecar rendering: nothing reads the clock absolutely,
-        // so the seek stays IN-STREAM (old scrub feel, buffer preserved) and only marks
-        // the timeline dirty — no fresh transcode, no reload.
         await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
-        #expect(engine.calls.contains("seek(3000.0)"))
-        #expect(resolveCalls.count == 1)
-        #expect(engine.loadedAssets.count == loadsAfterStart)
 
-        // Activating a sidecar on the DIRTY timeline launders it first: one reload at
-        // the current position carrying the picked index, cues fetched only after the
-        // fresh item lands (absolute cues must never draw against a shifted mapping).
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
         await vm.debugAwaitSubtitleFetch()
-        #expect(resolveCalls.count == 2)
-        #expect(resolveCalls.last?.sub == 1)
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)
-        #expect(fetchedURLs.count == 1)
+        #expect(vm.selectedSubtitleTrack == text)
+        #expect(fetchedURLs == [resolved.subtitleStreamURLs[1]])
 
-        // The reload's fresh AVPlayerItem cleared the dirty flag: toggling the sidecar
-        // off and back on now takes the cheap no-reload path.
-        await vm.selectSubtitleTrack(nil)
-        await vm.selectSubtitleTrack(text)
-        await vm.debugAwaitSubtitleFetch()
-        #expect(resolveCalls.count == 2)
-        #expect(fetchedURLs.count == 1)   // re-selection is served from the session cache
-
-        // With the sidecar UP, an out-of-buffer seek re-anchors: a fresh transcode AT
-        // the target, engine reloaded, no in-stream drift seek — and the re-anchor
-        // forwards the CURRENT audio + subtitle selection (a fresh transcode must not
-        // silently drop the user's tracks).
         await vm.seek(to: CMTime(seconds: 5000, preferredTimescale: 600))
-        #expect(resolveCalls.count == 3)
-        let reanchor = try #require(resolveCalls.last)
-        #expect(CMTimeGetSeconds(reanchor.start ?? .zero) == 5000)
-        #expect(reanchor.audio.map(TrackID.jellyfinStream) == vm.selectedAudioTrack?.id)
-        #expect(reanchor.sub.map(TrackID.jellyfinStream) == vm.selectedSubtitleTrack?.id)
-        #expect(engine.loadedAssets.count == loadsAfterStart + 2)
-        #expect(!engine.calls.contains("seek(5000.0)"))
-    }
 
-    @Test("""
-          cancelling the scrub-commit task mid-re-anchor must not kill the reload: every scrub \
-          surface cancels the in-flight commit when a newer input lands, and a reload that dies \
-          with it strands the loading scrim over a paused engine with its encode job already killed
-          """)
-    func scrubCommitCancellationSurvivesReanchor() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
-
-        // The SECOND resolve (the re-anchor) parks on a gate so the test can cancel the
-        // commit task while the reload is mid-negotiation. `entered` signals the reload
-        // reached the resolve; `release` lets it return. AsyncStream's `next()` is
-        // cancellation-aware, so under a broken (unshielded) reload the cancel below
-        // unparks it immediately — the gate can never deadlock the failure mode.
-        nonisolated(unsafe) var resolveCalls = 0
-        let (enteredStream, entered) = AsyncStream.makeStream(of: Void.self)
-        let (releaseStream, release) = AsyncStream.makeStream(of: Void.self)
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in
-                resolveCalls += 1
-                if resolveCalls == 2 {
-                    entered.yield(())
-                    var gate = releaseStream.makeAsyncIterator()
-                    await gate.next()
-                }
-                return resolved
-            },
-            engine: engine
-        )
-
-        await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(10))
-        try await engine.settle()
-        let loadsAfterStart = engine.loadedAssets.count
-
-        // Arm the subs-aware gate: a clean-session text pick is the cheap path (no reload).
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-        await vm.debugAwaitSubtitleFetch()
         #expect(resolveCalls == 1)
-
-        // Out-of-buffer commit with the sidecar up → re-anchor reload. Run it on its own
-        // task and cancel mid-resolve — what `scrubCommitTask?.cancel()` (drag/VoiceOver)
-        // and `SeekCommitCoalescer.schedule` (double-tap/click burst) do to the in-flight
-        // commit whenever a newer scrub arrives.
-        engine.bufferedRange = 0...120
-        let commit = Task {
-            await vm.commitSeek(to: CMTime(seconds: 5000, preferredTimescale: 600))
-        }
-        var reloadEntered = enteredStream.makeAsyncIterator()
-        await reloadEntered.next()
-        commit.cancel()
-        release.yield(())
-        await commit.value
-
-        // The reload must survive the caller's cancellation: fresh session resolved,
-        // engine reloaded and playing — not abandoned into a permanent .loading scrim.
-        #expect(resolveCalls == 2)
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)
-        engine.push(.playing(5000))
-        try await engine.settle()
-        #expect(vm.phase == .playing)
-    }
-
-    @Test("""
-          transcode seek with a sidecar up: in-buffer stays in-stream, out-of-buffer re-anchors — \
-          for a re-encode (#15845 drift) AND for a proven video copy (a mid-session ffmpeg restart \
-          shifts AVPlayer's established timeline even when the copy lands on a true keyframe)
-          """,
-          arguments: deliveryShapes)
-    func outOfBufferSeekReanchorsForEveryDelivery(delivery: TranscodeDelivery) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-
-        nonisolated(unsafe) var resolveCalls: [CMTime?] = []
-        let clock = TestClock()
-        let vm = makePlayerVM(
-            clock: clock,
-            resolve: { _, _, start, _ in resolveCalls.append(start); return resolved },
-            engine: engine,
-            fetchDelivery: { _ in delivery }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(resolveCalls.count == 1)
-        let loadsAfterStart = engine.loadedAssets.count
-
-        // The first .playing beat arms the delivery probe; wait for it to land.
-        engine.push(.playing(10))
-        try await landDeliveryProbe(vm, on: clock)
-        #expect(vm.transcodeDelivery == delivery)
-
-        // The sidecar overlay is UP (a clean-session pick — no reload), so the
-        // subs-aware gate is armed: only the overlay reads the clock absolutely.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-        #expect(resolveCalls.count == 1)
-
-        // In-buffer seek stays in-stream: those segments were downloaded under the
-        // item's live timeline mapping, so they can't shift it.
-        engine.bufferedRange = 0...120
-        await vm.seek(to: CMTime(seconds: 60, preferredTimescale: 600))
-        #expect(engine.calls.contains("seek(60.0)"))
-        #expect(resolveCalls.count == 1)
-
-        // Out-of-buffer seek re-anchors, delivery notwithstanding. Even on a proven
-        // video copy the restarted segments join an AVPlayerItem whose timeline mapping
-        // was established by the ORIGINAL segments — any miss (pad overshoot, keyframe
-        // gap) shifts the clock under absolute sidecar cues, intermittently and by up to
-        // a keyframe interval (device-confirmed 2026-07-17). A fresh item re-derives the
-        // mapping, so only the re-anchor is safe.
-        await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
-        #expect(resolveCalls.count == 2)
-        #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
-        #expect(!engine.calls.contains("seek(3000.0)"))             // no in-stream drift seek
+        #expect(engine.loadedAssets.count == loadsAfterStart)
+        #expect(engine.calls.filter { $0.hasPrefix("seek(") } == ["seek(3000.0)", "seek(5000.0)"])
     }
 
     @Test("delivery probe schedule exhausted with no result: transcodeDelivery stays nil and the exhausted flag flips")
@@ -1013,7 +840,6 @@ struct PlayerViewModelTests {
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
-        engine.bufferedRange = 0...120   // ignored for non-transcode: the gate exits before isBuffered
 
         // Resuming scrub → in-stream seek then play (the drag paused the engine to hold the frame).
         await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
@@ -1123,54 +949,29 @@ struct PlayerViewModelTests {
         #expect(engine.isPlayingNow == false)
     }
 
-    @Test("""
-          scrub commit out of buffer re-anchors on EVERY delivery — the #15845 drift fix for a \
-          re-encode, and no exemption for a proven video copy
-          """,
-          arguments: deliveryShapes)
-    func commitSeekReanchorsForEveryDelivery(delivery: TranscodeDelivery) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        nonisolated(unsafe) var resolveCalls: [CMTime?] = []
-        let clock = TestClock()
-        let vm = makePlayerVM(
-            clock: clock,
-            resolve: { _, _, start, _ in resolveCalls.append(start); return resolved },
-            engine: engine,
-            fetchDelivery: { _ in delivery }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(10))
-        try await landDeliveryProbe(vm, on: clock)
-        #expect(vm.transcodeDelivery == delivery)
-
-        // Sidecar overlay up — the subs-aware gate re-anchors for its cues.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-        #expect(resolveCalls.count == 1)
-
-        // Out-of-buffer scrub commit → fresh transcode AT the target, not an in-stream seek.
-        engine.bufferedRange = 0...120
-        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
-        #expect(resolveCalls.count == 2)
-        #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
-        #expect(!engine.calls.contains("seek(3000.0)"))            // no in-stream drift seek
-    }
-
     // MARK: - The seek hold — the bar shows the target from commit until the engine catches up
 
-    @Test("a commit that re-anchors shows the TARGET while the reload scrim is up — never the pre-scrub position")
+    @Test("a commit merged into a reload shows the TARGET while the reload scrim is up — never the pre-scrub position")
     func commitSeekHoldsTargetThroughReanchor() async throws {
-        let (vm, _) = try await makeReanchorVM(at: 600)
+        let gate = ResolveGate()
+        let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
+            await gate.wait()
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+        let audio4 = try audioTrack(vm, 4)
+        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
+            await vm.selectAudioTrack(audio4)
+        }
 
-        // The reload lands `.loading` and drops every engine beat while it runs, so this
+        // The reload holds `.loading` and drops every engine beat while it runs, so this
         // returns with the OLD clock still the newest thing the engine ever published.
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         #expect(vm.phase == .loading)                              // still behind the scrim
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)     // …showing B, not A
+
+        gate.open()
+        await switching.value
     }
 
     /// The reload's own beats still carry the OLD stream's clock, which the engine labels
@@ -1237,25 +1038,25 @@ struct PlayerViewModelTests {
     /// frame forever), and report PlaybackStart, which the reload's fresh play session makes
     /// mandatory — without it Jellyfin never learns the session exists, so no progress and
     /// no stop report land, and the position the user re-anchored to is never persisted.
-    @Test("a re-anchor that lands paused lifts the cover AND reports its start")
+    @Test("a reload that lands paused lifts the cover AND reports its start")
     func pausedFirstLiveBeatAfterReloadOpensTheSession() async throws {
         let reporting = StubPlaybackReporting()
         let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting)
         let engine = engines.live
 
         vm.setPlaying(false)
-        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(vm.phase == .loading)   // the reload cover, over the frozen frame
 
-        // The reloaded session's ONLY live beat: paused, at the target, and observed.
-        engine.push(.paused(3_000))
+        // The reloaded session's ONLY live beat: paused, and observed.
+        engine.push(.paused(600))
         try await engine.settle()
 
         #expect(vm.phase == .playing, "the reload cover outlived the session that was to lift it")
         let started = (await reporting.events).filter {
             if case .start = $0 { return true } else { return false }
         }
-        #expect(started.count == 2, "the re-anchored session never reported a start")
+        #expect(started.count == 2, "the reloaded session never reported a start")
 
         await vm.stop()
         let stopped = (await reporting.events).filter {
@@ -1296,14 +1097,14 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let outgoing = engine.session
 
-        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(engine.session != outgoing, "the reload never opened a new session")
 
         engine.push(.failed(.assetNotPlayable), from: outgoing)
         try await engine.settle()
 
         #expect(vm.phase == .loading, "the dead session's failure landed on the live one")
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
     }
 
     /// The sequence a `.loading`/`.ready` marker in the stream could not survive: the outgoing
@@ -1316,7 +1117,7 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
         let outgoing = engine.session
-        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
 
         engine.push(.ready(duration: CMTime(seconds: 7_200, preferredTimescale: 600),
                            tracks: TrackInventory(audio: [], subtitles: [],
@@ -1348,7 +1149,7 @@ struct PlayerViewModelTests {
         triggerExit = { vm.beginExit() }
         let standing = engine.session
 
-        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(engine.session == standing, "the abandoned reload opened a session anyway")
 
         engine.push(.playing(640))
@@ -1378,8 +1179,9 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let standing = engine.session
 
+        let audio4 = try audioTrack(vm, 4)
         let commit = try await startReload(gate, on: vm, "the reload never reached its re-resolve") {
-            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+            await vm.selectAudioTrack(audio4)
         }
 
         // The item the reload left mounted, failing on the playlist whose job it just killed.
@@ -1392,13 +1194,13 @@ struct PlayerViewModelTests {
 
         #expect(engine.session != standing, "the reload never opened a new session")
         #expect(vm.phase == .loading, "the reload finished behind a decode scrim it never earned")
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
 
         // …and the reload really does complete: its own first live beat lifts the cover.
-        engine.push(.playing(3_000))
+        engine.push(.playing(600))
         try await engine.settle()
         #expect(vm.phase == .playing)
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
     }
 
     /// The second half of the same window, and the one the user watches: the abandoned stream
@@ -1419,9 +1221,11 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let standing = engine.session
 
+        let audio4 = try audioTrack(vm, 4)
         let commit = try await startReload(gate, on: vm, "the reload never reached its re-resolve") {
-            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+            await vm.selectAudioTrack(audio4)
         }
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         engine.push(.playing(600, provenance: .observed), from: standing)
         try await engine.settle()
@@ -1451,7 +1255,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let standing = engine.session
 
-        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(engine.session == standing, "the failed reload opened a session anyway")
         #expect(engine.calls.last == "play", "the fallback never resumed the old stream")
 
@@ -1506,7 +1310,6 @@ struct PlayerViewModelTests {
 
         // Direct play, target outside the buffer → an in-stream `engine.seek`, which is
         // exactly the path whose pre-seek echo lands AT the target.
-        engine.bufferedRange = 0...660
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(engine.calls.contains("seek(3000.0)"))
 
@@ -1696,9 +1499,9 @@ struct PlayerViewModelTests {
     /// The hold now outlives the window it was armed in, because the TARGET does. A scrub
     /// committed while a track switch holds the reload used to come back `.abandoned` and be
     /// dropped — nothing would ever play there, so the hold had to go with it. It merges into
-    /// `pendingReload` instead, and the switch's own drain reloads at it; dropping the hold
-    /// here would hand the bar back to a stream that is about to be replaced.
-    @Test("a commit made during a track switch keeps its hold — the switch's drain re-anchors at the target")
+    /// `pendingReload` instead, and the switch's own drain seeks there once it lands; dropping
+    /// the hold here would hand the bar back to a stream that is about to be replaced.
+    @Test("a commit made during a track switch keeps its hold — the switch lands, then seeks to the target in-stream")
     func commitDuringATrackSwitchKeepsItsHold() async throws {
         let gate = ResolveGate()
         let resolveStarts = CallRecorder<CMTime?>()
@@ -1721,9 +1524,10 @@ struct PlayerViewModelTests {
         gate.open()
         await switching.value
 
-        // Two reloads out of one window: the switch at the live position, then the merged
-        // seek at the target — and the bar was showing that target the whole time.
-        #expect(resolveStarts.values.compactMap { $0.map(CMTimeGetSeconds) } == [600, 3_000])
+        // One reload out of one window: the switch at the live position, then an in-stream
+        // seek to the target — and the bar was showing that target the whole time.
+        #expect(resolveStarts.values.compactMap { $0.map(CMTimeGetSeconds) } == [600])
+        #expect(engine.calls.filter { $0.hasPrefix("seek(") }.last == "seek(3000.0)")
         engine.push(.playing(3_000.5))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)
@@ -1848,20 +1652,27 @@ struct PlayerViewModelTests {
     /// still the discriminator: a live hold would have released on it at 600 but so would this
     /// one, so the claim is pinned on `lastPosition` too, which a live hold would have left
     /// sitting on the unreachable target.
-    @Test("a failed re-anchor drops the hold: the fallback stream's FIRST beat owns the bar again")
+    @Test("a failed reload drops the hold of the commit merged into it: the fallback stream's FIRST beat owns the bar again")
     func failedReanchorDropsTheHold() async throws {
         let reporting = StubPlaybackReporting()
+        let gate = ResolveGate()
         nonisolated(unsafe) var resolveCalls = 0
         let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting,
                                                      resolve: { _, _, _, _ in
             resolveCalls += 1
+            await gate.wait()
             if resolveCalls > 1 { throw AppError.playback(.unsupportedFormat) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let engine = engines.live
-
+        let audio4 = try audioTrack(vm, 4)
+        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
+            await vm.selectAudioTrack(audio4)
+        }
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        #expect(resolveCalls == 2)   // the re-anchor tried, and failed
+        gate.open()
+        await switching.value
+        #expect(resolveCalls == 2)   // the reload tried, and failed
 
         engine.push(.playing(600))
         try await engine.settle()
@@ -1963,7 +1774,6 @@ struct PlayerViewModelTests {
         try await first.settle()
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
-        first.bufferedRange = 0...660
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // hold armed and holding
@@ -2357,131 +2167,36 @@ struct PlayerViewModelTests {
         #expect(try #require(vm.seekSpan).delta.from == 3_002 / duration)
     }
 
-    @Test("scrub commit while paused on a re-encode transcode out of buffer: the force-resuming reload is re-paused")
-    func commitSeekReEncodePausedRepauses() async throws {
-        let reporting = StubPlaybackReporting()
+    @Test("scrub commit while paused on a transcode, far past the buffer: in-stream seek only, no reload, no resume")
+    func commitSeekTranscodePausedStaysPaused() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let reencode = TranscodeDelivery(
-            isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3",
-            transcodeReasons: ["VideoCodecNotSupported"]
-        )
-        let clock = TestClock()
+        nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
-            reporting: reporting,
-            clock: clock,
-            resolve: { _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolveCalls += 1; return PlayerFixtures.resolvedMultiTrackTranscode() },
             engine: engine,
-            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) },
-            fetchDelivery: { _ in reencode }
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        let loadsAfterStart = engine.loadedAssets.count
         engine.push(.playing(10))
-        try await landDeliveryProbe(vm, on: clock)
+        try await engine.settle()
+        let loadsAfterStart = engine.loadedAssets.count
+        try #require(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))   // the sidecar is up
 
-        // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-
-        // The reload's loadAndPlay force-resumes; a user who is PAUSED must be re-paused, so
-        // the last command the engine sees is a pause. The intent is what the commit reads, so
-        // the pause has to be a real one rather than an argument.
         vm.setPlaying(false)
         await vm.awaitTransportQuiescence()
-        engine.bufferedRange = 0...120
+        let before = engine.calls.count
         await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         await vm.awaitTransportQuiescence()
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // re-anchored (engine reloaded)
-        #expect(engine.calls.contains("play"))                      // reload force-resumed
-        #expect(engine.calls.last == "pause")                       // …then re-paused for the paused scrub
+
+        let tail = Array(engine.calls.dropFirst(before))
+        #expect(tail.first == "seek(3000.0)")
+        #expect(!tail.contains("play"))
+        #expect(resolveCalls == 1)
+        #expect(engine.loadedAssets.count == loadsAfterStart)
         #expect(engine.isPlayingNow == false)
     }
 
-    @Test("scrub commit supersession: a second out-of-buffer re-anchor issued while the first is still resolving wins — newest target, no stale strand")
-    func commitSeekReanchorSupersedesNewestWins() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let reencode = TranscodeDelivery(
-            isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3",
-            transcodeReasons: ["VideoCodecNotSupported"]
-        )
-
-        // Gate the FIRST re-anchor's resolve (target A = 3000s) open until the SECOND
-        // commitSeek (target B = 5000s) has run and superseded it. Deterministic —
-        // NO Task.sleep: `firstReanchorEntered` signals the drain is parked mid-reload, and
-        // `releaseFirstReanchor` unparks resolve #A only after B has enqueued behind it.
-        let firstReanchorEntered = AsyncStream<Void>.makeStream()
-        let releaseFirstReanchor = AsyncStream<Void>.makeStream()
-        nonisolated(unsafe) var resolveStarts: [CMTime?] = []
-        let clock = TestClock()
-        let vm = makePlayerVM(
-            reporting: reporting,
-            clock: clock,
-            resolve: { _, _, start, _ in
-                resolveStarts.append(start)
-                // Only the target-A re-anchor parks; the initial start (nil) and the
-                // target-B re-anchor pass straight through.
-                if let start, CMTimeGetSeconds(start) == 3000 {
-                    firstReanchorEntered.continuation.yield(())
-                    firstReanchorEntered.continuation.finish()
-                    for await _ in releaseFirstReanchor.stream { break }   // park until released
-                }
-                return resolved
-            },
-            engine: engine,
-            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) },
-            fetchDelivery: { _ in reencode }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(10))
-        try await landDeliveryProbe(vm, on: clock)
-        #expect(vm.transcodeDelivery?.isVideoDirect == false)
-
-        // Sidecar overlay up — out-of-buffer targets take the re-anchor branch.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-
-        // Both targets are outside the buffer → both take the re-anchor branch.
-        engine.bufferedRange = 0...120
-        let targetA = CMTime(seconds: 3000, preferredTimescale: 600)
-        let targetB = CMTime(seconds: 5000, preferredTimescale: 600)
-
-        // First commit runs on its own MainActor task; it parks inside resolve(A) with
-        // `isReanchoring == true`, holding the single-flight drain open.
-        let first = Task { @MainActor in await vm.commitSeek(to: targetA) }
-        for await _ in firstReanchorEntered.stream { break }   // wait until the drain is parked
-
-        // Second commit lands WHILE the first re-anchor is still resolving. seek(B) sees
-        // `isReanchoring` and hands B to the drain's pending slot instead of an engine.seek
-        // — it must supersede A, not strand it. This returns immediately (no reload here).
-        await vm.commitSeek(to: targetB)
-
-        // Unpark resolve(A); the drain finishes A's reload, then loops onto the newer B.
-        releaseFirstReanchor.continuation.yield(())
-        releaseFirstReanchor.continuation.finish()
-        await first.value
-
-        // (a) The drain SETTLED on the newest target: the last resolve/reload is at B, not A.
-        #expect(CMTimeGetSeconds((resolveStarts.last ?? nil) ?? .zero) == 5000)
-        #expect(resolveStarts.compactMap { $0.map(CMTimeGetSeconds) } == [3000, 5000])   // A first, then B
-        // (b) Engine outcome is consistent with B and never stranded on A: two clean
-        // reloads (A then B) and NO in-stream drift seek to either stale target — the
-        // landing target lives in the resolve `start` arg asserted above (the fake resolve
-        // returns a fixed asset, so loadedAssets can't re-prove it).
-        #expect(engine.loadedAssets.count == loadsAfterStart + 2)
-        #expect(!engine.calls.contains("seek(3000.0)"))
-        #expect(!engine.calls.contains("seek(5000.0)"))
-        // (c) resume:true on BOTH commits → the final reload force-resumes and nothing
-        // re-pauses it: playback ends playing, not stranded paused.
-        #expect(engine.calls.last == "play")
-    }
-
-    @Test("re-anchor resolve wedged past the deadline: the reload falls back to the still-mounted stream instead of a stuck 'Buffering' scrim")
+    @Test("a reload resolve wedged past the deadline falls back to the still-mounted stream instead of a stuck scrim")
     func reanchorResolveDeadlineFallsBack() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
@@ -2495,7 +2210,7 @@ struct PlayerViewModelTests {
             clock: clock,
             resolve: { _, _, _, _ in
                 resolveCalls += 1
-                // The re-anchor's negotiation wedges (dead server mid-session). The
+                // The reload's negotiation wedges (dead server mid-session). The
                 // deadline must cancel this — the sleep is cancellation-aware, so the
                 // test never actually waits it out.
                 if resolveCalls >= 2 {
@@ -2512,16 +2227,13 @@ struct PlayerViewModelTests {
         engine.push(.playing(10))
         try await engine.settle()
 
-        // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
+        let standing = try #require(vm.selectedAudioTrack)
+        let audio4 = try audioTrack(vm, 4)
 
-        // The scrub's re-anchor hits the wedged resolve; the deadline fires and the
-        // reload falls back: the old stream (still mounted, just paused for the swap)
-        // resumes, no engine reload happens, and the sidecar selection survives. The
-        // next scrub simply retries — nothing is stuck.
-        engine.bufferedRange = 0...120
-        let commit = Task { await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600)) }
+        // The switch hits the wedged resolve; the deadline fires and the reload falls back:
+        // the old stream (still mounted, just paused for the swap) resumes, no engine reload
+        // happens, and the menu goes back to the track still playing.
+        let commit = Task { await vm.selectAudioTrack(audio4) }
         for await _ in wedged { break }
         // The seek-hold watchdog and the reload's deadline: the reload's encode kill retired the
         // keepalive, and its reset retired the delivery probe.
@@ -2529,11 +2241,11 @@ struct PlayerViewModelTests {
         clock.advance(by: PlayerViewModel.reloadResolveDeadline)
         await commit.value
 
-        #expect(resolveCalls == 2)                                // re-anchor attempted once
+        #expect(resolveCalls == 2)                                // reload attempted once
         #expect(engine.loadedAssets.count == loadsAfterStart)     // no reload landed
         #expect(engine.calls.last == "play")                      // fallback resumed the old stream
+        #expect(vm.selectedAudioTrack == standing)
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
-        #expect(!engine.calls.contains("seek(3000.0)"))           // and no drift seek slipped through
     }
 
     @Test("an engine-reusing reload freezes the surface's last frame; the swapped-in session's first .playing beat releases it exactly once")
@@ -2559,23 +2271,21 @@ struct PlayerViewModelTests {
         #expect(freezeCalls == 0)
         #expect(unfreezeCalls == 0)
 
-        // The fixture's server-default subtitle auto-armed the sidecar, so an
-        // out-of-buffer scrub re-anchors — the reload must freeze BEFORE the swap.
-        engine.bufferedRange = 0...120
-        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        // The reload must freeze BEFORE the swap.
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(freezeCalls == 1)
         #expect(unfreezeCalls == 0)   // held until the new session actually renders
 
         // First live beat of the swapped-in session releases the frame — once.
-        engine.push(.playing(3000))
+        engine.push(.playing(10))
         try await engine.settle()
         #expect(unfreezeCalls == 1)
-        engine.push(.playing(3001))
+        engine.push(.playing(11))
         try await engine.settle()
         #expect(unfreezeCalls == 1)
     }
 
-    @Test("a PAUSED scrub's re-anchor releases the held frame on the .paused beat — the re-paused session never emits .playing")
+    @Test("a PAUSED player's reload releases the held frame on the .paused beat — the re-paused session never emits .playing")
     func pausedReanchorReleasesFrozenFrameOnPausedBeat() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
@@ -2595,14 +2305,14 @@ struct PlayerViewModelTests {
         engine.push(.playing(10))
         try await engine.settle()
 
-        engine.bufferedRange = 0...120
-        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        vm.setPlaying(false)
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(freezeCalls == 1)
         #expect(unfreezeCalls == 0)
 
-        // The re-paused player renders the target frame without ever playing —
+        // The re-paused player renders its frame without ever playing —
         // the .paused beat is the "surface is live again" signal here.
-        engine.push(.paused(3000))
+        engine.push(.paused(10))
         try await engine.settle()
         #expect(unfreezeCalls == 1)
     }
@@ -3626,7 +3336,7 @@ struct PlayerViewModelTests {
         #expect(engine.isPlayingNow == false)
     }
 
-    @Test("a re-anchor's force-resume never registers as user intent: a paused scrub stays paused start to finish")
+    @Test("a reload's force-resume never registers as user intent: a paused track switch stays paused start to finish")
     func pausedReanchorNeverLeaksResumeIntent() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
@@ -3646,20 +3356,17 @@ struct PlayerViewModelTests {
         engine.push(.playing(10))
         try await landDeliveryProbe(vm, on: clock)
 
-        // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
         vm.setPlaying(false)
         #expect(vm.desiredPlaying == false)
         await vm.awaitTransportQuiescence()   // let setPlaying's own pause reach the engine first
 
         // `reloadTranscode`'s loadAndPlay force-resumes mechanically. If that resume were
-        // recorded as intent, a second scrub landing during the (multi-second) reload would
-        // capture a resume the paused user never asked for, so watch the flag for the whole
-        // commit, not just its end state.
-        engine.bufferedRange = 0...120
+        // recorded as intent, a scrub landing during the (multi-second) reload would capture
+        // a resume the paused user never asked for, so watch the flag for the whole switch,
+        // not just its end state.
+        let audio4 = try audioTrack(vm, 4)
         let commit = Task { @MainActor in
-            await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+            await vm.selectAudioTrack(audio4)
         }
         nonisolated(unsafe) var leaked = false
         let watcher = Task { @MainActor in
@@ -4064,10 +3771,9 @@ struct PlayerViewModelTests {
         engine.push(.playing(10))
         try await engine.settle()
 
-        // Out-of-buffer commit with a sidecar up → re-anchor reload → the frame is held, and
-        // no beat follows, so it is still held when the user reaches for retry.
-        engine.bufferedRange = 0...120
-        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        // A track-switch reload holds the frame, and no beat follows, so it is still held
+        // when the user reaches for retry.
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         #expect(freezeCalls == 1)
         #expect(unfreezeCalls == 0)
 
@@ -4249,7 +3955,7 @@ struct PlayerViewModelTests {
         #expect(!clock.pendingSleeps.contains(SessionReporter.keepaliveInterval), "the keepalive outlived the failed load")
     }
 
-    @Test("a re-anchor whose re-resolve fails kills the encode once: the resumed stream reopens its session, and stop() closes it without a second kill")
+    @Test("a reload whose re-resolve fails kills the encode once: the resumed stream reopens its session, and stop() closes it without a second kill")
     func failedReanchorKillsTheEncodeOnce() async throws {
         let reporting = StubPlaybackReporting()
         let resolves = CallRecorder<Int>()
@@ -4259,7 +3965,7 @@ struct PlayerViewModelTests {
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
 
-        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        await vm.selectAudioTrack(try audioTrack(vm, 4))
         try #require(vm.phase == .playing)   // the fallback resumed the outgoing stream
         engines.live.push(.playing(605))
         try await engines.live.settle()
@@ -4270,7 +3976,7 @@ struct PlayerViewModelTests {
         #expect(killed == ["ps-1"])
         #expect(events == [
             .start(ticks: 600 * 10_000_000, isPaused: false, itemID: "movie-1"),
-            .stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1"),
+            .stopped(ticks: 600 * 10_000_000, itemID: "movie-1"),
             .start(ticks: 605 * 10_000_000, isPaused: false, itemID: "movie-1"),
             .stopped(ticks: 605 * 10_000_000, itemID: "movie-1")
         ])
@@ -4291,8 +3997,9 @@ struct PlayerViewModelTests {
         try await clock.waitForSleep(dueIn: SessionDiagnostics.deliveryProbeSchedule[0])
         clock.advance(by: .seconds(20))
 
+        let audio4 = try audioTrack(vm, 4)
         let seeking = try await startReload(gate, on: vm) {
-            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+            await vm.selectAudioTrack(audio4)
         }
         #expect(await reporting.stoppedEncodings == ["ps-1"])
         // The killed session's interval runs out inside the re-resolve, whose own 15 s deadline

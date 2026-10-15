@@ -17,22 +17,22 @@ struct PendingReloadTests {
                       languageCode: "eng", isForced: false)
     }
 
-    @Test("a fresh intent is empty, and any one dimension fills it")
-    func emptinessTracksEveryDimension() {
-        #expect(PendingReload().isEmpty)
+    @Test("only a track pick costs a reload — a position alone does not")
+    func onlyPicksChangeTracks() {
+        #expect(!PendingReload().changesTracks)
 
         var seek = PendingReload()
         seek.merge(position: CMTime(seconds: 30, preferredTimescale: 600))
-        #expect(!seek.isEmpty)
+        #expect(!seek.changesTracks)
 
         var pick = PendingReload()
         pick.merge(audio: Self.audio(4), previous: nil)
-        #expect(!pick.isEmpty)
+        #expect(pick.changesTracks)
 
         // Off is a real subtitle intent, not the absence of one.
         var off = PendingReload()
         off.merge(subtitle: nil, previous: Self.subtitle(1))
-        #expect(!off.isEmpty)
+        #expect(off.changesTracks)
     }
 
     @Test("the newest position wins", arguments: [[10.0, 20.0], [900.0, 30.0, 3_000.0]])

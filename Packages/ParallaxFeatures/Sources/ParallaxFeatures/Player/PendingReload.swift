@@ -7,8 +7,9 @@ import ParallaxPlayback
 /// audio pick and a subtitle pick can all land while one is in flight. They used to reach
 /// three different roads (`pendingReanchorTarget`, and two drop-don't-queue guards) and the
 /// loser was silently dropped. Here they are three ORTHOGONAL dimensions of one intent: the
-/// drain reloads once with whatever is standing, so any combination costs exactly one
-/// re-resolve.
+/// drain reloads once with whatever is standing, so any combination of picks costs exactly
+/// one re-resolve. A position never earns a reload of its own: it rides a pick's reload as
+/// the resume point, or lands as an in-stream seek once the last reload is up.
 ///
 /// Each dimension is newest-wins, because a pick the user has already replaced is not worth
 /// a reload. `previous` is the opposite: it is the selection to RESTORE if the reload never
@@ -40,9 +41,9 @@ struct PendingReload: Equatable {
     var audio: AudioChange?
     var subtitle: SubtitleChange?
 
-    /// Nothing standing — the drain's loop condition. Note an Off subtitle pick is NOT
-    /// empty: `subtitle` is set with a nil `pick`.
-    var isEmpty: Bool { position == nil && audio == nil && subtitle == nil }
+    /// A track pick is standing, which is the only thing that costs a reload — the drain's
+    /// loop condition. An Off subtitle pick counts: `subtitle` is set with a nil `pick`.
+    var changesTracks: Bool { audio != nil || subtitle != nil }
 
     mutating func merge(position target: CMTime) {
         position = target

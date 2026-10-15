@@ -164,12 +164,9 @@ struct SubtitleOverlayView: View {
             // frame for that window so a transient unknown time doesn't flash a stale
             // cue. AVKit always reports a valid time (0 at the start), so a genuine
             // 0:00 cue still shows.
-            // PROTECTED INVARIANT: matching absolute cue times against the engine clock
-            // is only valid because out-of-buffer transcode seeks re-anchor a fresh
-            // session instead of restarting ffmpeg in-stream (PlayerViewModel.seek(to:)).
-            // A mid-session restart shifts the item's established timeline mapping under
-            // these cues — the 2026-07-17 post-scrub desync. Don't add seek paths that
-            // bypass that gate.
+            // Matching absolute cue times against the engine clock holds only while an
+            // out-of-buffer transcode seek restarts ffmpeg frame-accurately under the
+            // item's timeline mapping (see PlayerViewModel.seek(to:)).
             if let now = vm.engine?.currentTime, now.isValid {
                 clockValid = true
                 if pushedCanvas != nil,

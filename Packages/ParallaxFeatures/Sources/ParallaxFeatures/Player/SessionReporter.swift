@@ -66,8 +66,8 @@ final class SessionReporter {
     }
 
     /// The reporting half of a live beat. `opensSession` — whether this beat may be the one
-    /// that reports PlaybackStart: every `.playing` beat may, and so may a re-anchor's first
-    /// live beat, which is a paused one whenever the user scrubbed while paused. Jellyfin
+    /// that reports PlaybackStart: every `.playing` beat may, and so may a reload's first
+    /// live beat, which is a paused one whenever the reload landed paused. Jellyfin
     /// expects a start before any progress, so a `.paused` beat that is neither (a remote/PiP
     /// pause landing during a cold start's buffering) still reports nothing.
     ///

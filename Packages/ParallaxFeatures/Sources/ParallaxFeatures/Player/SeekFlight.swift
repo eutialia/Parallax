@@ -28,7 +28,7 @@ nonisolated public struct SeekFlight: Equatable, Sendable {
     }
 
     /// Monotonic, and THE identity of this crossing. Every animation keys on it, so a duration
-    /// republish mid-hold (a re-anchor's `applyDuration`) moves the fractions without restarting
+    /// republish mid-hold (a reload's `applyDuration`) moves the fractions without restarting
     /// anything; and a superseded commit gets a fresh one, so the bar cannot keep painting a
     /// span the user has already abandoned. An integer compare, not a float tolerance.
     public let id: UInt64
