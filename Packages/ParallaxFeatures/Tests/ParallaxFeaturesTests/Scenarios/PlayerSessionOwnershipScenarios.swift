@@ -13,9 +13,6 @@ import ParallaxTestScaling
 @MainActor
 @Suite("Player session ownership", .scaledTimeLimit())
 struct PlayerSessionOwnershipScenarios {
-    private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-    private static let ref = makeSMBRef(nas)
-
     enum Route: String, CaseIterable, CustomTestStringConvertible {
         case avkitOverBridge, vlcOverBridge, jellyfin
         var testDescription: String { rawValue }
@@ -26,7 +23,7 @@ struct PlayerSessionOwnershipScenarios {
 
         var contents: Data {
             switch self {
-            case .vlcOverBridge: Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60))
+            case .vlcOverBridge: AppWorld.mkvBytes
             case .avkitOverBridge, .jellyfin:
                 ISOBMFFFixtures.mp4(traks: [
                     ISOBMFFFixtures.trak(stsdEntries: ["avc1"], handler: "vide"),
@@ -45,12 +42,8 @@ struct PlayerSessionOwnershipScenarios {
             world = try await AppWorld.launch(signedIn: [(den, "ana")])
             world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
         case .avkitOverBridge, .vlcOverBridge:
-            world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
-            world.nas.setFolder([SMBDirectoryEntry(name: route.fileName, isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
-            world.nas.setContents(route.contents)
-            let films = await world.openSMBFolder(Self.ref, share: "Media")
-            try await world.until { !films.isLoading }
-            films.play(try #require(films.media.first))
+            world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+            try await world.playSMBFilm(named: route.fileName, contents: route.contents)
         }
 
         weak var player: PlayerViewModel?

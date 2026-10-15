@@ -10,9 +10,6 @@ import ParallaxTestScaling
 @MainActor
 @Suite("SMB browse", .scaledTimeLimit())
 struct SMBBrowseScenarios {
-    private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-    private static let ref = makeSMBRef(nas)
-
     private static func file(_ name: String, modified: TimeInterval = 0) -> SMBDirectoryEntry {
         SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: Date(timeIntervalSince1970: modified))
     }
@@ -23,14 +20,14 @@ struct SMBBrowseScenarios {
 
     @Test("browsing a share lists folders above films in the chosen order, and opening a folder lists what's inside")
     func browsingListsFoldersAndFilesInOrder() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
             Self.folder("Shows"), Self.file("Heat.mkv", modified: 300), Self.folder("Movies"),
             Self.file("Alien.mp4", modified: 100), Self.file("notes.txt"), Self.file("Brazil.avi", modified: 200),
         ], share: "Media")
         world.nas.setFolder([Self.file("Ran.mkv"), Self.file("Ikiru.mkv")], share: "Media", path: "Movies")
 
-        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
         try await world.until { !root.isLoading }
         #expect(root.folders.map(\.name) == ["Movies", "Shows"])
         #expect(root.media.map(\.displayTitle) == ["Alien", "Brazil", "Heat"])
@@ -39,7 +36,7 @@ struct SMBBrowseScenarios {
         try await world.until { root.media.map(\.displayTitle) == ["Heat", "Brazil", "Alien"] }
         #expect(root.folders.map(\.name) == ["Movies", "Shows"])
 
-        let movies = await world.openSMBFolder(Self.ref, share: "Media", path: "Movies")
+        let movies = await world.openSMBFolder(AppWorld.smbRef, share: "Media", path: "Movies")
         try await world.until { !movies.isLoading }
         #expect(movies.folders.isEmpty)
         #expect(movies.media.map(\.displayTitle) == ["Ikiru", "Ran"])
@@ -47,12 +44,12 @@ struct SMBBrowseScenarios {
 
     @Test("a server whose saved password is gone shows the terminal credential state, and entering it again brings browsing back")
     func lostPasswordRecoversThroughPasswordEntry() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.acceptOnly(password: "hunter2")
         world.nas.setFolder([Self.folder("Movies")], share: "Media")
-        world.loseSMBPassword(of: Self.ref)
+        world.loseSMBPassword(of: AppWorld.smbRef)
 
-        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
         #expect(root.setup == .failed(
             message: "The saved password couldn't be read. Enter it again in this server's settings to reconnect.",
             isCredentialLoss: true
@@ -60,7 +57,7 @@ struct SMBBrowseScenarios {
         #expect(!root.isStalled)
 
         var recovered = false
-        let recovery = world.app.makeSMBPasswordRecovery(id: Self.ref.id, data: Self.nas) { recovered = true }
+        let recovery = world.app.makeSMBPasswordRecovery(id: AppWorld.smbRef.id, data: AppWorld.smbServer) { recovered = true }
         recovery.password = "hunter3"
         recovery.submit()
         try await world.until { !recovery.isVerifying }
@@ -78,9 +75,9 @@ struct SMBBrowseScenarios {
 
     @Test("a folder whose first appearance was cancelled before it opened lists on the next appearance")
     func cancelledFirstAppearanceOpensOnTheNext() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([Self.folder("Movies")], share: "Media")
-        let level = world.app.makeSMBBrowse(SMBBrowsePath(ref: Self.ref, share: "Media", path: ""))
+        let level = world.app.makeSMBBrowse(SMBBrowsePath(ref: AppWorld.smbRef, share: "Media", path: ""))
 
         let firstAppearance = Task { await level.appear() }
         firstAppearance.cancel()
@@ -95,10 +92,10 @@ struct SMBBrowseScenarios {
 
     @Test("tapping a film asks the player to play it, resolved to a bridged URL that carries no credentials")
     func tappingAFilmPlaysTheResolvedItem() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([Self.file("Heat.mkv"), Self.file("Heat.en.srt")], share: "Media", path: "Movies")
-        world.nas.setContents(Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60)))
-        let movies = await world.openSMBFolder(Self.ref, share: "Media", path: "Movies")
+        world.nas.setContents(AppWorld.mkvBytes)
+        let movies = await world.openSMBFolder(AppWorld.smbRef, share: "Media", path: "Movies")
         try await world.until { !movies.isLoading }
 
         movies.play(try #require(movies.media.first))
@@ -108,7 +105,7 @@ struct SMBBrowseScenarios {
             return
         }
         #expect(item.displayTitle == "Heat")
-        #expect(ref == Self.ref)
+        #expect(ref == AppWorld.smbRef)
         let resolved = try await world.app.services.smbPlaybackResolver.resolve(item, ref: ref)
         #expect(resolved.url.scheme == "http")
         #expect(resolved.url.lastPathComponent == "Heat.mkv")

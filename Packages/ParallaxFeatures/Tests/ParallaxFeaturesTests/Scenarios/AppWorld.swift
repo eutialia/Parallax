@@ -256,6 +256,16 @@ final class AppWorld {
         return level
     }
 
+    /// Lists one film with `contents` behind it on the share and taps it, leaving the
+    /// presenter holding its play request.
+    func playSMBFilm(named name: String = "Heat.mkv", contents: Data = AppWorld.mkvBytes) async throws {
+        nas.setFolder([SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
+        nas.setContents(contents)
+        let folder = await openSMBFolder(Self.smbRef, share: "Media")
+        try await until { !folder.isLoading }
+        folder.play(try #require(folder.media.first))
+    }
+
     // MARK: - Player
 
     /// The engine the player is driving: the last one the app built.
@@ -590,4 +600,10 @@ final class RecordingAudioSession: AudioSessionControlling {
 
     func activate() async throws { log.withLock { $0.append(.activate) } }
     func deactivate() async { log.withLock { $0.append(.deactivate) } }
+}
+
+extension AppWorld {
+    nonisolated static let smbServer = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
+    nonisolated static let smbRef = makeSMBRef(smbServer)
+    nonisolated static let mkvBytes = Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60))
 }
