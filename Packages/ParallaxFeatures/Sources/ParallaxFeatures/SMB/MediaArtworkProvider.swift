@@ -483,7 +483,7 @@ public actor MediaArtworkProvider {
             // Clean lifecycle → the pooled connection checks back in reusable.
             await reader.disconnect()
             let elapsed = elapsed() - start
-            guard let cached = await cache.store(heic, duration: nil, for: key) else {
+            guard let cached = await cache.store(heic, duration: nil, for: key, origin: .artwork) else {
                 // A write failure — not a decode failure, and the read itself worked. Fall through
                 // without poisoning and without blaming the link.
                 Self.log.info("thumbnail sidecar store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — frame-grab fallback")
@@ -542,7 +542,7 @@ public actor MediaArtworkProvider {
             let heic = try ImageTranscode.encodeHEIC(image)
             await reader.disconnect()
             let elapsed = elapsed() - start
-            guard let cached = await cache.store(heic, duration: nil, for: key) else {
+            guard let cached = await cache.store(heic, duration: nil, for: key, origin: .artwork) else {
                 Self.log.info("thumbnail coverart store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — frame-grab fallback")
                 return .fellThrough(transportFault: false)
             }

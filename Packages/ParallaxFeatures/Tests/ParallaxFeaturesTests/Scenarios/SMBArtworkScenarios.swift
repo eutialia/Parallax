@@ -182,6 +182,18 @@ struct SMBArtworkScenarios {
         #expect(await relaunched.existing(for: try Self.key(of: heat, ref: ref)) != nil)
     }
 
+    @Test("a seeded grey poster is served on first read without a frame grab")
+    func seededGreyPosterIsServed() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let seeding = SMBThumbnailCache(directory: world.thumbnailCacheDirectory)
+        _ = await seeding.store(TestFrames.mosaic, duration: nil, for: try Self.key(of: heat, ref: ref), origin: .artwork)
+
+        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+
+        #expect(Self.frame(of: artwork) == "mosaic")
+        #expect(world.thumbnailer.positions == [])
+    }
+
     private static func key(of item: Item, ref: SMBServerRef) throws -> SMBThumbnailKey {
         guard case .movie(let movie) = item, let (share, path) = SMBSourceResolver.shareAndPath(for: item) else {
             throw StateNotFound()
