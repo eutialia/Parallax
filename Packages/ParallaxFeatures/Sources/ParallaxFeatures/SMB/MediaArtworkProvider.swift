@@ -108,6 +108,11 @@ public actor MediaArtworkProvider {
     /// `SMBPlaybackResolver` gives its own probe.
     private static let probeTimeout: Duration = .seconds(4)
 
+    /// Where a frame-grab tries again after a grey frame (see `FrameQuality`). A different seek
+    /// target lands at a different distance from the previous keyframe. All stay under VLC's 0.3
+    /// default so the decode still opens at the target via `:start-time=`.
+    private static let greyRetryPositions: [Float] = [0.15, 0.25]
+
     /// Cap on the embedded cover-art extract WITHIN the generation budget. Metadata seeks are a
     /// handful of KiB when the SeekHead points cleanly; 6s is generous on LAN and still leaves the
     /// bulk of the 30s budget for a frame-grab fallback when the walk wedges over a bad link.
@@ -299,7 +304,7 @@ public actor MediaArtworkProvider {
         if captureFramePerformsIO, await connections.linkClass(ref.data.host) != .lan {
             return
         }
-        guard let data = await captureFrame() else { return }
+        guard let data = await captureFrame(), FrameQuality.isUsable(data) else { return }
         _ = await cache.store(data, duration: duration, for: key)
     }
 
@@ -666,7 +671,7 @@ public actor MediaArtworkProvider {
             // sometimes times out. So ask for an early frame DIRECTLY: 5% in is past a black leader but
             // shallow enough that the bytes are already streamed for the header. No vlcOptions: the
             // bridge URL needs none.
-            let frame: ThumbnailFrame
+            var frame: ThumbnailFrame
             if useAV {
                 do {
                     frame = try await avThumbnailer.frame(
@@ -695,6 +700,23 @@ public actor MediaArtworkProvider {
             } else {
                 frame = try await thumbnailer.frame(
                     from: bridgeURL, at: 0.05, timeout: deadline.remaining)
+            }
+            var retryPositions = Self.greyRetryPositions[...]
+            var usable = FrameQuality.isUsable(frame.data)
+            while !usable, deadline.remaining > .zero, let position = retryPositions.popFirst() {
+                // Retries always go through the VLC thumbnailer, whatever decoded the first frame.
+                if useAV { tier = "framegrab-av+vlc" }
+                Self.log.info("thumbnail grey frame: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] — retrying at \(position, privacy: .public)")
+                frame = try await thumbnailer.frame(
+                    from: bridgeURL, at: position, timeout: deadline.remaining)
+                usable = FrameQuality.isUsable(frame.data)
+            }
+            guard usable else {
+                // Never cached. The backoff bounds the retries; each one walks the ladder again.
+                await recordFailure(key)
+                Self.log.info("thumbnail REJECTED: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] (grey frame at every position)")
+                // Frames crossed the link up to three times: a content-level miss, which is a link success.
+                return FrameGrabAttempt(artwork: .none, outcome: .inconclusive, decodedAFrame: true)
             }
             let elapsed = elapsed() - start
             let stats = await session.stats
