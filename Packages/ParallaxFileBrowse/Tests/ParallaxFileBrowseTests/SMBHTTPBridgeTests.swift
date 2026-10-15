@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ParallaxTestScaling
 import ParallaxCore
+import ParallaxCoreTestSupport
 @testable import ParallaxFileBrowse
 
 /// `.serialized` caps what this suite costs at any one instant: run in parallel it stands up ~21

@@ -13,7 +13,7 @@ import Testing
 /// Exhaustion records an Issue at the CALL SITE (`#_sourceLocation`) rather than returning quietly:
 /// a silent give-up left the following `#expect` to report the failure, and where the poll was the
 /// whole assertion — "the plot is eventually freed" — nothing reported it at all.
-func untilSettled(
+public func untilSettled(
     _ condition: @Sendable () async -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async {
