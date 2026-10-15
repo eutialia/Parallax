@@ -259,6 +259,8 @@ struct DeviceProfileTranslatorTests {
         let condition = hevc?.conditions?.first { $0.property == .videoProfile }
         #expect(condition?.condition == .equalsAny)
         #expect(condition?.isRequired == false)
+        // Not Jellyfin's own "main 10" spelling: a match narrows hevc-profile to main10, the server
+        // labels its SDR re-encode variant hvc1.2, and the iPad picks it over the HDR copy.
         #expect(condition?.value == "main|main10")
     }
 
