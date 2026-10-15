@@ -519,7 +519,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+            subtitleFetch: { url in fetchedURLs.append(url); return PlayerFixtures.landingSidecar(for: url) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(100))
@@ -594,7 +594,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { _ in vtt }
+            subtitleFetch: { _ in .data(vtt) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(100))
@@ -672,7 +672,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+            subtitleFetch: { url in fetchedURLs.append(url); return PlayerFixtures.landingSidecar(for: url) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(100))
@@ -709,7 +709,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             resolve: { _, _, _, _ in resolveCalls += 1; return resolved },
             engine: engine,
-            subtitleFetch: { _ in Data() }
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(100))
@@ -747,7 +747,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+            subtitleFetch: { url in fetchedURLs.append(url); return PlayerFixtures.landingSidecar(for: url) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(100))
@@ -795,7 +795,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+            subtitleFetch: { url in fetchedURLs.append(url); return PlayerFixtures.landingSidecar(for: url) }
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -2373,7 +2373,7 @@ struct PlayerViewModelTests {
             clock: clock,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { _ in Data() },
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) },
             fetchDelivery: { _ in reencode }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -2433,7 +2433,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { _ in Data() },
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) },
             fetchDelivery: { _ in reencode }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -2505,7 +2505,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { _ in Data() }
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -2545,7 +2545,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { _ in Data() }
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) }
         )
         nonisolated(unsafe) var freezeCalls = 0
         nonisolated(unsafe) var unfreezeCalls = 0
@@ -2584,7 +2584,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { _ in Data() }
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) }
         )
         nonisolated(unsafe) var freezeCalls = 0
         nonisolated(unsafe) var unfreezeCalls = 0
@@ -2999,7 +2999,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             resolve: { _, _, _, _ in resolveCount += 1; return resolved },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return vtt }
+            subtitleFetch: { url in fetchedURLs.append(url); return .data(vtt) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let resolvesAfterStart = resolveCount
@@ -3044,7 +3044,7 @@ struct PlayerViewModelTests {
             // …but the server can't serve it verbatim (no writer for the format).
             subtitleFetch: { url in
                 fetchedURLs.append(url)
-                return url.path.hasSuffix(".ass") ? nil : vtt
+                return url.path.hasSuffix(".ass") ? .rejected : .data(vtt)
             }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3109,7 +3109,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { _ in script }
+            subtitleFetch: { _ in .data(script) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         vm.applySubtitleAppearance(converted: Self.convertedAppearance(.standard))
@@ -3152,7 +3152,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return srt }
+            subtitleFetch: { url in fetchedURLs.append(url); return .data(srt) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         // The engine's own inventory names the SAME embedded tracks; the server list
@@ -3190,7 +3190,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolveCount += 1; return resolved },
             engine: engine,
-            subtitleFetch: { _ in fetchCount += 1; return Data() }
+            subtitleFetch: { fetchCount += 1; return PlayerFixtures.landingSidecar(for: $0) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
@@ -3224,9 +3224,9 @@ struct PlayerViewModelTests {
             subtitleFetch: { url in
                 guard url.path.contains("/Subtitles/2/") else {
                     for await _ in gate.stream {}
-                    return nil
+                    return .rejected
                 }
-                return srt
+                return .data(srt)
             }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3262,7 +3262,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return vtt }
+            subtitleFetch: { url in fetchedURLs.append(url); return .data(vtt) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -3306,7 +3306,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { url in fetchedURL = url; return vtt }
+            subtitleFetch: { url in fetchedURL = url; return .data(vtt) }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -4053,7 +4053,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            subtitleFetch: { _ in Data() }
+            subtitleFetch: { PlayerFixtures.landingSidecar(for: $0) }
         )
         nonisolated(unsafe) var freezeCalls = 0
         nonisolated(unsafe) var unfreezeCalls = 0
@@ -4889,7 +4889,7 @@ struct PlayerViewModelTests {
                 engineFactory: { _, _ in engine },
                 audioSession: NoopAudioSession(),
                 nowPlaying: SpyNowPlaying(),
-                subtitleFetch: { _ in nil },
+                subtitleFetch: { _ in .rejected },
                 smbResumeStore: SMBTestFixtures.inertResumeStore(),
                 backfillThumbnail: backfillThumbnail,
                 subtitleSurface: { PlayerFixtures.phoneSurface },
@@ -4985,7 +4985,7 @@ struct PlayerViewModelTests {
                 engineFactory: { _, _ in engine },
                 audioSession: NoopAudioSession(),
                 nowPlaying: SpyNowPlaying(),
-                subtitleFetch: { _ in nil },
+                subtitleFetch: { _ in .rejected },
                 smbResumeStore: SMBTestFixtures.inertResumeStore(),
                 backfillThumbnail: recordingSink(into: recorder),
                 subtitleSurface: { PlayerFixtures.phoneSurface },
@@ -5264,7 +5264,7 @@ struct SidecarFetchIndicatorTests {
             subtitleFetch: { _ in
                 fetchEntered.continuation.yield()
                 try? await Task.sleep(for: .seconds(60))   // parked for the test's lifetime
-                return nil
+                return .rejected
             }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -5301,12 +5301,12 @@ struct SidecarFetchIndicatorTests {
                 guard url.path.contains("/Subtitles/2/") else {
                     var gate = secondGate.stream.makeAsyncIterator()
                     _ = await gate.next()
-                    return Data()
+                    return PlayerFixtures.landingSidecar(for: url)
                 }
                 slowEntered.continuation.yield()
                 try? await Task.sleep(for: .seconds(60))
                 if Task.isCancelled { slowCancelled.continuation.yield() }
-                return nil
+                return .rejected
             }
         )
         await vm.start(item: PlayerFixtures.movieDetail())

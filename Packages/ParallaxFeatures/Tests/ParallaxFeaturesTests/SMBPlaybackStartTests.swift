@@ -27,7 +27,7 @@ struct SMBPlaybackStartTests {
         reporting: StubPlaybackReporting,
         engine: FakePlaybackEngine,
         audioSession: any AudioSessionControlling = NoopAudioSession(),
-        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil },
+        subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome = { _ in .rejected },
         // NOT `SMBResumeStore.shared`: that one reads and writes the real `UserDefaults.standard`
         // domain, so every test here that drives a `.playing` beat was writing live app state.
         smbResumeStore: SMBResumeStore? = nil,
@@ -135,7 +135,7 @@ struct SMBPlaybackStartTests {
         let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n"
         let subURL = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
         let vm = makeVM(reporting: reporting, engine: engine, subtitleFetch: { url in
-            url == subURL ? Data(srt.utf8) : nil
+            url == subURL ? .data(Data(srt.utf8)) : .rejected
         })
 
         await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL], subtitleLabels: [0: "en"]))
@@ -324,7 +324,7 @@ struct SMBPlaybackStartTests {
             let subURL = URL(string: "file:///tmp/Example.en.srt")!
             let vm = makeVM(
                 reporting: reporting, engine: engine,
-                subtitleFetch: { $0 == subURL ? srt : nil },
+                subtitleFetch: { $0 == subURL ? .data(srt) : .rejected },
                 smbResumeStore: store
             )
 

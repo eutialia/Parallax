@@ -58,11 +58,14 @@ final class AppWorld {
     /// Launches the app the way a cold start does: `run()` and `bootstrap()`, as the app root's
     /// tasks call them. `signedIn` accounts and `savedSMB` servers (with their passwords) were saved
     /// by an earlier launch; `discovering` are the servers that answer a LAN discovery broadcast.
+    /// `subtitleFetchTimeout` is how long a subtitle request waits, in real time: a scenario about a
+    /// server that hasn't answered yet shortens it. Nothing else's timeout changes.
     static func launch(
         signedIn accounts: [(server: FakeJellyfinServer, user: String)] = [],
         savedSMB: [(server: SMBServerData, password: String)] = [],
         discovering lanServers: [FakeJellyfinServer] = [],
-        launchReveal: LaunchRevealCoverage = .home
+        launchReveal: LaunchRevealCoverage = .home,
+        subtitleFetchTimeout: Duration = AppEnvironment.defaultSubtitleFetchTimeout
     ) async throws -> AppWorld {
         let suiteName = "AppWorld-\(UUID().uuidString)"
         let storageDirectory = URL.temporaryDirectory.appending(path: suiteName, directoryHint: .isDirectory)
@@ -83,6 +86,7 @@ final class AppWorld {
             storageDirectory: storageDirectory,
             cachesDirectory: storageDirectory.appending(path: "Caches", directoryHint: .isDirectory),
             urlSessionConfiguration: StubHTTPTransport.configuration,
+            subtitleFetchTimeout: subtitleFetchTimeout,
             clock: clock,
             reachability: reachability,
             capabilityProbe: display,

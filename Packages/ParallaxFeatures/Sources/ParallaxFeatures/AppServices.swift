@@ -56,6 +56,7 @@ public struct AppServices {
     let engineSubtitleFonts: @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts
     /// Sidecar subtitle bytes travel over the same transport as every Jellyfin request.
     let urlSession: URLSession
+    let subtitleFetchTimeout: Duration
     public let smbDiscovery: SMBBonjourDiscovery
     /// Local resume positions for SMB playback: no server holds them.
     public let smbResumeStore: SMBResumeStore
@@ -158,6 +159,7 @@ public struct AppServices {
         prepareDisplay = environment.prepareDisplay
         engineSubtitleFonts = environment.engineSubtitleFonts
         urlSession = URLSession(configuration: environment.urlSessionConfiguration)
+        subtitleFetchTimeout = environment.subtitleFetchTimeout
 
         smbDiscovery = SMBBonjourDiscovery(browse: environment.browseSMBServices)
         let resumeStore = SMBResumeStore(defaults: defaults)

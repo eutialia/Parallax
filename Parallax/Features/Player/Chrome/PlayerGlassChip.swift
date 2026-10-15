@@ -26,6 +26,8 @@ struct PlayerGlassChip: View {
     /// seconds). The glyph slot spins, the label keeps naming the TARGET, and the button
     /// stays live: picking a different track from the menu cancels the pending fetch.
     var isLoading: Bool = false
+    /// Bumps when that work failed: the glyph wiggles once as it comes back from the spinner.
+    var failureTick: Int = 0
     let metrics: PlayerMetrics
     let accessibilityLabel: String
     let action: () -> Void
@@ -109,6 +111,7 @@ struct PlayerGlassChip: View {
         return HStack(spacing: metrics.chipGap) {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.chipIconSize, weight: .semibold))
+                .symbolEffect(.wiggle, value: failureTick)
                 .opacity(isLoading ? 0 : 1)
                 // The spinner rides in an OVERLAY, so it contributes no width: the chip
                 // measures the same loading or not and the row can't shift under a fetch.

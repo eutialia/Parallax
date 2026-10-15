@@ -142,8 +142,19 @@ public final class PlayerViewModel {
     /// The subtitle track whose sidecar is being fetched right now — the subtitle chip
     /// spins on its own glyph, and the menu row's check column with it.
     public var loadingSubtitleTrackID: TrackID? {
-        sidecar.sidecarFetchStreamIndex.map(TrackID.jellyfinStream)
+        sidecar.loadingStreamIndex.map(TrackID.jellyfinStream)
     }
+    /// Bumps once per sidecar fetch that failed and put the selection back; the subtitle chip
+    /// keys its failure animation and announcement on it.
+    public private(set) var subtitleFetchFailureTick = 0
+    /// The subtitle on screen: the last one that LANDED (a drawn sidecar, an engine track, a
+    /// burn-in, or Off), never an optimistic pick. A sidecar that doesn't land hands the selection
+    /// back to it, once (`sidecarFailed`).
+    private var landedSubtitle: SubtitleTrack?
+    /// The user's pick on its way to the screen. Its language is remembered when it lands; a pick
+    /// that doesn't land (a failed load, a newer pick, the session's end) never reaches the server.
+    private var pendingSubtitlePick: SubtitlePick?
+    private struct SubtitlePick { let track: SubtitleTrack? }
     public private(set) var currentPosition: CMTime = .zero
     public private(set) var currentDuration: CMTime = .zero
 
@@ -909,7 +920,7 @@ public final class PlayerViewModel {
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
             throw AppError.playback(.unsupportedFormat)
         },
-        subtitleFetch: @escaping @Sendable (URL) async -> Data?,
+        subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome,
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
         fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
@@ -946,6 +957,45 @@ public final class PlayerViewModel {
         )
         self.prepareDisplay = prepareDisplay
         self.accent = PlayerAccent(fetchArtwork: fetchArtwork)
+        sidecar.onFailed = { [weak self] streamIndex in
+            self?.sidecarFailed(streamIndex: streamIndex)
+        }
+        sidecar.onLanded = { [weak self] streamIndex in
+            // A stale index — the selection has moved on — landed nothing anyone asked for.
+            guard let self, let track = selectedSubtitleTrack, track.id.jellyfinStreamIndex == streamIndex
+            else { return }
+            subtitleLanded(track)
+        }
+    }
+
+    /// The one road by which a subtitle becomes what's on screen. Off, engine tracks and burn-ins
+    /// land as they're applied; a sidecar lands when its renderer goes up.
+    private func subtitleLanded(_ track: SubtitleTrack?) {
+        landedSubtitle = track
+        guard let pick = pendingSubtitlePick, pick.track == track else { return }
+        pendingSubtitlePick = nil
+        persistTrackSelection(.subtitles(languageCode: track?.languageCode))
+    }
+
+    /// The selected sidecar didn't land (a cold embedded track the server is still extracting
+    /// outlasts the fetch timeout, or its bytes don't parse), so the selection goes back to what
+    /// was on screen and the chip is told. The fallback is consumed: a restore that fails too
+    /// ends at Off instead of trying again.
+    private func sidecarFailed(streamIndex: Int) {
+        guard selectedSubtitleTrack?.id.jellyfinStreamIndex == streamIndex else { return }
+        pendingSubtitlePick = nil
+        // A burn-in is no fallback: the session a sidecar loads on no longer paints it.
+        let fallback = landedSubtitle.flatMap { $0.isBurnedIn ? nil : $0 }
+        landedSubtitle = nil
+        selectedSubtitleTrack = fallback
+        currentSubtitleStreamIndex = Self.subtitleIndex(of: fallback)
+        subtitleFetchFailureTick &+= 1
+        if let fallback, fallback.id.jellyfinStreamIndex == nil {
+            Task { [engine] in await engine?.setSubtitleTrack(fallback) }
+            subtitleLanded(fallback)
+        } else {
+            restoreSidecarSubtitle(fallback)
+        }
     }
 
     isolated deinit {
@@ -1864,6 +1914,8 @@ public final class PlayerViewModel {
         selectedSubtitleTrack = nil
         trackSwitchFailure = nil
         sidecar.endSession()
+        landedSubtitle = nil
+        pendingSubtitlePick = nil
         smbExternalSubtitleTracks = []
         currentPosition = .zero
         lastPosition = .zero
@@ -2015,6 +2067,11 @@ public final class PlayerViewModel {
     }
 
     public func selectSubtitleTrack(_ track: SubtitleTrack?) async {
+        // Whatever this pick fetches holds the indicator itself from here, so the view's arm
+        // ends with the pick on every road, including the ones that fetch nothing.
+        defer {
+            if let index = track?.id.jellyfinStreamIndex { sidecar.disarmFetchIndicator(streamIndex: index) }
+        }
         // Same cold-start-only rule as `selectAudioTrack`. Mid-reload picks are queued
         // instead: `resolved` still points at the outgoing session, so every branch that
         // would otherwise act NOW — a sidecar fetch, a bare Off — has to wait for the
@@ -2071,6 +2128,7 @@ public final class PlayerViewModel {
                 await queueSubtitleReload(to: track)
                 return
             }
+            pendingSubtitlePick = SubtitlePick(track: track)
             await activateSidecarSubtitle(track, index: index)
         } else if resolved?.method == .transcode {
             if leavingBurnIn {
@@ -2083,6 +2141,8 @@ public final class PlayerViewModel {
             selectedSubtitleTrack = nil
             currentSubtitleStreamIndex = -1
             sidecar.clearSidecarSubtitle()
+            pendingSubtitlePick = SubtitlePick(track: nil)
+            subtitleLanded(nil)
         } else {
             // Direct-play EMBEDDED track (or Off): the engine renders it. Clear any
             // client-side sidecar that a prior external selection left up.
@@ -2090,8 +2150,9 @@ public final class PlayerViewModel {
             await engine.setSubtitleTrack(track)
             sidecar.clearSidecarSubtitle()
             selectedSubtitleTrack = track
+            pendingSubtitlePick = SubtitlePick(track: track)
+            subtitleLanded(track)
         }
-        persistTrackSelection(.subtitles(languageCode: track?.languageCode))
     }
 
     /// Optimistically adopt a subtitle target and hand it to the reload queue — the one
@@ -2264,6 +2325,7 @@ public final class PlayerViewModel {
         await engine.setSubtitleTrack(track)
         sidecar.clearSidecarSubtitle()
         selectedSubtitleTrack = track
+        subtitleLanded(track)
     }
 
     /// The user's subtitle style, pushed by the overlay whenever preferences or the render
@@ -2656,15 +2718,18 @@ public final class PlayerViewModel {
         }
         // The whole point of queueing a text pick: the URLs it fetches belong to the session
         // this reload just opened, not the one it replaced.
+        pendingSubtitlePick = SubtitlePick(track: target)
         if let target, !target.isBurnedIn, let streamIndex = target.id.jellyfinStreamIndex {
             await activateSidecarSubtitle(target, index: streamIndex)
-        } else if target == nil {
+            return
+        }
+        if target == nil {
             // Off landing on a fresh session: the overlay was dropped optimistically when the
             // pick was queued, but a reload that superseded a text pick can have re-installed
             // one under it (`applyTranscodeDefaultSubtitle`, `populateTranscodeMenus`).
             sidecar.clearSidecarSubtitle()
         }
-        persistTrackSelection(.subtitles(languageCode: target?.languageCode))
+        subtitleLanded(target)
     }
 
     /// Re-resolve a fresh transcode session resuming at `resume`, reusing the engine so
@@ -3108,7 +3173,10 @@ public final class PlayerViewModel {
                     // a raw adoption would flash "SubRip" while the menu reads
                     // "English"), and only a row that exists can be ticked.
                     if let row = availableSubtitleTracks.first(where: { $0.id == engineID }) {
-                        if selectedSubtitleTrack == nil { selectedSubtitleTrack = row }
+                        if selectedSubtitleTrack == nil {
+                            selectedSubtitleTrack = row
+                            subtitleLanded(row)
+                        }
                     } else if resolved != nil {
                         // The engine auto-selected a stream WE draw client-side — its
                         // menu row carries a `.jellyfinStream` id, so no row matches.
@@ -3311,6 +3379,7 @@ public final class PlayerViewModel {
         subtitleRowIDsByStream = [:]
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
+        landedSubtitle = nil
         didApplyPreferredTracks = false
 
         let resumeAt = CMTimeGetSeconds(currentPosition) > 0 ? currentPosition : asset.startTime
@@ -3455,7 +3524,7 @@ extension PlayerViewModel {
             engineFactory: { _, _ in fatalError("preview VM never starts playback") },
             audioSession: PreviewAudioSession(),
             nowPlaying: PreviewNowPlaying(),
-            subtitleFetch: { _ in nil },
+            subtitleFetch: { _ in .rejected },
             smbResumeStore: SMBResumeStore(defaults: .standard),
             subtitleSurface: { SubtitleSurface(size: .zero, cueSize: 0) },
             engineSubtitleFonts: { _ in EngineSubtitleFonts(directory: SubtitleFontBundle.directoryURL, family: "") }

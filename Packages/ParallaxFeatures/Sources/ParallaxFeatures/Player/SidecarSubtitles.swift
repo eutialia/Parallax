@@ -29,15 +29,29 @@ final class SidecarSubtitles {
     /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
     /// without a network round-trip; production reads the authed sidecar URL over the
     /// app's transport.
-    private let subtitleFetch: @Sendable (URL) async -> Data?
+    private let subtitleFetch: @Sendable (URL) async -> SubtitleFetchOutcome
 
     private var subtitleFetchTask: Task<Void, Never>?
+
     /// The stream index the live `subtitleFetchTask` FETCH belongs to; nil once
-    /// its install lands (or when the slot holds a same-track style rebuild).
+    /// its install lands or fails (or when the slot holds a same-track style rebuild).
     /// Guards the rebuild path: cancelling another track's in-flight fetch to
     /// rebuild from the INSTALLED payload would reinstall the old track under
     /// the new selection, and nothing would ever fetch the picked one.
-    private(set) var sidecarFetchStreamIndex: Int?
+    private var sidecarFetchStreamIndex: Int?
+    /// The pick the view announced on the tap's own turn, before the async pick can start its
+    /// fetch. It lives only until that pick returns (`disarmFetchIndicator`), so it can never
+    /// outlast a pick that fetched nothing.
+    private var armedStreamIndex: Int?
+    /// The track the loading affordance spins on.
+    var loadingStreamIndex: Int? {
+        armedStreamIndex ?? sidecarFetchStreamIndex
+    }
+    /// Told when a load didn't land (no answer, an error, or bytes that don't parse), so the
+    /// player can put its selection back.
+    var onFailed: (@MainActor (_ streamIndex: Int) -> Void)?
+    /// Told when a load's renderer is installed and drawing: the pick has landed.
+    var onLanded: (@MainActor (_ streamIndex: Int) -> Void)?
     /// Last appearance pushed by the overlay (`applySubtitleAppearance`) — replayed
     /// onto every freshly loaded CONVERTED renderer so a track switch keeps the
     /// user's style. Its fontScale remaps the tuned per-device size onto the
@@ -83,7 +97,7 @@ final class SidecarSubtitles {
     /// that `loadSidecarSubtitle` fetches into the client renderer.
     var subtitleURLs: [Int: URL] = [:]
 
-    init(subtitleFetch: @escaping @Sendable (URL) async -> Data?) {
+    init(subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome) {
         self.subtitleFetch = subtitleFetch
     }
 
@@ -96,7 +110,12 @@ final class SidecarSubtitles {
     /// already in the session cache, whose pick is instant.
     func armFetchIndicator(streamIndex: Int, mediaSourceID: String?) {
         guard !sidecarIsCached(streamIndex: streamIndex, mediaSourceID: mediaSourceID) else { return }
-        sidecarFetchStreamIndex = streamIndex
+        armedStreamIndex = streamIndex
+    }
+
+    /// The pick `armFetchIndicator` announced has returned: whatever it started holds the slot itself.
+    func disarmFetchIndicator(streamIndex: Int) {
+        if armedStreamIndex == streamIndex { armedStreamIndex = nil }
     }
 
     /// Fetches the sidecar subtitle for `streamIndex` and loads it into a fresh
@@ -118,41 +137,54 @@ final class SidecarSubtitles {
             // Jellyfin stream — no second ffmpeg extraction. Skip the loading state
             // too; the only cost left is the libass parse.
             subtitleFetchTask = Task { [weak self] in
-                await self?.installSubtitleRenderer(
-                    data: cached.data, format: cached.format, languageCode: languageCode
-                )
+                await self?.land(cached.data, format: cached.format, languageCode: languageCode,
+                                 streamIndex: streamIndex)
             }
             return
         }
         // The first request is the only one the happy path pays: the verbatim
         // ass/ssa URL is what the renderer wants, and the VTT conversion below runs
-        // ONLY when it comes back empty. Re-picking never re-pays either — the
+        // ONLY when the server rejects it. Re-picking never re-pays either — the
         // bytes are cached above.
         sidecarFetchStreamIndex = streamIndex
         let fetch = subtitleFetch
         let requestedFormat = SubtitleSourceFormat(sidecarExtension: url.pathExtension)
         subtitleFetchTask = Task { [weak self] in
-            var data = await fetch(url)
+            var outcome = await fetch(url)
             var format = requestedFormat
-            // A verbatim ass/ssa request can fail server-side (the endpoint only has
+            // A verbatim ass/ssa request can be rejected server-side (the endpoint only has
             // writers for some formats, and an embedded SSA track extracts as .ass) —
             // degrade to the server's VTT conversion: authored styling is lost, but
-            // the track still shows instead of nothing.
-            if data == nil, format == .ass || format == .ssa,
+            // the track still shows instead of nothing. Not after `notReady`: the server is
+            // still extracting, and a second request would only wait on the same work.
+            if case .rejected = outcome, format == .ass || format == .ssa,
                let fallback = Self.vttFallbackURL(for: url) {
-                data = await fetch(fallback)
+                outcome = await fetch(fallback)
                 format = .vtt
             }
             if Task.isCancelled { return }
-            guard let data else {
-                // The CURRENT pick failed to fetch — leaving the previous track's
-                // bitmaps on screen would lie about what's selected.
-                self?.clearSidecarSubtitle()
+            guard case .data(let data) = outcome else {
+                self?.fail(streamIndex: streamIndex)
                 return
             }
             self?.sidecarCache[key] = (data, format)
-            await self?.installSubtitleRenderer(data: data, format: format, languageCode: languageCode)
+            await self?.land(data, format: format, languageCode: languageCode, streamIndex: streamIndex)
         }
+    }
+
+    private func land(_ data: Data, format: SubtitleSourceFormat, languageCode: String?, streamIndex: Int) async {
+        if await installSubtitleRenderer(data: data, format: format, languageCode: languageCode) {
+            onLanded?(streamIndex)
+        } else if !Task.isCancelled {
+            fail(streamIndex: streamIndex)
+        }
+    }
+
+    /// The CURRENT pick didn't land: leaving the previous track's bitmaps on screen would lie
+    /// about what's selected, so nothing stays drawn until the player restores what it can.
+    private func fail(streamIndex: Int) {
+        clearSidecarSubtitle()
+        onFailed?(streamIndex)
     }
 
     /// Same URL with the last path component's extension swapped to `vtt` — the
@@ -167,13 +199,13 @@ final class SidecarSubtitles {
 
     /// Builds + publishes the renderer for a fetched sidecar. A fresh renderer per
     /// load keeps track switches simple (no cross-track libass state); the overlay
-    /// detects the swap via `subtitleRendererGeneration`. Undecodable data clears
-    /// instead of throwing — same silent no-op the parse path always had, now logged.
+    /// detects the swap via `subtitleRendererGeneration`. Undecodable data is logged and
+    /// reported as `false`; the caller decides what a failed load undoes.
     private func installSubtitleRenderer(
         data: Data,
         format: SubtitleSourceFormat,
         languageCode: String?
-    ) async {
+    ) async -> Bool {
         // Built around the style's font family so the CJK plan resolves through
         // ITS cascade — serif must reach a Mincho face for Japanese lines, which
         // a sans-based plan would tag right past.
@@ -185,20 +217,20 @@ final class SidecarSubtitles {
             // A STALE failure must not tear down the newer pick's in-flight load —
             // `clearSidecarSubtitle` cancels `subtitleFetchTask`, which by now may
             // belong to the next selection. Same guard the success path has.
-            if Task.isCancelled { return }
+            if Task.isCancelled { return false }
             Log.playback.error("sidecar subtitle load failed (\(String(describing: format))): \(error)")
-            clearSidecarSubtitle()
-            return
+            return false
         }
         let info = SidecarSubtitleInfo(format: format, byteCount: data.count)
         await renderer.setStyleOverride(effectiveStyleOverride(for: format))
-        if Task.isCancelled { return }
+        if Task.isCancelled { return false }
         subtitleRenderer = renderer
         sidecarSubtitleInfo = info
         sidecarPayload = (data, format, languageCode)
         sidecarRendererFamily = family
         sidecarFetchStreamIndex = nil
         subtitleRendererGeneration &+= 1
+        return true
     }
 
     /// The family the sidecar renderer plans fonts around — the style override's
@@ -236,10 +268,11 @@ final class SidecarSubtitles {
            effectiveSidecarFontFamily(for: info.format) != sidecarRendererFamily {
             subtitleFetchTask?.cancel()
             subtitleFetchTask = Task { [weak self] in
-                await self?.installSubtitleRenderer(
+                guard await self?.installSubtitleRenderer(
                     data: payload.data, format: payload.format,
                     languageCode: payload.languageCode
-                )
+                ) == false, !Task.isCancelled else { return }
+                self?.clearSidecarSubtitle()
             }
             return
         }
