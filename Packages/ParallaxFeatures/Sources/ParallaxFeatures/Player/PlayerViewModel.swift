@@ -100,8 +100,8 @@ public final class PlayerViewModel {
     /// (`onFreezeReady`) like the PiP actions, and nil until a host mounts, so both are
     /// safe no-ops in tests. The VM freezes at the top of an engine-reusing reload
     /// (`reloadTranscode`) and unfreezes on the swapped-in session's first LIVE beat
-    /// (`.playing` OR `.paused`, since a paused scrub's re-anchor is re-paused and never
-    /// plays), keeping the last frame under the "Buffering" veil instead of the black
+    /// (`.playing` OR `.paused`, since a paused player's reload is re-paused and never
+    /// plays), keeping the last frame under the loading veil instead of the black
     /// `replaceCurrentItem` flush. `surfaceFrozen` gates the beat-side unfreeze so
     /// ordinary beats never call into the host.
     ///
@@ -195,7 +195,7 @@ public final class PlayerViewModel {
     /// off its OWN seek target, which the seek-settle contract calls display-safe — the picture
     /// is at (or running from) it. From that beat the published clock is honest again, so the
     /// concrete indicator follows it instead of claiming the video never moved for the whole
-    /// multi-second settle window a VLC re-anchor takes.
+    /// multi-second settle window a VLC reload takes.
     ///
     /// Two readers, and they have to be the same expression or the bar contradicts itself: the
     /// CONCRETE indicator draws this during a gesture (`PlayerProgressBar.init(vm:)`),
@@ -282,14 +282,10 @@ public final class PlayerViewModel {
         return "\(episodeNumber). \(itemTitle)"
     }
 
-    /// Caption for the loading scrim. A transcode audio switch reloads the
-    /// stream ("Switching audio · <track>"); a seek that re-anchors the transcode, or
-    /// a mid-stream stall over a live frame, reads "Buffering"; a first play is
-    /// "Loading video". The re-anchor seek reuses the track-switch reload (so it sets
-    /// `isMidSessionReload` too) — `isReanchoring` must win first, since a scrub is not
-    /// an audio switch.
+    /// Caption for the loading scrim. A transcode track switch reloads the
+    /// stream ("Switching audio · <track>"); a mid-stream stall over a live frame reads
+    /// "Buffering"; a first play is "Loading video".
     public var loaderTitle: String {
-        if isReanchoring { return LoaderCaption.buffering }
         if isMidSessionReload { return LoaderCaption.switchingAudio }
         if showsStallScrim { return LoaderCaption.buffering }
         return LoaderCaption.loadingVideo
@@ -302,7 +298,7 @@ public final class PlayerViewModel {
         public static let switchingAudio = "Switching audio"
         public static let loadingVideo = "Loading video"
     }
-    public var loaderSubtitle: String? { isMidSessionReload && !isReanchoring ? selectedAudioTrack?.displayName : nil }
+    public var loaderSubtitle: String? { isMidSessionReload ? selectedAudioTrack?.displayName : nil }
 
     /// Mid-stream stall (engine waiting for media while the user's intent is
     /// "playing") — drives the light buffering scrim over the frozen frame. See `StallDebounce`.
@@ -429,14 +425,14 @@ public final class PlayerViewModel {
     /// The engine session this view model is driving — `engine.load()`'s return value, and
     /// the ONE thing `handle` checks a beat against. An engine is reloadable in place, so the
     /// engine's own identity cannot answer "is this beat about the media I am playing now?":
-    /// a re-anchor keeps the engine, its stream and its buffered beats, and the outgoing
+    /// a reload keeps the engine, its stream and its buffered beats, and the outgoing
     /// media's callbacks stay live for seconds after the reload arms (a status KVO enqueued on
     /// the run loop, an inventory load mid-await, an armed watchdog).
     ///
     /// It replaces the flags this view model used to raise around a reload and a reroute. Those
     /// were read where a beat is CONSUMED while being cleared on the reload's own timeline, so a
     /// beat the dying session published while a flag was up could take its MainActor turn after
-    /// the flag came down and be honored as the live session's — on a re-anchor that beat is a
+    /// the flag came down and be honored as the live session's — on a reload that beat is a
     /// `.failed`, because the reload kills the outgoing encode job before the replacement
     /// resolves, and the error scrim lands over a reload that is buffering perfectly well.
     /// Nil before the first load and after a teardown: nothing to adopt.
@@ -447,13 +443,13 @@ public final class PlayerViewModel {
     /// start and the auto-advance veil hold no frame — then consumed by that session's first
     /// `.playing`/`.paused` beat.
     ///
-    /// That beat carries two decisions a re-anchor cannot make any other way. It takes the
-    /// cover down: the reload force-resumes and `commitSeek` re-pauses it, so a scrub
-    /// committed while PAUSED can go its whole life without ever publishing `.playing`, and the
+    /// That beat carries two decisions a reload cannot make any other way. It takes the
+    /// cover down: the reload force-resumes and the transport reconcile re-pauses it, so a
+    /// reload made while PAUSED can go its whole life without ever publishing `.playing`, and the
     /// heavy cover then sits over a rendered, healthy frame forever. And it opens the session
     /// for reporting: the reload's replacement session has reported nothing yet, so with only
     /// `.playing` allowed to report a start, Jellyfin never learned the new session at all — no
-    /// progress, no stop report, and the position the user re-anchored to was never persisted.
+    /// progress, no stop report, and the position the reload resumed at was never persisted.
     private var reloadAwaitingFirstLiveBeat = false
 
     /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
@@ -542,8 +538,8 @@ public final class PlayerViewModel {
     /// fractional start rounded down would land up to ~1s early, inside the prior chapter.
     public func seekToChapter(_ chapter: Chapter) async {
         let seconds = chapter.start.fractionalSeconds
-        // Transport-preserving: a paused chapter jump must stay paused across an
-        // out-of-buffer re-anchor.
+        // Transport-preserving: a paused chapter jump must stay paused, even when it lands
+        // in a reload's force-resume.
         await commitSeek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
@@ -741,7 +737,7 @@ public final class PlayerViewModel {
     /// reports an OBSERVED one. See `SeekHold` and `publish(position:provenance:)`. Nil
     /// whenever no seek is outstanding.
     ///
-    /// `private(set)` rather than private for the paths that DROP it — an abandoned re-anchor,
+    /// `private(set)` rather than private for the paths that DROP it — an abandoned reload,
     /// a failed phase, the watchdog. Every one of those is invisible from the published
     /// positions (a hold and no hold treat each provenance identically; only the window's END
     /// differs), so a test that cannot read it can only assert the defect one window later, if
@@ -749,7 +745,7 @@ public final class PlayerViewModel {
     private(set) var seekHold: SeekHold? {
         didSet {
             // The flight is the hold's meaning, so it cannot outlive it: every path that ends
-            // a hold — the engine landing, a failed phase, an abandoned re-anchor, the
+            // a hold — the engine landing, a failed phase, an abandoned reload, the
             // watchdog, `stop()` — ends the flight too, and a rule the property enforces
             // cannot be forgotten by the next one. A PREVIEW has no hold to end (the finger is
             // still down, nothing has been dispatched), so it is left alone; `beginExit()`
@@ -791,7 +787,7 @@ public final class PlayerViewModel {
     /// The one seek in flight — gesture, commit and landing — or nil when the bar is settled.
     /// See `SeekFlight`. Every transition is a method below; nothing else writes it.
     public private(set) var flight: SeekFlight?
-    /// Monotonic flight ids. Never reset: identity has to survive a re-anchor, a track switch
+    /// Monotonic flight ids. Never reset: identity has to survive a reload, a track switch
     /// and a `retry()` within one view model, or the bar could key an animation on a number it
     /// has already used.
     private var lastFlightID: UInt64 = 0
@@ -857,19 +853,6 @@ public final class PlayerViewModel {
     /// start, and a reload parked across that window would otherwise wake up and write the
     /// previous item's stream, picks and sidecar into the session that replaced it.
     private var sessionGeneration = 0
-    /// The reload under the scrim carries a seek target and NO audio pick, so it is a scrub
-    /// rather than a track switch — which is the whole difference the loader caption draws. A merged
-    /// seek+pick is the switch: the track name is what the user is waiting on, the position is
-    /// incidental.
-    private var isReanchoring: Bool { midSessionReload?.position != nil && midSessionReload?.audio == nil }
-    /// True once an out-of-buffer transcode seek went IN-STREAM — allowed only while no
-    /// sidecar subtitle renders. The server restarted ffmpeg under the item's established
-    /// timeline mapping, so the mapping may have shifted vs the frames (the 2026-07-17
-    /// desync class); harmless while nothing reads the player clock absolutely, but a
-    /// sidecar subtitle activated on a dirty timeline must re-anchor FIRST (see
-    /// `selectSubtitleTrack`). Cleared whenever a fresh AVPlayerItem re-derives the
-    /// mapping (`beginPlayback`) and on session reset.
-    private var transcodeTimelineDirty = false
 
     /// Set once per SMB session on its first `.playing` beat; gates `scheduleThumbnailBackfill()`
     /// so a resume-from-pause or post-stall `.playing` beat never schedules a second backfill task.
@@ -886,8 +869,8 @@ public final class PlayerViewModel {
     /// explicit picks when a track is switched on the transcode path.
     public typealias ResolveCall = @Sendable (ItemID, DeviceCapabilities, CMTime?, StreamSelection?) async throws -> ResolvedPlayback
 
-    /// Deadline for the re-resolve inside an engine-reusing reload (re-anchor / track
-    /// switch). That span shows the "Buffering" scrim with NO watchdog armed yet —
+    /// Deadline for the re-resolve inside an engine-reusing reload (a track switch). That
+    /// span shows the loading scrim with NO watchdog armed yet —
     /// `LoadWatchdog`/`StallWatchdog` only arm from `engine.play()` — so an unbounded
     /// resolve left the scrim up forever (tvOS field report, 2026-07-20).
     static let reloadResolveDeadline: Duration = .seconds(15)
@@ -1057,9 +1040,9 @@ public final class PlayerViewModel {
     /// Seek just past the active intro/recap and keep playing.
     public func skipActiveSegment() async {
         guard let segment = activeSegment, segment.kind.playerAction == .skip else { return }
-        // Same commit path as the chapter jump: transport-preserving (an out-of-buffer
-        // re-anchor's reload force-resumes) and it arms the seek hold, so the bar shows
-        // the skip destination instead of the intro's clock behind the reload scrim.
+        // Same commit path as the chapter jump: transport-preserving (a reload's
+        // force-resume is re-paused) and it arms the seek hold, so the bar shows the skip
+        // destination instead of the intro's clock while the seek re-buffers.
         await commitSeek(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
     }
 
@@ -1480,9 +1463,6 @@ public final class PlayerViewModel {
         let asset = assets.asset(for: resolved)
         try await loadAndPlay(asset, reusingEngine: reusingEngine, superseding: superseding,
                               generation: generation)
-        // The engine now plays a FRESH AVPlayerItem whose timeline mapping derives from
-        // this session's own segments — any prior in-stream restart shift is laundered.
-        transcodeTimelineDirty = false
     }
 
     /// Describes the explicit track picks for a re-resolve, or nil to let the server
@@ -1566,7 +1546,7 @@ public final class PlayerViewModel {
         let id = forcedEngine ?? EngineSelector.select(hints: asset.hints)
         // Who owns `desiredPlaying`. Only a FRESH session — the user opening an item —
         // makes starting playback the intent to play. A reload (`reusingEngine`: the
-        // scrub commit's re-anchor and the transcode track switch) and the reactive
+        // transcode track switch) and the reactive
         // AVKit->VLC reroute (`forcedEngine`) are mechanical: they resume because the
         // decoder has to be told to run, not because anyone asked. Those inherit the
         // standing intent, and the engine they come up on is commanded from it below —
@@ -1611,7 +1591,7 @@ public final class PlayerViewModel {
             subscribe(to: engine)
             nowPlaying.configure(
                 // Transport-preserving: a paused lock-screen scrub must not come back
-                // playing when an out-of-buffer target re-anchors.
+                // playing when it lands in a reload's force-resume.
                 onSeek: { [weak self] time in Task { await self?.commitSeek(to: time) } },
                 // Route through setPlaying (not engine.play/pause directly) so a remote command
                 // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
@@ -1631,10 +1611,10 @@ public final class PlayerViewModel {
             // has in flight is stamped with a session that no longer matches.
             let loadStart = elapsed()
             let opened = try await engine.load(asset)
-            // The re-anchor trail, and the only place it is emitted: a session transition is
+            // The reload trail, and the only place it is emitted: a session transition is
             // the one event every silent failure in this path has in common, and it is a fact
             // about the load rather than about whatever beat happens to arrive later. A
-            // re-anchor that never reloads never prints one — which is the whole point of
+            // seek that never reloads never prints one — which is the whole point of
             // putting the line here instead of at a beat that may or may not come.
             Log.playback.info(
                 """
@@ -1788,8 +1768,7 @@ public final class PlayerViewModel {
     /// Accumulates `seconds` into the pending seek burst and commits ONE `commitSeek` after the
     /// taps settle: per-tap seeks thrash a transcode and wedge the player. `settled` runs after
     /// that commit lands. A newer call restarts the quiet interval. It commits through
-    /// `commitSeek`, not a bare `seek`, so a re-encode transcode's force-resuming re-anchor
-    /// (#15845) can't un-pause a paused user.
+    /// `commitSeek`, not a bare `seek`, so the seek hold and the transport reconcile apply.
     public func scheduleSeek(to seconds: Double, settled: (@MainActor () async -> Void)? = nil) {
         seekCommits.schedule(seconds) { [self] target in
             await commitSeek(to: CMTime(seconds: target, preferredTimescale: 600))
@@ -1902,7 +1881,6 @@ public final class PlayerViewModel {
         pendingReload = PendingReload()
         reloadInFlight = nil
         midSessionReload = nil
-        transcodeTimelineDirty = false
         // The held frame is deliberately NOT released here: `stop()` always runs with the
         // exit fence armed, and the exit freeze is what the card slides out on. The one
         // caller that comes back (`resetForReplay`) releases it itself, after disarming
@@ -1921,8 +1899,8 @@ public final class PlayerViewModel {
         lastPosition = .zero
         // The session is over, so any outstanding scrub target is too — a `retry()`/
         // `resetForReplay` restart must publish the NEW stream's beats, not a dead
-        // seek's destination. (Deliberately NOT cleared in the transcode re-anchor
-        // reload: that window is exactly what the hold exists to cover.)
+        // seek's destination. (Deliberately NOT cleared in a transcode reload: that
+        // window is exactly what the hold exists to cover.)
         seekHold = nil
         flight = nil
         isHoldingStillFrame = false
@@ -2118,13 +2096,10 @@ public final class PlayerViewModel {
         // direct-play track carries a `.vlc`/`.avKitOption` id the engine renders; `nil`
         // is Off.
         if let track, let index = track.id.jellyfinStreamIndex {
-            // Two states force the reload-then-activate path, and both must wait for the
-            // fresh item before fetching: leaving an active burn-in (the outgoing session
-            // is still burning the image in, and its subtitleURLs are stale) and a DIRTY
-            // timeline (an in-stream out-of-buffer seek restarted ffmpeg under this
-            // item's mapping — permitted only while no sidecar rendered, see `seek(to:)`)
-            // that must be laundered BEFORE absolute-timestamp cues draw.
-            if leavingBurnIn || (resolved?.method == .transcode && transcodeTimelineDirty) {
+            // Leaving an active burn-in forces the reload-then-activate path, and must wait
+            // for the fresh item before fetching: the outgoing session is still burning the
+            // image in, and its subtitleURLs are stale.
+            if leavingBurnIn {
                 await queueSubtitleReload(to: track)
                 return
             }
@@ -2157,7 +2132,7 @@ public final class PlayerViewModel {
 
     /// Optimistically adopt a subtitle target and hand it to the reload queue — the one
     /// road for every subtitle pick that costs a re-resolve (into a burn-in, out of one,
-    /// off a dirty timeline, or made while a reload is already running). The verification,
+    /// or made while a reload is already running). The verification,
     /// the sidecar activation and the rollback all live in `settle`, so this is only the
     /// optimistic half.
     private func queueSubtitleReload(to target: SubtitleTrack?) async {
@@ -2362,97 +2337,33 @@ public final class PlayerViewModel {
     }
 
     /// The one seek entry point for every source: scrub, chapter jump, segment skip,
-    /// and the Now Playing remote. An OUT-OF-BUFFER seek on ANY transcode re-resolves
-    /// a fresh session at the target instead of seeking in-stream. An in-playlist seek
-    /// makes Jellyfin kill + restart ffmpeg at the requested segment, and the restarted
-    /// segments join an AVPlayerItem whose timeline mapping was established by the
-    /// ORIGINAL run — any mismatch between their internal timestamps and the declared
-    /// boundary shifts the playlist clock away from the frames, desyncing the
-    /// absolute-timestamped sidecar cue overlay. On a RE-ENCODE the miss is structural
-    /// (`-noaccurate_seek`, jellyfin#15845: fixed offset, every restarted seek). On a
-    /// VIDEO-COPY remux the keyframe-aligned playlist (MKV cue extraction) makes most
-    /// restarts land true, but the server's +0.5s seek pad and long-GOP keyframe gaps
-    /// still miss intermittently — variable offset up to a keyframe interval, mostly on
-    /// forward jumps (backward lands on already-produced segments). Device-confirmed
-    /// 2026-07-17: the former `isVideoDirect` exemption shipped exactly that desync.
-    /// A fresh AVPlayerItem re-derives its mapping from the new segments, so the
-    /// re-anchor is always clean — "dismiss + restart fixes it", automated.
+    /// and the Now Playing remote. Every seek goes in-stream, transcodes included: an
+    /// out-of-buffer transcode seek makes Jellyfin restart ffmpeg at the target segment
+    /// under the item's established timeline mapping. Jellyfin 12 restarts a video
+    /// re-encode frame-accurately (accurate_seek, with copied audio trimmed to the target),
+    /// so the sidecar cue overlay stays in sync. A VIDEO-COPY remux still starts at a
+    /// keyframe (+0.5s seek pad, long-GOP gaps), which shifted the mapping under the
+    /// sidecar cues on device on 2026-07-17 (b1adcaa4); if that recurs on Jellyfin 12,
+    /// a remux needs its out-of-buffer seeks rebuilt as a fresh session again.
     ///
-    /// In-buffer transcode seeks (segments already downloaded under the live mapping)
-    /// and every direct-play / VLC / SMB seek stay in-stream.
-    ///
-    /// SUBS-AWARE SCOPE (2026-07-20): the shifted mapping only has ONE absolute-clock
-    /// consumer — the sidecar cue overlay. Burn-ins ride the video and embedded tracks
-    /// ride the stream clock, so they shift WITH the frames and stay visually synced.
-    /// While no sidecar renders, an out-of-buffer seek therefore goes IN-STREAM (old
-    /// scrub feel: buffer preserved, plain re-buffer instead of the scrim) and marks
-    /// `transcodeTimelineDirty`; activating a sidecar later launders the timeline with
-    /// one re-anchor (`selectSubtitleTrack`). With a sidecar up, only the re-anchor
-    /// keeps its cues honest. Known accepted skew on a dirty timeline: reported
-    /// positions/resume points can be off by up to a keyframe interval — same as the
-    /// pre-re-anchor behavior.
-    ///
-    /// REVISIT when the server runs Jellyfin ≥ 12.0: it ships #15926 (drops
-    /// `-noaccurate_seek` for full re-encodes) and #16580 (trims copied audio to the
-    /// seek target), making RE-ENCODE mid-session restarts frame-accurate — those
-    /// could then seek in-stream even with a sidecar up. Neither PR touches the
-    /// VIDEO-COPY miss (+0.5s remux seek pad / long-GOP keyframe gaps vs the item's
-    /// established mapping), so remuxes keep the sidecar-gated re-anchor. Re-verify
-    /// with the 2026-07-17 witness protocol (Claude memory:
-    /// subtitle-scrub-desync-history) before relaxing anything.
-    /// Returns `true` when the seek RE-ANCHORED (rebuilt the transcode via
-    /// `reloadTranscode`, which force-resumes playback), `false` for an in-stream
-    /// `engine.seek`. `commitSeek` branches on it to restore a paused scrub's
-    /// pause after a force-resuming reload.
+    /// Returns `true` when the seek was handed to the reload in flight, `false` when it went
+    /// to the engine now.
     @discardableResult
     func seek(to target: CMTime) async -> Bool {
         // Exit fence: the engine is stopped and its audio is ended for good the moment the
         // player starts leaving, but the surfaces above are still mounted for the whole
-        // slide-out and a seek arriving now would re-anchor (or re-buffer) a dead session.
+        // slide-out and a seek arriving now would re-buffer a dead session.
         guard !isExiting else { return false }
         guard let engine else { return false }
-        // A reload already in flight makes both questions below meaningless — hand the
-        // newest target to the pending intent and let the drain honor it, which covers a
-        // TRACK switch too: the reload that comes out of one resumes wherever this says.
-        //
-        // Ahead of the METHOD guard, not just the buffer one: `beginPlayback` writes
-        // `resolved` before `loadAndPlay` suspends, so a reload the server answered with a
-        // direct-play stream (it is allowed to) reads `.directPlay` here while the engine is
-        // still mid-`load()` — and the in-stream branch would seek it there.
+        // A reload in flight takes the newest target: seeking the engine now would hit it
+        // mid-`load()`. The drain resumes a queued pick's reload there, or seeks the engine
+        // there in-stream once the last reload has landed.
         if isReloadingTranscode {
             pendingReload.merge(position: target)
             return true
         }
-        // Only a transcode can restart ffmpeg under the item's timeline mapping;
-        // direct play / VLC / SMB seek in-stream. Delivery (copy vs re-encode) does
-        // NOT exempt — see the doc above.
-        guard resolved?.method == .transcode else {
-            await engine.seek(to: target)
-            return false
-        }
-        if await engine.isBuffered(at: target) {
-            await engine.seek(to: target)
-            return false
-        }
-        // Out of buffer with no sidecar rendering: nothing reads the clock absolutely, so
-        // take the in-stream seek (buffer intact, ordinary re-buffer UX) and record the
-        // possibly-shifted mapping for the next sidecar activation to launder.
-        if !sidecarSubtitleActive {
-            transcodeTimelineDirty = true
-            await engine.seek(to: target)
-            return false
-        }
-        pendingReload.merge(position: target)
-        await drainPendingReloads()
-        return true
-    }
-
-    /// True while the client-rendered sidecar overlay owns subtitles — the one consumer
-    /// that matches ABSOLUTE cue timestamps against the player clock. (`jellyfinStream`
-    /// ids are exactly the tracks `SubtitleOverlayView` draws; burn-ins carry a stream
-    /// id only until the reload lands, but their pick always reloads anyway.)
-    private var sidecarSubtitleActive: Bool {
-        selectedSubtitleTrack.map { !$0.isBurnedIn && $0.id.jellyfinStreamIndex != nil } ?? false
+        await engine.seek(to: target)
+        return false
     }
 
     /// A gesture has taken the bar: the finger (or the tvOS swipe) is previewing `requested`
@@ -2493,18 +2404,17 @@ public final class PlayerViewModel {
 
     /// THE seek every surface commits through — both scrubs, the chapter list, the Now Playing
     /// remote, the tvOS reducer's `.seek` effect, VoiceOver. It is three things at once: the
-    /// flight's `.previewing` → `.committed` transition, the gated `seek(to:)` (so an
-    /// out-of-buffer transcode seek RE-ANCHORS instead of drifting the subtitle overlay), and
-    /// the reconciliation that leaves the engine's transport where the user's intent says.
+    /// flight's `.previewing` → `.committed` transition, `seek(to:)`, and the reconciliation
+    /// that leaves the engine's transport where the user's intent says.
     ///
     /// That last part reads `desiredPlaying` HERE, at the point of use, and takes no `resume`
     /// parameter — a snapshot taken when the gesture started carries no information the live
-    /// value doesn't, only staleness. The window is long: a re-anchor runs `reloadTranscode`,
-    /// and the seek stays suspended for seconds behind it or behind VLC's settle gate. Anything
-    /// that moves the intent inside it — a Select on the tvOS floor, a lock-screen or headphone
-    /// press, a terminal beat, a failed track switch falling back — owns the transport, and a
-    /// replayed snapshot would command the engine behind its back with nothing to self-heal it,
-    /// because every transport surface draws from intent.
+    /// value doesn't, only staleness. The window is long: a seek merged into a track-switch
+    /// reload waits out `reloadTranscode`, and any seek can sit for seconds behind VLC's
+    /// settle gate. Anything that moves the intent inside it — a Select on the tvOS floor, a
+    /// lock-screen or headphone press, a terminal beat, a failed track switch falling back —
+    /// owns the transport, and a replayed snapshot would command the engine behind its back
+    /// with nothing to self-heal it, because every transport surface draws from intent.
     ///
     /// Intent, never the `isPlaying` mirror: the mirror can read paused simply because a scrub
     /// or a seek fetch is in flight, and resuming off that stale read is the stuck-paused bug.
@@ -2515,13 +2425,13 @@ public final class PlayerViewModel {
         // unmuting and restarting the audio the exit just ended. The engine's own latch
         // refuses that play; this refuses to issue it at all.
         guard !isExiting else { return }
-        // Publish the destination BEFORE the seek. An out-of-buffer transcode
-        // commit re-anchors, and `performTranscodeReload` raises the `.loading` scrim and
-        // drops every engine beat for its whole duration — so without this the bar would
-        // keep reading the pre-scrub clock behind the scrim and snap back to A. The hold keeps
-        // it there — moving only with the engine's own `.projected` beats — until an
-        // `.observed` one lands: the seek-settle contract's "this is my clock, with no seek of
-        // mine outstanding" (`PositionProvenance`).
+        // Publish the destination BEFORE the seek. A commit merged into a reload waits behind
+        // `performTranscodeReload`, which raises the `.loading` scrim and drops every engine
+        // beat for its whole duration, and an in-stream seek re-buffers on stale beats — so
+        // without this the bar would keep reading the pre-scrub clock and snap back to A.
+        // The hold keeps it there — moving only with the engine's own `.projected` beats —
+        // until an `.observed` one lands: the seek-settle contract's "this is my clock, with
+        // no seek of mine outstanding" (`PositionProvenance`).
         // The `.previewing` → `.committed` transition, and the ONE place the chaining rule
         // lives: the new flight's A is `concretePosition` rather than `currentPosition`, so a
         // commit made while an earlier one is still unlanded inherits the position the picture
@@ -2534,19 +2444,19 @@ public final class PlayerViewModel {
         seekHold = SeekHold(target: target)
         lastPosition = target
         currentPosition = target
-        // Now Playing extrapolates its clock from the last write, and a re-anchor drops
-        // every engine beat for seconds — so without this the lock screen counts on from
-        // the PRE-scrub position while the in-app bar sits on the target.
+        // Now Playing extrapolates its clock from the last write, and a commit merged into a
+        // reload drops every engine beat for seconds — so without this the lock screen counts
+        // on from the PRE-scrub position while the in-app bar sits on the target.
         nowPlaying.update(position: target, duration: currentDuration,
                           isPlaying: desiredPlaying, title: itemTitle)
-        let didReanchor = await seek(to: target)
+        let mergedIntoReload = await seek(to: target)
         // The head of the trail. Everything downstream (the session transition, that session's
         // first live beat) is only readable against the commit that asked for it: where the
-        // user went, whether it rebuilt the transcode, and what transport it owes them back.
+        // user went, whether it waits on a reload, and what transport it owes them back.
         Log.playback.info(
             """
             scrub commit: target=\(CMTimeGetSeconds(target), format: .fixed(precision: 1), privacy: .public)s \
-            reanchor=\(didReanchor, privacy: .public) intent=\(self.desiredPlaying ? "play" : "pause", privacy: .public)
+            merged=\(mergedIntoReload, privacy: .public) intent=\(self.desiredPlaying ? "play" : "pause", privacy: .public)
             """
         )
         // Re-check: `beginExit()` is synchronous MainActor work and can land while this
@@ -2565,9 +2475,9 @@ public final class PlayerViewModel {
 
     /// Single-flight drain of `pendingReload`, and the ONLY caller of `reloadTranscode`:
     /// takes whatever is standing, reloads once around it, settles every dimension, then
-    /// loops to pick up anything that landed during the (multi-second) re-buffer. So a
-    /// scrub past the buffer settles on where the user stopped rather than the first
-    /// overshoot, and a pick made mid-reload costs exactly one more re-resolve.
+    /// loops to pick up any pick that landed during the (multi-second) re-buffer, so a pick
+    /// made mid-reload costs exactly one more re-resolve. A seek left standing with no pick
+    /// beside it is an in-stream seek on the session the last reload opened.
     ///
     /// Re-entrant callers return immediately: `reloadInFlight` says a loop is already
     /// running, and it will see what they merged.
@@ -2577,7 +2487,7 @@ public final class PlayerViewModel {
         // `sessionGeneration`); past that point it must write NOTHING — not a settle, not
         // the latch, not the flush.
         let generation = sessionGeneration
-        while !pendingReload.isEmpty {
+        while pendingReload.changesTracks {
             let intent = pendingReload
             pendingReload = PendingReload()
             reloadInFlight = intent
@@ -2615,6 +2525,11 @@ public final class PlayerViewModel {
                 break
             }
         }
+        if let target = pendingReload.position {
+            pendingReload = PendingReload()
+            await engine?.seek(to: target)
+            guard generation == sessionGeneration else { return }
+        }
         // The flush the mid-reload transport guard promises. `reloadInFlight` stays set
         // through `settle` — an engine deselect plus a sidecar fetch, seconds on a text sub —
         // and a pause pressed in that window is dropped by `commandTransport` with nothing to
@@ -2641,7 +2556,7 @@ public final class PlayerViewModel {
             // iterations lets the intermediate session's observed beat release the seek hold
             // and snap the bar back. Ride the dimensions forward instead — a newer pick of
             // the same dimension supersedes, everything else settles on the LAST reload.
-            guard pendingReload.isEmpty else {
+            guard !pendingReload.changesTracks else {
                 if pendingReload.audio == nil { pendingReload.audio = intent.audio }
                 if pendingReload.subtitle == nil { pendingReload.subtitle = intent.subtitle }
                 return
@@ -2853,7 +2768,7 @@ public final class PlayerViewModel {
             // opened.
             await reporter.reportStoppedIfNeeded(at: lastPosition)
             try checkStillActive(generation: generation)
-            // The boundary the whole re-anchor trail hangs off: after this line the outgoing
+            // The boundary the whole reload trail hangs off: after this line the outgoing
             // ffmpeg job is dead and nothing has replaced it yet. The play session is named in
             // clear so a later failure log can be read against the URL it carries — the abandoned
             // stream and its replacement differ by nothing else — and the elapsed time is what
@@ -2944,7 +2859,7 @@ public final class PlayerViewModel {
             await audioSession.deactivate()
             return .failed
         }
-        // The re-anchor never happened: this resumes the OLD stream at the OLD position, so
+        // The reload never happened: this resumes the OLD stream at the OLD position, so
         // a hold armed at the seek target now points at a place nothing will play. Left
         // standing it pins the bar there until the resumed stream's first beat, and leaves
         // `lastPosition` (the resume/PlaybackStopped point) on the target in the meantime —
@@ -3064,7 +2979,7 @@ public final class PlayerViewModel {
                 // `.projected` is display-safe by contract: the picture is at, or running from,
                 // this position. So the flight has stopped hiding a jump — the honest position
                 // is the published clock again, and the concrete indicator stops claiming the
-                // video sits at A for the whole (multi-second, on a VLC re-anchor) settle.
+                // video sits at A for the whole (multi-second, on a VLC reload) settle.
                 if flight?.stage == .committed { flight?.stage = .landing }
             }
         case .release:
@@ -3221,7 +3136,7 @@ public final class PlayerViewModel {
             }
         case .paused(let position, let duration, let buffered, let provenance):
             // A LIVE beat like `.playing`: a paused AVPlayer still renders the frame it seeked
-            // to, so this releases the held frame — and when it is the re-anchor's first live
+            // to, so this releases the held frame — and when it is the reload's first live
             // beat it also takes the cover down and opens the session for reporting. `.playing`
             // as a phase means "the surface is live", not "frames are moving": the transport
             // glyph reads `desiredPlaying`.

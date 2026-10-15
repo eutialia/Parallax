@@ -196,7 +196,7 @@ extension PlayerHUDState {
     /// the reducer leaving `.swipeScrub` and the commit landing — the preview IS a flight, so there
     /// is no frame in which the bar has nothing to show.
     ///
-    /// `loading` is the one exception: a re-anchor raises the frosted cover over the whole screen,
+    /// `loading` is the one exception: a reload raises the frosted cover over the whole screen,
     /// and the bar has no business painting on top of it for the several seconds that takes. The
     /// flight outlives the cover, so the bar comes back for the landing.
     nonisolated public func showsFloorScrubBar(landing: Bool, loading: Bool) -> Bool {

@@ -23,10 +23,7 @@ final class SessionDiagnostics {
     /// `TranscodingInfo` distinguishes them, once ffmpeg has started). Nil until the
     /// probe lands (and on direct-play / SMB, which never probe; and in Release,
     /// where the probe never arms). DEBUG-display only — it feeds the delivery debug
-    /// row. The seek gate deliberately IGNORES it: every out-of-buffer transcode
-    /// seek re-anchors regardless of delivery (see `PlayerViewModel.seek(to:)`); re-adding an
-    /// `isVideoDirect` exemption reintroduces the 2026-07-17 video-copy desync.
-    /// Cleared with the session; re-fetched after a track-switch rebuild, since a
+    /// row. Cleared with the session; re-fetched after a track-switch rebuild, since a
     /// burn-in subtitle flips `isVideoDirect` false.
     private(set) var transcodeDelivery: TranscodeDelivery?
     /// True once the delivery probe's schedule ran out with no result — the debug row
@@ -186,9 +183,9 @@ final class SessionDiagnostics {
     /// of the schedule gives up silently — the row just reads "no delivery info".
     /// Direct play has no job to probe. Clears any stale delivery up front so the
     /// window (and a re-probe after a track switch, where burn-in can flip the answer)
-    /// reads "probing…" until the fresh result lands. DEBUG-only: since the seek gate
-    /// stopped reading delivery, the `#if DEBUG` `DebugInfoOverlay` row is the sole
-    /// consumer — a Release build must not spend per-session network fetches on it.
+    /// reads "probing…" until the fresh result lands. DEBUG-only: the `#if DEBUG`
+    /// `DebugInfoOverlay` row is the sole consumer — a Release build must not spend
+    /// per-session network fetches on it.
     func startDeliveryProbe(for resolved: ResolvedPlayback) {
         #if DEBUG
         deliveryProbeTask?.cancel()

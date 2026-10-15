@@ -669,19 +669,16 @@ final class ResolveGate: Sendable {
     }
 }
 
-/// THE mid-session-reload fixture: a playing transcode VM parked at `seconds`, with a buffer
-/// that ends 60s later — so every seek past it takes the slow `reloadTranscode` road, which is
-/// the window the reload suites stand inside.
+/// THE mid-session-reload fixture: a playing transcode VM parked at `seconds`. A track pick on
+/// it takes the slow `reloadTranscode` road, which is the window the reload suites stand inside.
 ///
 /// Engines come from an `EngineLedger`, so each one carries the id the view model asked for and
 /// a reload that RE-BUILDS shows up as a second entry — the caller's `engine` local then still
 /// points at the outgoing engine, which is a legible failure instead of one instance replaying
 /// two sessions' calls.
 ///
-/// `sidecarUp` (default) leaves a client-rendered text sub selected: it is the one consumer
-/// that reads the player clock ABSOLUTELY, so with it up an out-of-buffer seek re-anchors
-/// instead of drifting in-stream. Turn it off for the cases that want the dirty-timeline road,
-/// or that must prove a sidecar URL is read from the session the reload opens.
+/// `sidecarUp` (default) leaves a client-rendered text sub selected. Turn it off for the cases
+/// that must prove a sidecar URL is read from the session the reload opens.
 @MainActor
 func makeReanchorVM(
     at seconds: Double,
@@ -713,7 +710,6 @@ func makeReanchorVM(
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
     }
-    engine.bufferedRange = 0...(seconds + 60)
     return (vm, engines)
 }
 

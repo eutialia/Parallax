@@ -1172,10 +1172,9 @@ struct PlayerControlsView: View {
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
                 scrubCommitTask?.cancel()
                 scrubCommitTask = Task {
-                    // Route through the gated commit seek so an out-of-buffer re-encode
-                    // transcode RE-ANCHORS (jellyfin#15845) instead of drifting subtitles; it
-                    // also reconciles the engine to whatever the transport intent is WHEN IT
-                    // LANDS, so a press during the drag or inside the seek wins.
+                    // Route through the commit seek: it reconciles the engine to whatever the
+                    // transport intent is WHEN IT LANDS, so a press during the drag or inside
+                    // the seek wins.
                     await vm.commitSeek(to: target)
                     // Release the moment the commit returns — `vm.currentPosition` already
                     // reads the target (the VM's `SeekHold` publishes it at commit time and

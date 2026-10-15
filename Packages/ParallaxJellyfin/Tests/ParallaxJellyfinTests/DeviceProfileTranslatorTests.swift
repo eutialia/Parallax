@@ -147,8 +147,7 @@ struct DeviceProfileTranslatorTests {
         #expect(trans.count == 1)
         #expect(trans.first?.protocol == .hls)
         // fMP4, not TS: AVPlayer only decodes HEVC in fMP4 (Apple HLS spec), so a TS
-        // transcode black-screens HEVC content (Swiftfin#1805). fMP4's cost is the
-        // `-noaccurate_seek` subtitle drift (jellyfin#15845), handled above the container.
+        // transcode black-screens HEVC content (Swiftfin#1805).
         #expect(trans.first?.container == "mp4")
         #expect(trans.first?.type == .video)
         // These CSVs are the wire spec the server parses — the translator holds them as literals

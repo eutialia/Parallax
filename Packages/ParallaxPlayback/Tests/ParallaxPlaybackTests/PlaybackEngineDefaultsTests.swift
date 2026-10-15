@@ -6,7 +6,7 @@ import ParallaxPlayback
 
 /// A `PlaybackEngine` implementing ONLY the required members, so the protocol's default
 /// implementations are the ones under test. Deliberately not `FakePlaybackEngine`: that
-/// double overrides `isBuffered`, which is exactly what would hide a broken default here.
+/// double overrides defaults, which is exactly what would hide a broken one here.
 private final class BarePlaybackEngine: PlaybackEngine {
     nonisolated let id: PlaybackEngineID = .avKit
     nonisolated let capabilities = PlaybackEngineCapabilities(
@@ -37,23 +37,10 @@ private final class BarePlaybackEngine: PlaybackEngine {
 }
 
 /// These defaults are what makes the protocol implementable by an engine that has no
-/// buffer query and no render-level silence — and each one has a caller that reads it,
+/// render-level silence — and each one has a caller that reads it,
 /// so a wrong default is a live bug, not dead code.
 @Suite("PlaybackEngine protocol defaults")
 struct PlaybackEngineDefaultsTests {
-
-    /// Default "always buffered" means the transcode seek path takes the in-stream
-    /// branch. Only the AVKit HLS engine — whose buffer can genuinely fall behind the
-    /// seek target — overrides it; every other engine must NOT trigger a re-resolve.
-    @Test("isBuffered defaults to true for every position", arguments: [
-        CMTime.zero,
-        CMTime(seconds: 60, preferredTimescale: 1000),
-        CMTime(seconds: 100_000, preferredTimescale: 1000),
-    ])
-    func isBufferedDefault(time: CMTime) async {
-        let buffered = await BarePlaybackEngine().isBuffered(at: time)
-        #expect(buffered)
-    }
 
     /// AVKit relies on this default: only the VLC engine overrides `silence()` with a
     /// render-level mute. If the default stopped pausing, closing an AVKit player would

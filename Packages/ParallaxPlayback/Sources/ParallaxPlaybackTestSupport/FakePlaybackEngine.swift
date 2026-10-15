@@ -113,10 +113,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     /// Set to make every `load` throw after recording — a failed stream load.
     public nonisolated(unsafe) var loadError: Error? = nil
-    /// Drives `isBuffered(at:)`. `nil` (default) → always buffered, matching the
-    /// protocol default so seek-path tests are unaffected. Set a range to make a
-    /// target outside it read as out-of-buffer (→ the transcode re-anchor path).
-    public nonisolated(unsafe) var bufferedRange: ClosedRange<Double>? = nil
 
     /// Returned by `captureFrame()`. `nil` (default) matches the protocol default; a test that
     /// wants to prove a captured frame flows through to a store sets this before pushing the
@@ -339,11 +335,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// has already cancelled — a cancelled `for await` never comes back for another element,
     /// so its processed count can never advance again.
     public var deliveredBeats: Int { barrier.deliveredCount() }
-
-    public func isBuffered(at time: CMTime) async -> Bool {
-        guard let bufferedRange else { return true }
-        return bufferedRange.contains(CMTimeGetSeconds(time))
-    }
 
     public func setAudioTrack(_ track: AudioTrack) async {
         recordedState.withLock {
