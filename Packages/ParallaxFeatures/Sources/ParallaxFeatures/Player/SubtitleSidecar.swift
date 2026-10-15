@@ -11,6 +11,16 @@ public struct SidecarSubtitleInfo: Equatable, Sendable {
     public let byteCount: Int
 }
 
+/// What one sidecar request brought back.
+public enum SubtitleFetchOutcome: Sendable {
+    case data(Data)
+    /// No answer in time: Jellyfin is still extracting the stream, and a later request is served
+    /// from its cache.
+    case notReady
+    /// An error status, an empty body, or no connection.
+    case rejected
+}
+
 extension SubtitleSourceFormat {
     /// Maps a sidecar file/URL extension to the renderer's ingest format. Anything
     /// unrecognized is treated as WebVTT — Jellyfin's conversion fallback serves

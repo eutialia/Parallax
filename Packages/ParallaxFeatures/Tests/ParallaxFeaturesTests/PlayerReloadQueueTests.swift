@@ -190,7 +190,7 @@ struct PlayerReloadQueueTests {
         // sidecar cache can't answer it and the URL really is re-read from the session.
         let (vm, _) = try await makeReanchorVM(
             at: 600,
-            subtitleFetch: { fetched.append($0); return Data() },
+            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
             sidecarUp: false,
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
@@ -489,7 +489,7 @@ struct PlayerReloadQueueTests {
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
-            subtitleFetch: { _ in Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8) },
+            subtitleFetch: { _ in .data(Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8)) },
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
                 // The rollback's own re-resolve fails, with the declined session still mounted.
@@ -524,7 +524,7 @@ struct PlayerReloadQueueTests {
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
-            subtitleFetch: { fetched.append($0); return Data() },
+            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
             sidecarUp: false,
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
@@ -558,7 +558,7 @@ struct PlayerReloadQueueTests {
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
-            subtitleFetch: { fetched.append($0); return Data() },
+            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
             sidecarUp: false,
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
@@ -793,7 +793,7 @@ struct PlayerReloadQueueTests {
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
-            subtitleFetch: { _ in Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8) },
+            subtitleFetch: { _ in .data(Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8)) },
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
                 await gate.wait()
@@ -893,7 +893,7 @@ struct PlayerReloadQueueTests {
             },
             engineFactory: { id, _ in engines.make(id) },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
-            subtitleFetch: { fetched.append($0); return Data() },
+            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
             fetchAdjacent: { _, _ in AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2")) }
         )
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
@@ -1025,7 +1025,7 @@ struct PlayerReloadQueueTests {
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
-            subtitleFetch: { _ in Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8) },
+            subtitleFetch: { _ in .data(Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8)) },
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
                 await gate.wait()

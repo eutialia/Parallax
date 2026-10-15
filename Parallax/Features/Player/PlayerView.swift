@@ -102,6 +102,12 @@ struct PlayerView: View {
         #endif
         .animation(.playerCoverFade, value: showsReloadCover)
         .animation(.playerCoverFade, value: viewModel?.trackSwitchFailure != nil)
+        // The chip's wiggle is silent and may be off screen; VoiceOver hears it here.
+        .onChange(of: viewModel?.subtitleFetchFailureTick) { old, new in
+            // Only a bump: a player arriving (nil → 0) or replacing another (n → 0) failed nothing.
+            guard let old, let new, new > old else { return }
+            AccessibilityNotification.Announcement("Subtitle isn't ready yet. Try again shortly.").post()
+        }
         // The debug panel presents from the HUD's chip row (PlayerControlsView)
         // like the track menus — a corner overlay was unreachable (and its
         // ScrollView unscrollable) by the tvOS focus engine.

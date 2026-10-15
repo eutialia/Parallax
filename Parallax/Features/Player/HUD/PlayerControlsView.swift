@@ -1006,7 +1006,8 @@ struct PlayerControlsView: View {
                             // The pick is applied optimistically, so the label already
                             // names the track being fetched — the chip spins on itself
                             // and stays tappable, so a second pick can cancel the first.
-                            isLoading: vm.loadingSubtitleTrackID != nil, metrics: m,
+                            isLoading: vm.loadingSubtitleTrackID != nil,
+                            failureTick: vm.subtitleFetchFailureTick, metrics: m,
                             accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")") {
                 openPanel(.subtitles)
             }

@@ -99,7 +99,7 @@ func makeTestDeviceProfileBuilder() -> DeviceProfileBuilder {
 
 /// THE `PlayerViewModel` builder for every player suite: the test device profile, a
 /// recording reporting stub, and one hook per injectable seam. Defaults mirror
-/// `PlayerViewModel.init`'s own EXCEPT `subtitleFetch`, which returns empty data instead
+/// `PlayerViewModel.init`'s own EXCEPT `subtitleFetch`, which serves a sidecar that lands instead
 /// of hitting the real `URLSession` — no test may reach the network. Module-scope so the
 /// NowPlaying sub-suite and the segment suite share the identical builder.
 @MainActor
@@ -113,7 +113,7 @@ func makePlayerVM(
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
         throw AppError.playback(.unsupportedFormat)
     },
-    subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
+    subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome = { PlayerFixtures.landingSidecar(for: $0) },
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
     fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
@@ -156,7 +156,7 @@ func makePlayerVM(
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
         throw AppError.playback(.unsupportedFormat)
     },
-    subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
+    subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome = { PlayerFixtures.landingSidecar(for: $0) },
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
     fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
@@ -206,6 +206,28 @@ func makePlayerVM(
 }
 
 enum PlayerFixtures {
+    /// Bytes that parse as `url`'s sidecar format: a fetch that lands. Empty bytes don't parse,
+    /// and a sidecar that doesn't parse is a pick that rolls back.
+    nonisolated static func landingSidecar(for url: URL) -> SubtitleFetchOutcome {
+        let body = switch url.pathExtension.lowercased() {
+        case "srt": "1\n00:00:01,000 --> 00:00:02,000\nline\n"
+        case "ass", "ssa": """
+            [Script Info]
+            ScriptType: v4.00+
+
+            [V4+ Styles]
+            Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+            Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,40,40,36,1
+
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,line
+            """
+        default: "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n"
+        }
+        return .data(Data(body.utf8))
+    }
+
     /// The surface an iPhone player assumes before its geometry lands: 852×393 landscape, and
     /// the phone's 20pt cue.
     static let phoneSurface = SubtitleSurface(size: CGSize(width: 852, height: 393), cueSize: 20)
@@ -666,7 +688,7 @@ func makeReanchorVM(
     reporting: StubPlaybackReporting = StubPlaybackReporting(),
     nowPlaying: any NowPlayingUpdating = SpyNowPlaying(),
     clock: any Clock<Duration> = TestClock(),
-    subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
+    subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome = { PlayerFixtures.landingSidecar(for: $0) },
     rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
     sidecarUp: Bool = true,
     resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in

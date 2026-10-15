@@ -43,6 +43,9 @@ public final class FakeJellyfinServer: Observable, Sendable {
     public struct SubtitleTrack: Sendable {
         public enum Content: Sendable {
             case srt(String)
+            /// An SRT the server serves as bytes that aren't UTF-8 text: it answers, and nothing
+            /// can draw what it sent.
+            case garbledSRT
             case image
         }
 
@@ -178,6 +181,26 @@ public final class FakeJellyfinServer: Observable, Sendable {
     public func user(_ name: String, password: String = "") -> Self {
         state.withLock { $0.users.append(User(id: "user-\(name)", name: name, password: password)) }
         return self
+    }
+
+    /// `username` prefers subtitles in `language`, always shown, as an earlier remembered pick leaves it.
+    @discardableResult
+    public func subtitleLanguage(_ language: String, for username: String) -> Self {
+        state.withLock { state in
+            let id = state.users.first { $0.name == username }!.id
+            var configuration = state.configurations[id] ?? UserConfiguration()
+            configuration.subtitleLanguagePreference = language
+            configuration.subtitleMode = .always
+            state.configurations[id] = configuration
+        }
+        return self
+    }
+
+    /// `username`'s subtitle language preference as the server stores it.
+    public func subtitleLanguage(of username: String) -> String? {
+        state.withLock { state in
+            state.users.first { $0.name == username }.flatMap { state.configurations[$0.id]?.subtitleLanguagePreference }
+        }
     }
 
     /// The Jellyfin version the server reports, 12.2.0 unless set. Settable mid-test, as a server
@@ -339,6 +362,8 @@ public final class FakeJellyfinServer: Observable, Sendable {
         case playbackStops
         /// Only the transcode kills (`/Videos/ActiveEncodings`).
         case encodingKills
+        /// Only the subtitle streams, as a server still extracting them answers.
+        case subtitles
     }
 
     /// Leaves the chosen requests from now on unanswered until `releaseResponses()`, which answers
@@ -353,6 +378,8 @@ public final class FakeJellyfinServer: Observable, Sendable {
             transport.holdReplies { $0 == Self.path(of: Paths.reportPlaybackStopped()) }
         case .encodingKills:
             transport.holdReplies { $0 == Self.path(of: Paths.stopEncodingProcess(deviceID: "", playSessionID: "")) }
+        case .subtitles:
+            transport.holdReplies { $0.contains("/Subtitles/") }
         }
     }
 
@@ -716,7 +743,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
                             isDefault: index == 1, isExternal: false, language: track.language, type: .audio)
             }
             + item.subtitles.enumerated().map { offset, track in
-                let isText = if case .srt = track.content { true } else { false }
+                let isText = if case .image = track.content { false } else { true }
                 return MediaStream(
                     codec: isText ? "subrip" : "pgssub",
                     deliveryMethod: isText ? .external : .encode,
@@ -799,8 +826,14 @@ public final class FakeJellyfinServer: Observable, Sendable {
             let offset = streamIndex - 1 - item.audio.count
             return item.subtitles.indices.contains(offset) ? item.subtitles[offset].content : nil
         }
-        guard case .srt(let srt)? = content else { return StubHTTPTransport.Reply(status: 404) }
-        return StubHTTPTransport.Reply(headers: ["Content-Type": "text/plain"], body: Data(srt.utf8))
+        switch content {
+        case .srt(let srt)?:
+            return StubHTTPTransport.Reply(headers: ["Content-Type": "text/plain"], body: Data(srt.utf8))
+        case .garbledSRT?:
+            return StubHTTPTransport.Reply(headers: ["Content-Type": "text/plain"], body: Data([0xC3, 0x28, 0xA0, 0xA1]))
+        case .image?, nil:
+            return StubHTTPTransport.Reply(status: 404)
+        }
     }
 
     // MARK: - Encoding
