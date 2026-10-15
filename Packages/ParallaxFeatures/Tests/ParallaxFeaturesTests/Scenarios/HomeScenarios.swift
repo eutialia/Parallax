@@ -23,6 +23,27 @@ struct HomeScenarios {
         #expect(world.nextUp == ["Andor S1E2", "Severance S1E2"])
     }
 
+    @Test("a Continue Watching card plays the episode it shows, with two of one series in progress and one of them also up next")
+    func continueWatchingCardsPlayWhatTheyShow() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
+            .series("lain", in: "Shows", episodes: [3]).series("Kino", in: "Shows", episodes: [2])
+            .finish("lain S1E1").watch("Kino S1E1", minutes: 32)
+            .watch("lain S1E2", minutes: 35).watch("lain S1E3", minutes: 33)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.openHome()
+        #expect(world.continueWatching == ["lain S1E3", "lain S1E2", "Kino S1E1"])
+        #expect(world.nextUp == ["lain S1E2"])
+
+        let session = try await world.session(on: den)
+        let cards = try #require(world.app.home?.continueWatching)
+        #expect(Set(cards.map(\.id)).count == cards.count)
+        #expect(cards.map { MediaTileTap.resolve($0.item, on: session, moviePlays: true) }
+            == ["lain S1E3", "lain S1E2", "Kino S1E1"].map { .play(ItemID(rawValue: den.itemID(of: $0))) })
+
+        try await world.tap(cards[1])
+        #expect(world.playRequest?.item == den.itemID(of: "lain S1E2"))
+    }
+
     @Test("on Apple TV the launch reveal waits for the library list as well as Home, and opens once both have settled")
     func launchWaitsForHomeAndLibraries() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
@@ -186,5 +207,18 @@ struct HomeScenarios {
 
         try await world.until { world.continueWatching == ["Arrival", "Heat"] }
         #expect(world.minutesWatched("Arrival") == 55)
+    }
+}
+
+private extension AppWorld {
+    /// Taps a Home shelf card, as its `ItemNavigator` does, and opens the player it asks for.
+    func tap(_ card: SourcedItem) async throws {
+        let session = try #require(card.jellyfinSession)
+        guard case .play(let itemID) = MediaTileTap.resolve(card.item, on: session, moviePlays: true) else {
+            Issue.record("a Home card opened a detail instead of playing")
+            return
+        }
+        app.playback.play(itemID, in: session)
+        try await openPlayer()
     }
 }
