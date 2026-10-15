@@ -10,9 +10,6 @@ import ParallaxTestScaling
 @MainActor
 @Suite("Offline recovery and foreground return", .scaledTimeLimit())
 struct RecoveryScenarios {
-    private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-    private static let ref = makeSMBRef(nas)
-
     private struct NASUnreachable: Error {}
 
     private static func file(_ name: String) -> SMBDirectoryEntry {
@@ -99,9 +96,9 @@ struct RecoveryScenarios {
 
     @Test("returning from the background to an SMB folder flushes the idle connections and lists the folder again")
     func smbFolderRelistsAfterReturn() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([Self.file("Alien.mp4")], share: "Media")
-        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
         try await world.until { root.media.map { $0.displayTitle } == ["Alien"] }
         let idleBefore = world.nas.connectedIDs
 
@@ -117,9 +114,9 @@ struct RecoveryScenarios {
 
     @Test("a cold launch's first activation is not a return from the background: the stalled share root is listed once")
     func coldLaunchActivationDoesNotRelist() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setListingOutcome(.fails(NASUnreachable()))
-        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
         try await world.until { root.isStalled }
 
         // Both re-list flows key on this edge, and it moves synchronously: zero means neither runs.
@@ -137,11 +134,11 @@ struct RecoveryScenarios {
 
     @Test("returning from the background lists a stalled SMB folder once, and re-lists the healthy one beside it")
     func stalledFolderIsListedOnceOnReturn() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([Self.file("Alien.mp4")], share: "Media")
         world.nas.setListingOutcome(.fails(NASUnreachable()))
-        let root = await world.openSMBFolder(Self.ref, share: "Media")
-        let movies = await world.openSMBFolder(Self.ref, share: "Media", path: "Movies")
+        let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
+        let movies = await world.openSMBFolder(AppWorld.smbRef, share: "Media", path: "Movies")
         try await world.until { root.media.map { $0.displayTitle } == ["Alien"] && movies.isStalled }
         world.settleLaunch()
 

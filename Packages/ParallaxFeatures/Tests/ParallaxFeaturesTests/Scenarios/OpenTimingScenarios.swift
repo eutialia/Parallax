@@ -12,9 +12,8 @@ import ParallaxTestScaling
 struct OpenTimingScenarios {
     @Test("an SMB film's open is recorded once, when its first frame plays, with no title or host in it")
     func smbOpenIsLoggedAtFirstPlaying() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(smbNAS, "hunter2")])
-        let folder = await world.smbFilmFolder()
-        folder.play(try #require(folder.media.first))
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+        try await world.playSMBFilm()
 
         let seen = await world.nas.operationGate.arrivalCount
         await world.nas.operationGate.close()
@@ -74,9 +73,8 @@ struct OpenTimingScenarios {
 
     @Test("a failed open leaves no record, and the retry's record is timed from the retry")
     func retryRecordsFromTheRetry() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(smbNAS, "hunter2")])
-        let folder = await world.smbFilmFolder()
-        folder.play(try #require(folder.media.first))
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+        try await world.playSMBFilm()
         let player = try await world.openPlayer()
         world.clock.advance(by: .seconds(30))
         world.streamFailsToDecode()
@@ -95,9 +93,8 @@ struct OpenTimingScenarios {
 
     @Test("an open that fails and is never retried leaves no record")
     func failedOpenLeavesNoRecord() async throws {
-        let world = try await AppWorld.launch(savedSMB: [(smbNAS, "hunter2")])
-        let folder = await world.smbFilmFolder()
-        folder.play(try #require(folder.media.first))
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+        try await world.playSMBFilm()
         let player = try await world.openPlayer()
 
         world.streamFailsToDecode()
@@ -109,20 +106,8 @@ struct OpenTimingScenarios {
 
 }
 
-private extension AppWorld {
-    func smbFilmFolder() async -> SMBBrowseViewModel {
-        nas.setFolder([SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
-        nas.setContents(Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60)))
-        let folder = await openSMBFolder(makeSMBRef(smbNAS), share: "Media")
-        try? await until { !folder.isLoading }
-        return folder
-    }
-}
-
 private extension PlayerViewModel {
     var hasFailed: Bool {
         if case .failed = phase { true } else { false }
     }
 }
-
-private let smbNAS = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])

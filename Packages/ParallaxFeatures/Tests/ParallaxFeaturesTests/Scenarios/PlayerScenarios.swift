@@ -455,14 +455,8 @@ struct PlayerScenarios {
 
     @Test("an SMB film's position survives a relaunch, and playing it again resumes there")
     func smbResumeSurvivesARelaunch() async throws {
-        let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-        let ref = makeSMBRef(nas)
-        let world = try await AppWorld.launch(savedSMB: [(nas, "hunter2")])
-        world.nas.setFolder([SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
-        world.nas.setContents(Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60)))
-        let films = await world.openSMBFolder(ref, share: "Media")
-        try await world.until { !films.isLoading }
-        films.play(try #require(films.media.first))
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+        try await world.playSMBFilm()
         let player = try await world.openPlayer()
         #expect(player.title == "Heat")
         #expect(world.engine.loadedAssets.last?.startTime == nil)
@@ -471,9 +465,7 @@ struct PlayerScenarios {
         await world.closePlayer()
 
         await world.relaunch()
-        let filmsAgain = await world.openSMBFolder(ref, share: "Media")
-        try await world.until { !filmsAgain.isLoading }
-        filmsAgain.play(try #require(filmsAgain.media.first))
+        try await world.playSMBFilm()
         try await world.openPlayer()
 
         #expect(world.engine.loadedAssets.last?.startTime == .seconds(1800))
