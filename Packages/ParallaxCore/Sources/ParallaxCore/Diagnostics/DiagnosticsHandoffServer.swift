@@ -60,9 +60,13 @@ public actor DiagnosticsHandoffServer {
     /// happen on a cooperative pool thread. Same discipline as `SMBHTTPBridge`.
     private let queue = DispatchQueue(label: "com.lhdev.parallax.diagnostics-handoff")
 
-    private var listener: NWListener?
+    private(set) var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var isStopped = false
+    private var stopWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Package-internal: lets tests wait on connection teardown instead of sleeping.
+    var liveConnectionCount: Int { connections.count }
 
     /// - Parameters:
     ///   - payload: the whole export, read into memory before the server starts. Roughly
@@ -96,14 +100,19 @@ public actor DiagnosticsHandoffServer {
         }
 
         // Single-shot readiness: state callbacks are serialised on `queue`, but a `.failed` after a
-        // `.ready` would otherwise resume the continuation twice.
+        // `.ready` would otherwise resume the continuation twice. Past that, a dead listener means
+        // nothing serves the advertised URL, so the server stops itself.
         let ready = ReadyLatch()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            listener.stateUpdateHandler = { state in
+            listener.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready: ready.once { continuation.resume() }
-                case .failed(let error): ready.once { continuation.resume(throwing: error) }
-                case .cancelled: ready.once { continuation.resume(throwing: HandoffError.stopped) }
+                case .failed(let error):
+                    ready.once { continuation.resume(throwing: error) }
+                    Task { await self?.stop() }
+                case .cancelled:
+                    ready.once { continuation.resume(throwing: HandoffError.stopped) }
+                    Task { await self?.stop() }
                 default: break
                 }
             }
@@ -120,11 +129,21 @@ public actor DiagnosticsHandoffServer {
         return Endpoint(url: url, hostAndPort: hostAndPort)
     }
 
+    /// Returns once the server has stopped, whether `stop()` was called or the listener died under
+    /// it. The screen awaits this to stop showing a URL nothing serves.
+    public func waitUntilStopped() async {
+        if isStopped { return }
+        await withCheckedContinuation { stopWaiters.append($0) }
+    }
+
     /// Idempotent teardown. The screen calls this on disappear, so the server's lifetime is the
     /// lifetime of the URL being on screen.
     public func stop() async {
         guard !isStopped else { return }
         isStopped = true
+        let waiters = stopWaiters
+        stopWaiters.removeAll()
+        waiters.forEach { $0.resume() }
         let listener = self.listener
         let connections = Array(self.connections.values)
         self.listener = nil
@@ -143,6 +162,11 @@ public actor DiagnosticsHandoffServer {
             return
         }
         connections[ObjectIdentifier(connection)] = connection
+        connection.stateUpdateHandler = { state in
+            // A failed connection parks its pending completions until cancelled, and the serve
+            // task awaiting them holds the actor.
+            if case .failed = state { connection.cancel() }
+        }
         Task {
             let queue = self.queue
             await self.offQueue { connection.start(queue: queue) }

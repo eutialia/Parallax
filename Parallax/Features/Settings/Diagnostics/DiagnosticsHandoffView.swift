@@ -99,6 +99,10 @@ struct DiagnosticsHandoffView: View {
                 return
             }
             phase = .serving(endpoint)
+            await server.waitUntilStopped()
+            // Leaving the screen stops the server too; only a stop with the screen still up means the
+            // listener died and the address on screen leads nowhere.
+            if !Task.isCancelled { phase = .failed("Lost the network connection") }
         } catch is CancellationError {
             // Left the screen mid-start; `onDisappear` owns teardown from here.
         } catch DiagnosticsHandoffServer.HandoffError.offNetwork {
