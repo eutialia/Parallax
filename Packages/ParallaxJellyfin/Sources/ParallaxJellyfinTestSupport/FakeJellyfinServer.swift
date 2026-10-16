@@ -31,10 +31,12 @@ public final class FakeJellyfinServer: Observable, Sendable {
     public struct AudioTrack: Sendable {
         public let language: String
         public let title: String
+        public let codec: String
 
-        public init(language: String, title: String) {
+        public init(language: String, title: String, codec: String = "aac") {
             self.language = language
             self.title = title
+            self.codec = codec
         }
     }
 
@@ -739,7 +741,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
         let audioIndices = item.audio.indices.map { $0 + 1 }
         let streams = [MediaStream(codec: "h264", height: 1080, index: 0, type: .video, width: 1920)]
             + zip(audioIndices, item.audio).map { index, track in
-                MediaStream(channels: 2, codec: "aac", displayTitle: track.title, index: index,
+                MediaStream(channels: 2, codec: track.codec, displayTitle: track.title, index: index,
                             isDefault: index == 1, isExternal: false, language: track.language, type: .audio)
             }
             + item.subtitles.enumerated().map { offset, track in
