@@ -116,12 +116,9 @@ enum DeviceProfileTranslator {
             // fMP4, NOT mpegts — even though mpegts would fix the subtitle desync.
             // AVPlayer only decodes HEVC in fMP4; Apple's HLS spec bans HEVC-in-TS, so
             // a `ts` transcode black-screens every HEVC remux/transcode while audio +
-            // subs keep playing (verified on device 2026-06-26; cf. Swiftfin#1805). fMP4
-            // once cost subtitle sync on seek: Jellyfin < 12 passed `-noaccurate_seek`, so a
-            // seek that restarted ffmpeg mid-session misaligned the segment clock under the
-            // client subtitle overlay (jellyfin#15845). Jellyfin 12 seeks a video re-encode
-            // accurately and trims copied audio to the target; a video-copy remux still
-            // starts at a keyframe (see `PlayerViewModel.seek(to:)`).
+            // subs keep playing (verified on device 2026-06-26; cf. Swiftfin#1805). A
+            // video-copy remux still restarts at a keyframe on seek (see
+            // `PlayerViewModel.seek(to:)`).
             container: "mp4",
             context: .streaming,
             // Client-side subtitle rendering: we fetch each text subtitle as a
