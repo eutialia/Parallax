@@ -185,12 +185,7 @@ public actor SessionManager {
         guard let user = authResult.user, let userID = user.id, let userName = user.name else {
             throw AppError.unexpected("Jellyfin auth: missing user in response", underlying: nil)
         }
-        let serverID: String
-        if let fromAuth = authResult.serverID {
-            serverID = fromAuth
-        } else if let fromInfo = publicInfo.id {
-            serverID = fromInfo
-        } else {
+        guard let serverID = authResult.serverID else {
             throw AppError.unexpected("Jellyfin auth: missing serverID in response", underlying: nil)
         }
         let serverName = publicInfo.serverName ?? server.host ?? "Jellyfin"

@@ -26,7 +26,7 @@ struct SessionManagerQuickConnectTests {
         harness.client.quickConnectSignInResult = .success(
             SessionManagerHarness.authResult(accessToken: "tok-qc", serverID: "server-qc")
         )
-        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(name: "Cinema", id: "server-qc"))
+        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(name: "Cinema"))
 
         let collected = await statuses(of: harness)
 
@@ -136,7 +136,7 @@ struct SessionManagerQuickConnectTests {
             harness.client.quickConnectSignInResult = .success(
                 SessionManagerHarness.authResult(accessToken: "tok-qc", serverID: nil)
             )
-            harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(id: nil))
+            harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
         }
 
         let collected = await statuses(of: harness)

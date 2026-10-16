@@ -43,11 +43,11 @@ struct SessionManagerHarness {
     }
 
     static func publicInfo(
-        name: String? = "Living Room", id: String? = "server-id-from-server", version: String? = "12.2.0"
+        name: String? = "Living Room", version: String? = "12.2.0"
     ) -> PublicSystemInfo {
         var info = PublicSystemInfo()
         info.serverName = name
-        info.id = id
+        info.id = "server-id-from-server"
         info.version = version
         return info
     }
@@ -142,14 +142,13 @@ struct SessionManagerSignInTests {
         #expect(await harness.store.sessions.isEmpty)
     }
 
-    /// The server id is the store's primary key, so a response carrying neither an auth serverID
-    /// nor a public-info id can't be persisted — better a named failure than a row keyed on
+    /// The server id is the store's primary key, so a response without one can't be persisted — better a named failure than a row keyed on
     /// something unstable. A response with no user has nobody to sign in as.
     @Test("An incomplete authentication response refuses to build a session", arguments: IncompleteResponse.allCases)
     func signInWithIncompleteResponse(response: IncompleteResponse) async throws {
         let harness = SessionManagerHarness()
         harness.client.passwordSignInResult = .success(response.authResult)
-        harness.client.publicSystemInfoResult = .success(response.publicInfo)
+        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
 
         await #expect(throws: AppError.self) {
             _ = try await harness.manager.signIn(server: harness.serverURL, username: "a", password: "b")
@@ -166,25 +165,6 @@ struct SessionManagerSignInTests {
             case .noUser: SessionManagerHarness.authResult(userID: nil, userName: nil)
             }
         }
-
-        var publicInfo: PublicSystemInfo {
-            switch self {
-            case .noServerID: SessionManagerHarness.publicInfo(id: nil)
-            case .noUser: SessionManagerHarness.publicInfo()
-            }
-        }
-    }
-
-    /// `publicInfo.id` is the documented fallback for older servers whose auth response omits it.
-    @Test("The public-info id is the fallback server id")
-    func signInFallsBackToPublicInfoServerID() async throws {
-        let harness = SessionManagerHarness()
-        harness.client.passwordSignInResult = .success(SessionManagerHarness.authResult(serverID: nil))
-        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(id: "from-public-info"))
-
-        let session = try await harness.manager.signIn(server: harness.serverURL, username: "a", password: "b")
-
-        #expect(session.id == ServerID(rawValue: "from-public-info"))
     }
 
     /// A nameless server still has to render something in the sidebar, so the host stands in.
