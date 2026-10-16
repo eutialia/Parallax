@@ -150,10 +150,6 @@ struct DeviceProfileTranslatorTests {
         // transcode black-screens HEVC content (Swiftfin#1805).
         #expect(trans.first?.container == "mp4")
         #expect(trans.first?.type == .video)
-        // These CSVs are the wire spec the server parses — the translator holds them as literals
-        // and exposes no named constant, so the expectation is the literal by necessity.
-        #expect(trans.first?.videoCodec == "h264,hevc")
-        #expect(trans.first?.audioCodec == "aac,ac3,eac3")
         // Always request up to 7.1 (8ch); the OS downmixes/spatializes per route.
         // Without this Jellyfin defaults the transcode to 5.1 and downmixes 7.1 sources.
         #expect(trans.first?.maxAudioChannels == "8")
@@ -163,6 +159,18 @@ struct DeviceProfileTranslatorTests {
         #expect(trans.first?.enableSubtitlesInManifest == false)
         // MinSegments=2 serves the playlist as soon as AVPlayer has enough to start.
         #expect(trans.first?.minSegments == 2)
+    }
+
+    /// Apple's HLS list filtered by the probe, order kept: the first entry is the server's
+    /// encode target, and Opus is never offered because HLS does not allow it.
+    @Test("TranscodingProfile codecs are Apple's HLS set filtered by the probed support", arguments: [
+        (withoutAV1, "h264,hevc", "aac,ac3,eac3"),
+        (withAV1, "h264,hevc,av1", "aac,ac3,eac3,flac"),
+    ])
+    func transcodingCodecs(support: AVPlayerSupport, video: String, audio: String) {
+        let trans = DeviceProfileTranslator.deviceProfile(from: tieredCaps(avPlayer: support)).transcodingProfiles
+        #expect(trans?.first?.videoCodec == video)
+        #expect(trans?.first?.audioCodec == audio)
     }
 
     // MARK: — SubtitleProfiles

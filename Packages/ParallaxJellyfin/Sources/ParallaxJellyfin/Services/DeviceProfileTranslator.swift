@@ -19,7 +19,8 @@ import ParallaxCore
 ///    once the video-codec gate has already decided AVKit-vs-VLC).
 ///    Omitted when `softwareVideoCodecs` is empty (avKit-only caps).
 ///
-/// 3. **Transcode floor** — HLS fallback for anything neither tier covers.
+/// 3. **Transcode floor** — HLS fallback for anything neither tier covers, in the codecs
+///    `AVPlayerSupport.hlsVideoCodecs` and `hlsAudioCodecs` list.
 ///
 /// ## `hls` divergence (preserved)
 ///
@@ -55,7 +56,7 @@ enum DeviceProfileTranslator {
             maxStaticBitrate: maxBitrate,
             maxStreamingBitrate: maxBitrate,
             subtitleProfiles: subtitleProfiles(for: capabilities),
-            transcodingProfiles: [transcodingProfile()]
+            transcodingProfiles: [transcodingProfile(for: capabilities)]
         )
     }
 
@@ -109,10 +110,10 @@ enum DeviceProfileTranslator {
 
     // MARK: — Private: Transcode floor
 
-    private static func transcodingProfile() -> TranscodingProfile {
+    private static func transcodingProfile(for capabilities: DeviceCapabilities) -> TranscodingProfile {
         TranscodingProfile(
             protocol: .hls,
-            audioCodec: "aac,ac3,eac3",
+            audioCodec: capabilities.avPlayer.hlsAudioCodecs.map(\.rawValue).joined(separator: ","),
             // fMP4, NOT mpegts — even though mpegts would fix the subtitle desync.
             // AVPlayer only decodes HEVC in fMP4; Apple's HLS spec bans HEVC-in-TS, so
             // a `ts` transcode black-screens every HEVC remux/transcode while audio +
@@ -141,7 +142,7 @@ enum DeviceProfileTranslator {
             // start anyway, so the extra segments only delayed first frame.
             minSegments: 2,
             type: .video,
-            videoCodec: "h264,hevc"
+            videoCodec: capabilities.avPlayer.hlsVideoCodecs.map(\.rawValue).joined(separator: ",")
         )
     }
 

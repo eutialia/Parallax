@@ -1445,7 +1445,7 @@ public final class PlayerViewModel {
         // so nothing is ever auto-burned-in (image subs never reach the menus).
         currentSubtitleStreamIndex = subtitleStreamIndex
         if resolved.method == .transcode {
-            populateTranscodeMenus(from: resolved)
+            populateTranscodeMenus(from: resolved, support: caps.avPlayer)
             // First play only (a track switch carries the user's own choice):
             // surface the subtitle Jellyfin computed from the user's language +
             // mode preferences. The audio default is already honored above via
@@ -3339,14 +3339,13 @@ public final class PlayerViewModel {
     /// `selectSubtitleTrack` re-resolves (like an audio switch), never happens by
     /// default (`applyTranscodeDefaultSubtitle` skips burned-in defaults — opt-in
     /// only), and forces a full re-encode (possibly HDR→SDR; jellyfin-tizen#202).
-    private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
+    private func populateTranscodeMenus(from resolved: ResolvedPlayback, support: AVPlayerSupport) {
+        // The transcode profile's audio list: the HLS transcode stream-copies these and
+        // re-encodes anything else to AAC (capped at 7.1).
+        let copyCodecs = Set(support.hlsAudioCodecs.map(\.rawValue))
         availableAudioTracks = resolved.mediaStreams
             .filter { $0.kind == .audio }
             .map { stream in
-                // Mirrors DeviceProfileTranslator.transcodingProfile()'s audioCodec
-                // ("aac,ac3,eac3") — exactly the codecs the HLS transcode stream-COPIES;
-                // anything else is re-encoded to AAC (capped at 7.1). Keep in sync by hand.
-                let copyCodecs: Set<String> = ["aac", "ac3", "eac3"]
                 let isTranscode = !copyCodecs.contains((stream.codec ?? "").lowercased())
                 return AudioTrack(
                     id: .jellyfinStream(stream.index),

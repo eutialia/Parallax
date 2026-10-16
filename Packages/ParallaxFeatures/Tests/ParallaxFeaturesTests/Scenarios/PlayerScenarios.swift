@@ -326,6 +326,30 @@ struct PlayerScenarios {
         #expect(player.segmentPrompt == nil)
     }
 
+    @Test("a FLAC track on a transcode is copied where AVPlayer plays FLAC, and re-encoded to AAC where it does not",
+          arguments: [
+            ([.aac, .ac3, .eac3, .flac], false),
+            ([.aac, .ac3, .eac3], true),
+          ] as [(Set<AudioCodec>, Bool)])
+    func transcodeFLACTrackFollowsTheDevicesFLACSupport(audioCodecs: Set<AudioCodec>, reencoded: Bool) async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Ran", in: "Films", minutes: 162)
+            .streams("Ran", by: .transcode, audio: [
+                FakeJellyfinServer.AudioTrack(language: "jpn", title: "Japanese", codec: "flac"),
+            ])
+        let avPlayer = AVPlayerSupport(
+            containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: audioCodecs
+        )
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")], avPlayer: avPlayer)
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        let player = try await world.openPlayer()
+
+        let track = try #require(player.availableAudioTracks.first)
+        #expect(track.isTranscode == reencoded)
+        #expect(track.transcodeTarget == (reencoded ? "AAC" : nil))
+    }
+
     @Test("choosing another audio track on a transcode reloads the stream where it was, and the choice sticks")
     func audioSwitchOnATranscodeReloadsInPlace() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")

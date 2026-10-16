@@ -11,6 +11,20 @@ public struct AVPlayerSupport: Sendable, Hashable {
         self.videoCodecs = videoCodecs
         self.audioCodecs = audioCodecs
     }
+
+    // Apple's HLS Authoring Specification allows H.264, HEVC, Dolby Vision and AV1 video and
+    // AAC, AC-3, E-AC-3, ALAC and FLAC audio in fMP4; Opus is not listed. The first entry is
+    // what a Jellyfin transcode encodes to, and the server stream-copies the rest.
+
+    /// The video codecs an HLS transcode can deliver to this device, encode target first.
+    public var hlsVideoCodecs: [VideoCodec] {
+        [.h264, .hevc, .av1].filter(videoCodecs.contains)
+    }
+
+    /// The audio codecs an HLS transcode can deliver to this device, encode target first.
+    public var hlsAudioCodecs: [AudioCodec] {
+        [.aac, .ac3, .eac3, .flac].filter(audioCodecs.contains)
+    }
 }
 
 public struct DeviceCapabilities: Sendable, Hashable {
