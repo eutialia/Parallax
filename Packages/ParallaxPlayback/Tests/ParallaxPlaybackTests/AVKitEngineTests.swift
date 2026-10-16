@@ -31,6 +31,39 @@ enum AVKitFixtures {
     }
 }
 
+extension AVKitEngine {
+    /// The first beat on `state` that `match` accepts, or nil if none arrives within `timeout`.
+    ///
+    /// The load watchdog arms in `play()`, so a test that loads real media without playing it
+    /// has nothing else to end an item that never turns ready, and the suite's time limit
+    /// holds the CI step for ten minutes. A timeout cancels the drain, which finishes `state`
+    /// for every consumer.
+    func firstBeat(
+        within timeout: Duration = CITimeScale.seconds(10),
+        where match: @escaping @Sendable (PlaybackBeat) -> Bool
+    ) async -> PlaybackBeat? {
+        let drain = Task { [state] () -> PlaybackBeat? in
+            for await beat in state where match(beat) { return beat }
+            return nil
+        }
+        let deadline = Task {
+            try await Task.sleep(for: timeout)
+            drain.cancel()
+        }
+        defer { deadline.cancel() }
+        return await drain.value
+    }
+}
+
+extension PlaybackBeat {
+    var isReadyOrFailed: Bool {
+        switch state {
+        case .ready, .failed: true
+        default: false
+        }
+    }
+}
+
 /// The engine-agnostic half of the `PlaybackEngine` stream contract, run against AVKit here and
 /// against VLCKit in ParallaxPlaybackVLC.
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
@@ -108,21 +141,21 @@ struct AVKitLogRedactionTests {
 /// prove anything here, because the whole question is what AVFoundation does on its own.
 // `.timeLimit`: every test here drains a real AVFoundation state stream until `.ready`. A
 // simulator with a wedged mediaserverd (or a fixture that failed to copy) publishes neither
-// beat, and `await iterator.next()` would suspend forever.
+// beat; `firstBeat` bounds that wait, the limit bounds everything after it.
 @Suite("AVKitEngine — assets that render their own subtitles", .serialized, .scaledTimeLimit())
 @MainActor
 struct AVKitSubtitleSuppressionTests {
 
     /// Loads the fixture and returns the inventory the engine publishes with `.ready`.
     private func loadAndAwaitReady(_ engine: AVKitEngine, disabled: Bool) async throws -> TrackInventory {
-        var iterator = engine.state.makeAsyncIterator()
         try await engine.load(.fixture(url: AVKitFixtures.subtitled, engineSubtitlesDisabled: disabled))
-        while let beat = await iterator.next() {
-            if case .ready(_, let tracks) = beat.state { return tracks }
-            if case .failed(let error) = beat.state { throw error }
+        switch await engine.firstBeat(where: \.isReadyOrFailed)?.state {
+        case .ready(_, let tracks)?: return tracks
+        case .failed(let error)?: throw error
+        default:
+            Issue.record("the engine never reached .ready")
+            return .empty
         }
-        Issue.record("the engine never reached .ready")
-        return .empty
     }
 
     @Test("reaches .ready with a legible group present and nothing selected in it")
@@ -212,22 +245,22 @@ struct AVKitSeekSettleTests {
     /// Loads the fixture and returns once the item is `.readyToPlay` (so `seek(to:)` reaches
     /// the real seek path rather than being queued against a not-yet-ready item).
     ///
-    /// The iterator below is a SECOND consumer of `engine.state` — every caller then builds a
-    /// `PositionBeatLog` over the same stream, and an `AsyncStream` has one buffer that its
-    /// consumers race for. Safe only because this one is dead by then: it is a local, it stops
-    /// at `.ready`, and it goes out of scope on return, so from the log's construction onward
-    /// there is exactly one consumer. The ordering matters too — the log must be built AFTER
-    /// this returns, which is what every caller does, or the two would split the beats.
+    /// The drain in `firstBeat` is a SECOND consumer of `engine.state` — every caller then
+    /// builds a `PositionBeatLog` over the same stream, and an `AsyncStream` has one buffer that
+    /// its consumers race for. Safe only because this one is dead by then: it stops at `.ready`
+    /// and its task has finished on return, so from the log's construction onward there is
+    /// exactly one consumer. The ordering matters too — the log must be built AFTER this
+    /// returns, which is what every caller does, or the two would split the beats.
     private func readyEngine() async throws -> AVKitEngine {
         let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
         try await engine.load(.fixture(url: AVKitFixtures.subtitled))
-        while let beat = await iterator.next() {
-            if case .ready = beat.state { return engine }
-            if case .failed(let error) = beat.state { throw error }
+        switch await engine.firstBeat(where: \.isReadyOrFailed)?.state {
+        case .ready?: return engine
+        case .failed(let error)?: throw error
+        default:
+            Issue.record("the engine never reached .ready")
+            return engine
         }
-        Issue.record("the engine never reached .ready")
-        return engine
     }
 
     /// The out-of-buffer echo: a paused player fetches without ever entering
@@ -492,11 +525,8 @@ struct AVKitWatchdogExpiryTests {
     @Test("the watchdog's diagnosis survives a teardown in the same turn")
     func watchdogSnapshotIsTakenBeforeTheFailure() async throws {
         let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
         let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-        while let beat = await iterator.next() {
-            if case .ready = beat.state { break }
-        }
+        try #require(await engine.firstBeat(where: \.isReadyOrFailed) != nil, "the engine never settled")
 
         let snapshot = engine.handleLoadTimeout(from: session)
         await engine.teardown()
@@ -662,7 +692,6 @@ struct AVKitSupersededSessionTests {
           arguments: SupersededCallback.allCases)
     func supersededSessionPublishesNothing(callback: SupersededCallback) async throws {
         let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
 
         // Session A, driven to the state this callback needs. `.statusKVO` wants an item that
         // really failed — nothing here stubs `status`, AVFoundation owns it.
@@ -670,10 +699,7 @@ struct AVKitSupersededSessionTests {
             ? URL(fileURLWithPath: "/dev/null/not-a-movie.mp4")
             : try AVKitFixtures.tiny
         let stale = try await engine.load(.fixture(url: staleURL))
-        while let beat = await iterator.next() {
-            if case .failed = beat.state { break }
-            if case .ready = beat.state { break }
-        }
+        try #require(await engine.firstBeat(where: \.isReadyOrFailed) != nil, "session A never settled")
         let staleItem = try #require(engine.currentItem)
         // The inventory load is spawned while the session is still live and only cancelled
         // inside the NEXT `load()` — seconds into a re-anchor. That is the race, so it starts
@@ -708,12 +734,15 @@ struct AVKitSupersededSessionTests {
 
         // The live session's own `.ready` is the sync point: `yield` is synchronous, so anything
         // a callback published is already ahead of it in the buffer.
-        while let beat = await iterator.next() {
+        let liveReady = await engine.firstBeat { beat in
             #expect(beat.session != stale,
                     "a superseded \(callback.rawValue) beat reached the stream: \(beat.state)")
-            if case .ready = beat.state, beat.session == live { break }
+            if case .ready = beat.state, beat.session == live { return true }
+            return false
         }
+        #expect(liveReady != nil, "the reload never reached .ready")
         await engine.teardown()
+        var iterator = engine.state.makeAsyncIterator()
         while let beat = await iterator.next() {
             #expect(beat.session != stale,
                     "a superseded \(callback.rawValue) beat reached the stream late: \(beat.state)")
