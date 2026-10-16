@@ -459,7 +459,8 @@ private struct SMBBrowseGridPreview: View {
                         ),
                         connections: .live(clock: ContinuousClock()),
                         cacheDirectory: .temporaryDirectory,
-                        clock: ContinuousClock()
+                        clock: ContinuousClock(),
+                        deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe())
                     ),
                     onPlay: { _ in }
                 )

@@ -73,7 +73,7 @@ public nonisolated struct SMBPlaybackItem: Sendable {
         // signal and means "a real duration" — only the resolver's VLC-route build passes false.
         hasTrustworthyDuration: Bool = true,
         hints: PlaybackHints = PlaybackHints(
-            scheme: "smb", container: nil, videoCodec: nil, audioCodec: nil, subtitleFormats: []
+            scheme: "smb", container: nil, videoCodec: nil, audioCodecs: [], subtitleFormats: []
         ),
         cleanup: (@Sendable () async -> Void)? = nil
     ) {

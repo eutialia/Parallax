@@ -237,28 +237,26 @@ enum JellyfinFixtures {
     /// The AVKit-only tier every URL/profile suite starts from. `software*` default to empty so a
     /// caller opts INTO the VLC tier explicitly — the discriminating variable in those suites.
     static func caps(
-        videoCodecs: [VideoCodec] = [.h264, .hevc],
-        audioCodecs: [AudioCodec] = [.aac, .ac3, .eac3, .mp3],
-        containers: [Container] = [.mp4, .mov, .hls],
+        avPlayer: AVPlayerSupport = AVPlayerSupport(
+            containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: [.aac, .ac3, .eac3]
+        ),
         hdr: HDRSupport = .none,
         maxResolution: Resolution = .uhd4K,
         maxBitrate: Bitrate = .megabits(120),
         subtitleFormats: [SubtitleFormat] = [.vtt, .srt],
-        softwareVideoCodecs: [VideoCodec] = [],
-        softwareAudioCodecs: [AudioCodec] = [],
-        softwareContainers: [Container] = []
+        vlcVideoCodecs: Set<VideoCodec> = [],
+        vlcAudioCodecs: Set<AudioCodec> = [],
+        vlcContainers: Set<Container> = []
     ) -> DeviceCapabilities {
         DeviceCapabilities(
-            supportedVideoCodecs: videoCodecs,
-            supportedAudioCodecs: audioCodecs,
-            supportedContainers: containers,
+            avPlayer: avPlayer,
             hdr: hdr,
             maxResolution: maxResolution,
             maxBitrate: maxBitrate,
             preferredSubtitleFormats: subtitleFormats,
-            softwareVideoCodecs: softwareVideoCodecs,
-            softwareAudioCodecs: softwareAudioCodecs,
-            softwareContainers: softwareContainers
+            vlcVideoCodecs: vlcVideoCodecs,
+            vlcAudioCodecs: vlcAudioCodecs,
+            vlcContainers: vlcContainers
         )
     }
 

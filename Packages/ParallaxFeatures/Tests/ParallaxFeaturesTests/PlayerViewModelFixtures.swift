@@ -417,8 +417,8 @@ enum PlayerFixtures {
         )
     }
 
-    /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is not in
-    /// EngineSelector's avKitVideoCodecs set. The audio codec is the only axis the two
+    /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is never in
+    /// AVPlayer's support. The audio codec is the only axis the two
     /// callers differ on (a DTS track vs an AVKit-playable AAC one).
     /// `itemID` is a seam, not decoration: `streamSelection` only carries the standing
     /// stream indices when the resolve belongs to the item being played, so a reload the

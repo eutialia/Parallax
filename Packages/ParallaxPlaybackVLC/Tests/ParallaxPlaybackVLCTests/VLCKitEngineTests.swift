@@ -840,7 +840,7 @@ struct VLCKitEngineCacheDepthTests {
         ("https + unknown codec", "https", nil, 3000),
     ] as [(String, String?, VideoCodec?, Int)])
     func cacheDepth(label: String, scheme: String?, codec: VideoCodec?, expected: Int) {
-        let hints = PlaybackHints.fixture(scheme: scheme, container: .mkv, video: codec, audio: nil)
+        let hints = PlaybackHints.fixture(scheme: scheme, container: .mkv, video: codec, audio: [])
         #expect(VLCKitEngine.cacheDepthMs(for: hints) == expected, "\(label)")
     }
 }

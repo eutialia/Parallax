@@ -23,6 +23,8 @@ public struct SMBPlaybackResolver {
     let resumeStore: SMBResumeStore
     /// The container probe's deadline sleeps on it.
     let clock: any Clock<Duration>
+    /// Its `avPlayer` support decides which probed files may ride the bridge into AVKit.
+    let deviceProfileBuilder: DeviceProfileBuilder
 
     /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`.
     ///
@@ -65,7 +67,8 @@ public struct SMBPlaybackResolver {
         let reader = connections.reader(ctx.target(ref), ctx.path)
         let probeResult = await Self.probeWithDeadline(reader, on: clock)
 
-        let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes)
+        let support = await deviceProfileBuilder.build().avPlayer
+        let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes, support: support)
 
         // VLC-routed files ride the local HTTP bridge too, by default: libvlc's own
         // smb2 access has a fatal teardown race (poll failure → freed context →
@@ -210,8 +213,9 @@ public struct SMBPlaybackResolver {
     }
 
     /// Pure routing decision shared by `resolve` and its unit tests. Given the probe
-    /// outcome (`nil` = probe failed/timed out) and the file size, decides whether an
-    /// AVKit-decodable file may ride the HTTP bridge and builds the matching `PlaybackHints`.
+    /// outcome (`nil` = probe failed/timed out), the file size and what AVPlayer plays on
+    /// this device, decides whether an AVKit-decodable file may ride the HTTP bridge and
+    /// builds the matching `PlaybackHints`.
     ///
     /// Bridge ONLY when: the probe ran, it positively IDENTIFIED the container (`nil` means
     /// "magic bytes matched nothing" — ASF/OGM/FLV land here, and the selector's AVKit verdict
@@ -225,21 +229,23 @@ public struct SMBPlaybackResolver {
     /// `nonisolated` because it is pure: the app target infers `@MainActor` for everything, which
     /// would make this decision unreachable from the actors that share it (`MediaArtworkProvider`
     /// routes its frame-grabs through exactly the same call).
-    nonisolated static func route(probe: MediaProbeResult?, sizeBytes: Int64?) -> (hints: PlaybackHints, useBridge: Bool) {
+    nonisolated static func route(
+        probe: MediaProbeResult?, sizeBytes: Int64?, support: AVPlayerSupport
+    ) -> (hints: PlaybackHints, useBridge: Bool) {
         let candidateHints = PlaybackHints(
             scheme: "http",
             container: probe?.container,
             videoCodec: probe?.videoCodec.knownValue,
-            audioCodec: probe?.audioCodec.knownValue,
+            audioCodecs: probe?.audioCodecs.knownValue ?? [],
             subtitleFormats: [],
             fileSizeBytes: sizeBytes
         )
         let bridgeEligible = probe.map {
             $0.isComplete
                 && $0.container != nil
-                && $0.videoCodec != .unknown && $0.audioCodec != .unknown
+                && $0.videoCodec != .unknown && $0.audioCodecs != .unknown
                 && $0.avPlayerHazards.isEmpty
-                && EngineSelector.select(hints: candidateHints) == .avKit
+                && EngineSelector.select(hints: candidateHints, support: support) == .avKit
         } ?? false
 
         if bridgeEligible {
@@ -250,7 +256,7 @@ public struct SMBPlaybackResolver {
                 scheme: "smb",
                 container: probe?.container,
                 videoCodec: probe?.videoCodec.knownValue,
-                audioCodec: probe?.audioCodec.knownValue,
+                audioCodecs: probe?.audioCodecs.knownValue ?? [],
                 subtitleFormats: [],
                 fileSizeBytes: sizeBytes
             ),

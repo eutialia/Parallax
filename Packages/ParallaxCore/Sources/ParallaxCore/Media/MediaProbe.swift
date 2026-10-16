@@ -32,7 +32,8 @@ public enum AVPlayerHazard: Sendable, Hashable {
 public struct MediaProbeResult: Sendable, Equatable {
     public let container: Container?
     public let videoCodec: ProbedCodec<VideoCodec>
-    public let audioCodec: ProbedCodec<AudioCodec>
+    /// Every audio sample entry, in track order.
+    public let audioCodecs: ProbedCodec<[AudioCodec]>
     /// False when the MP4 box walk proves the file is truncated / still downloading
     /// (a box's declared extent overruns `fileSize`, or EOF arrives before any
     /// `moov` box). A malformed top-level header (declared size shorter than the
@@ -48,13 +49,13 @@ public struct MediaProbeResult: Sendable, Equatable {
     public init(
         container: Container?,
         videoCodec: ProbedCodec<VideoCodec>,
-        audioCodec: ProbedCodec<AudioCodec>,
+        audioCodecs: ProbedCodec<[AudioCodec]>,
         isComplete: Bool,
         avPlayerHazards: Set<AVPlayerHazard> = []
     ) {
         self.container = container
         self.videoCodec = videoCodec
-        self.audioCodec = audioCodec
+        self.audioCodecs = audioCodecs
         self.isComplete = isComplete
         self.avPlayerHazards = avPlayerHazards
     }
@@ -85,22 +86,22 @@ public enum MediaProbe {
         if head.count >= 4,
            head[head.startIndex] == 0x1A, head[head.startIndex + 1] == 0x45,
            head[head.startIndex + 2] == 0xDF, head[head.startIndex + 3] == 0xA3 {
-            return MediaProbeResult(container: .mkv, videoCodec: .none, audioCodec: .none, isComplete: true)
+            return MediaProbeResult(container: .mkv, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }
 
         if head.count >= 12, fourCharString(head, at: 0) == "RIFF", fourCharString(head, at: 8) == "AVI " {
-            return MediaProbeResult(container: .avi, videoCodec: .none, audioCodec: .none, isComplete: true)
+            return MediaProbeResult(container: .avi, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }
 
         if size >= 377 {
             let ts = try await reader.read(offset: 0, length: 377)
             if ts.count == 377,
                ts[ts.startIndex] == 0x47, ts[ts.startIndex + 188] == 0x47, ts[ts.startIndex + 376] == 0x47 {
-                return MediaProbeResult(container: .ts, videoCodec: .none, audioCodec: .none, isComplete: true)
+                return MediaProbeResult(container: .ts, videoCodec: .none, audioCodecs: .none, isComplete: true)
             }
         }
 
-        return MediaProbeResult(container: nil, videoCodec: .none, audioCodec: .none, isComplete: true)
+        return MediaProbeResult(container: nil, videoCodec: .none, audioCodecs: .none, isComplete: true)
     }
 
     // MARK: - MP4 top-level box walk
@@ -113,17 +114,17 @@ public enum MediaProbe {
         let (moovRange, incomplete) = try await walkTopLevel(reader: reader, fileSize: fileSize)
 
         guard let moovRange else {
-            return MediaProbeResult(container: container, videoCodec: .none, audioCodec: .none, isComplete: false)
+            return MediaProbeResult(container: container, videoCodec: .none, audioCodecs: .none, isComplete: false)
         }
 
         guard moovRange.size <= UInt64(moovByteCap) else {
-            return MediaProbeResult(container: container, videoCodec: .unknown, audioCodec: .unknown, isComplete: !incomplete)
+            return MediaProbeResult(container: container, videoCodec: .unknown, audioCodecs: .unknown, isComplete: !incomplete)
         }
 
         let moovData = try await reader.read(offset: moovRange.offset, length: Int(moovRange.size))
         let (video, audio, hazards) = await parseMoov(moovData, reader: reader)
         return MediaProbeResult(
-            container: container, videoCodec: video, audioCodec: audio,
+            container: container, videoCodec: video, audioCodecs: audio,
             isComplete: !incomplete, avPlayerHazards: hazards
         )
     }
@@ -194,7 +195,7 @@ public enum MediaProbe {
     private static func parseMoov(
         _ moovData: Data,
         reader: any RandomAccessReading
-    ) async -> (video: ProbedCodec<VideoCodec>, audio: ProbedCodec<AudioCodec>, hazards: Set<AVPlayerHazard>) {
+    ) async -> (video: ProbedCodec<VideoCodec>, audio: ProbedCodec<[AudioCodec]>, hazards: Set<AVPlayerHazard>) {
         guard let moovHeader = readBoxHeader(moovData, at: 0, limit: moovData.count) else {
             return (.unknown, .unknown, [])
         }
@@ -236,25 +237,20 @@ public enum MediaProbe {
             }
         }
 
-        var audioCodec: ProbedCodec<AudioCodec> = .none
+        var audioCodecs: ProbedCodec<[AudioCodec]> = .none
         if sawAudioTrak {
             let mappedInOrder = audioFourccsInOrder.map(mapAudioFourcc)
-            if mappedInOrder.contains(where: { $0 == nil }) {
-                // Any unrecognized audio fourcc must surface as `.unknown` per
-                // `ProbedCodec`'s contract — silently dropping it and picking a
-                // worst-case among the recognized tracks would hide a track
-                // `EngineSelector` can't reason about.
-                audioCodec = .unknown
-            } else if let worstCase = mappedInOrder.compactMap({ $0 }).first(where: { !AudioCodec.avPlayerSupported.contains($0) }) {
-                audioCodec = .known(worstCase)
-            } else if let firstKnown = mappedInOrder.compactMap({ $0 }).first {
-                audioCodec = .known(firstKnown)
+            // Any unrecognized audio fourcc must surface as `.unknown` per
+            // `ProbedCodec`'s contract — silently dropping it would hide a track
+            // `EngineSelector` can't reason about.
+            if mappedInOrder.isEmpty || mappedInOrder.contains(where: { $0 == nil }) {
+                audioCodecs = .unknown
             } else {
-                audioCodec = .unknown
+                audioCodecs = .known(mappedInOrder.compactMap { $0 })
             }
         }
 
-        return (videoCodec, audioCodec, hazards)
+        return (videoCodec, audioCodecs, hazards)
     }
 
     private struct TrakInfo {

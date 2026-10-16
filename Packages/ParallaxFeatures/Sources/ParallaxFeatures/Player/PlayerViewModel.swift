@@ -1288,7 +1288,9 @@ public final class PlayerViewModel {
             )
             availableSubtitleTracks = smbExternalSubtitleTracks
             let asset = assets.asset(for: smbItem)
-            try await loadAndPlay(asset, reusingEngine: false, generation: sessionGeneration)
+            let support = await deviceProfileBuilder.build().avPlayer
+            try await loadAndPlay(asset, route: .select(support), reusingEngine: false,
+                                  generation: sessionGeneration)
         } catch is CancellationError {
             // Exit fence: the player is dismissing, so `stop()` (`runPlayer`'s backstop) owns the
             // bridge teardown — don't race it here.
@@ -1461,8 +1463,8 @@ public final class PlayerViewModel {
         }
 
         let asset = assets.asset(for: resolved)
-        try await loadAndPlay(asset, reusingEngine: reusingEngine, superseding: superseding,
-                              generation: generation)
+        try await loadAndPlay(asset, route: .select(caps.avPlayer), reusingEngine: reusingEngine,
+                              superseding: superseding, generation: generation)
     }
 
     /// Describes the explicit track picks for a re-resolve, or nil to let the server
@@ -1523,6 +1525,14 @@ public final class PlayerViewModel {
         }
     }
 
+    /// How `loadAndPlay` picks the engine: routed by the probed support, or pinned to VLCKit
+    /// by the reactive fallback's retry (`attemptReactiveFallback`), which EngineSelector
+    /// never sees.
+    private enum EngineRoute: Equatable {
+        case select(AVPlayerSupport)
+        case vlcFallback
+    }
+
     /// Select the engine for `asset`, (re)build or reuse it, load, fence, and play —
     /// the shared tail of every play path. `beginPlayback` (Jellyfin) and
     /// `start(smbItem:)` (SMB) both end here, so the engine lifecycle (subscription,
@@ -1530,8 +1540,8 @@ public final class PlayerViewModel {
     /// re-apply) lives in exactly one place.
     private func loadAndPlay(
         _ asset: PlayableAsset,
+        route: EngineRoute,
         reusingEngine: Bool,
-        forcedEngine: PlaybackEngineID? = nil,
         superseding: PlaybackSessionID? = nil,
         generation: Int
     ) async throws {
@@ -1539,20 +1549,19 @@ public final class PlayerViewModel {
         // fallback (`attemptReactiveFallback`) can rebuild this exact asset off it
         // without threading a duplicate copy through every play path.
         currentAsset = asset
-        // `forcedEngine` is the reactive fallback's retry (`attemptReactiveFallback`)
-        // pinning the rebuilt asset onto VLCKit — EngineSelector stays pure and never
-        // sees the override. Every other call site leaves it nil and gets the ordinary
-        // hint-driven routing.
-        let id = forcedEngine ?? EngineSelector.select(hints: asset.hints)
+        let id = switch route {
+        case .select(let support): EngineSelector.select(hints: asset.hints, support: support)
+        case .vlcFallback: PlaybackEngineID.vlcKit
+        }
         // Who owns `desiredPlaying`. Only a FRESH session — the user opening an item —
         // makes starting playback the intent to play. A reload (`reusingEngine`: the
         // transcode track switch) and the reactive
-        // AVKit->VLC reroute (`forcedEngine`) are mechanical: they resume because the
+        // AVKit->VLC reroute (`.vlcFallback`) are mechanical: they resume because the
         // decoder has to be told to run, not because anyone asked. Those inherit the
         // standing intent, and the engine they come up on is commanded from it below —
         // so a lock-screen pause issued while the engine was being rebuilt survives the
         // rebuild instead of being overwritten by it.
-        let isFreshSession = !reusingEngine && forcedEngine == nil
+        let isFreshSession = !reusingEngine && route != .vlcFallback
 
         // Reuse the live engine when a transcode track switch keeps the same engine
         // type: reloading the asset on the existing AVPlayer keeps its video layer
@@ -3307,7 +3316,7 @@ public final class PlayerViewModel {
         guard !Task.isCancelled, !isExiting else { return }
 
         do {
-            try await loadAndPlay(retryAsset, reusingEngine: false, forcedEngine: .vlcKit,
+            try await loadAndPlay(retryAsset, route: .vlcFallback, reusingEngine: false,
                                   generation: sessionGeneration)
         } catch is CancellationError {
             // Exit raced the retry — stop() owns the real teardown.
@@ -3489,6 +3498,9 @@ private struct PreviewAudioSession: AudioSessionControlling {
 
 private struct PreviewCapabilityProbe: CapabilityProbe {
     func hdrSupport() -> HDRSupport { .none }
+    func avPlayerSupport() -> AVPlayerSupport {
+        AVPlayerSupport(containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: [.aac, .ac3, .eac3])
+    }
 }
 
 private final class PreviewNowPlaying: NowPlayingUpdating {

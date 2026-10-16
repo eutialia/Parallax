@@ -170,7 +170,7 @@ struct ReactivePlaybackFallbackTests {
             vlcOptions: [],
             vlcLibraryOptions: libraryOptions,
             hints: PlaybackHints(
-                scheme: "http", container: .mp4, videoCodec: .h264, audioCodec: .aac, subtitleFormats: []
+                scheme: "http", container: .mp4, videoCodec: .h264, audioCodecs: [.aac], subtitleFormats: []
             )
         )
         await vm.start(smbItem: smbItem)

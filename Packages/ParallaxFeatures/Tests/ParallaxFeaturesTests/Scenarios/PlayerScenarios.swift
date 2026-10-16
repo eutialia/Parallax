@@ -1,6 +1,7 @@
 import CoreMedia
 import Foundation
 import ParallaxCore
+import ParallaxCoreTestSupport
 import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxJellyfin
@@ -605,6 +606,26 @@ struct PlayerScenarios {
         #expect(den.playbackRequests.map(\.subtitleStreamIndex) == [nil, 2, -1])
         #expect(den.playbackRequests.last?.startSeconds == 600)
         #expect(player.selectedSubtitleTrack == nil)
+    }
+
+    @Test("an AV1 MP4 on the share plays in AVKit where AVPlayer plays AV1, and in VLC where it does not",
+          arguments: [
+            ([.h264, .hevc, .av1], .avKit),
+            ([.h264, .hevc], .vlcKit),
+          ] as [(Set<VideoCodec>, PlaybackEngineID)])
+    func smbAV1FilmFollowsTheDevicesAV1Support(videoCodecs: Set<VideoCodec>, engine: PlaybackEngineID) async throws {
+        let avPlayer = AVPlayerSupport(
+            containers: [.mp4, .mov, .hls], videoCodecs: videoCodecs, audioCodecs: [.aac, .ac3, .eac3]
+        )
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")], avPlayer: avPlayer)
+        try await world.playSMBFilm(named: "Dune.mp4", contents: ISOBMFFFixtures.mp4(traks: [
+            ISOBMFFFixtures.trak(stsdEntries: ["av01"], handler: "vide"),
+            ISOBMFFFixtures.trak(stsdEntries: ["mp4a"], handler: "soun"),
+        ]))
+
+        try await world.openPlayer()
+
+        #expect(world.engine.id == engine)
     }
 
     @Test("an SMB film's position survives a relaunch, and playing it again resumes there")

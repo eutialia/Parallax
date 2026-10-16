@@ -92,7 +92,7 @@ struct MediaProbeTests {
         ]))
         #expect(result.container == .mp4)
         #expect(result.videoCodec == .known(.h264))
-        #expect(result.audioCodec == .known(.aac))
+        #expect(result.audioCodecs == .known([.aac]))
         #expect(result.isComplete)
     }
 
@@ -108,7 +108,7 @@ struct MediaProbeTests {
             mdatByteCount: 512, moovAfterMdat: true
         ))
         #expect(result.videoCodec == .known(.hevc))
-        #expect(result.audioCodec == .known(.eac3))
+        #expect(result.audioCodecs == .known([.eac3]))
         #expect(result.isComplete)
     }
 
@@ -133,7 +133,7 @@ struct MediaProbeTests {
         let result = try await probe(Fixture.mp4(traks: [
             Fixture.trak(stsdEntries: [fourcc], handler: "soun"),
         ]))
-        #expect(result.audioCodec == .known(expected))
+        #expect(result.audioCodecs == .known([expected]))
     }
 
     /// An unmapped fourcc must read as `.unknown`, not `.none`: the selector routes unknown to
@@ -146,26 +146,25 @@ struct MediaProbeTests {
         #expect(result.videoCodec == .unknown)
     }
 
-    /// With several audio tracks the LEAST supported one wins, so the whole file routes to the
-    /// engine that can keep every track.
-    @Test("the worst-case audio codec wins across tracks")
-    func worstCaseAudioWinsForMultiTrack() async throws {
+    /// Every audio track is reported, so the selector can route to the engine that keeps all of them.
+    @Test("every audio track's codec is reported, in track order")
+    func everyAudioTrackIsReportedInOrder() async throws {
         let result = try await probe(Fixture.mp4(traks: [
             Fixture.trak(stsdEntries: ["avc1"], handler: "vide"),
             Fixture.trak(stsdEntries: ["mp4a"], handler: "soun"),
             Fixture.trak(stsdEntries: ["dtsc"], handler: "soun"),
         ]))
-        #expect(result.audioCodec == .known(.dts))
+        #expect(result.audioCodecs == .known([.aac, .dts]))
     }
 
-    /// Silently dropping an unrecognized track and picking a worst case among the rest would
-    /// hide a track the selector can't reason about.
+    /// Silently dropping an unrecognized track and reporting the rest would hide a track the
+    /// selector can't reason about.
     @Test("an unrecognized audio fourcc alongside a known one still reports unknown")
     func unrecognizedAudioFourccAmongKnownOnesIsUnknown() async throws {
         let result = try await probe(Fixture.mp4(traks: [
             Fixture.trak(stsdEntries: ["mp4a", "zzzz"], handler: "soun"),
         ]))
-        #expect(result.audioCodec == .unknown)
+        #expect(result.audioCodecs == .unknown)
     }
 
     @Test("an audio trak with no sample entries reports unknown rather than none")
@@ -173,7 +172,7 @@ struct MediaProbeTests {
         let result = try await probe(Fixture.mp4(traks: [
             Fixture.trak(stsdEntries: [], handler: "soun"),
         ]))
-        #expect(result.audioCodec == .unknown)
+        #expect(result.audioCodecs == .unknown)
     }
 
     @Test("a file with no audio trak at all reports none, not unknown")
@@ -181,7 +180,7 @@ struct MediaProbeTests {
         let result = try await probe(Fixture.mp4(traks: [
             Fixture.trak(stsdEntries: ["avc1"], handler: "vide"),
         ]))
-        #expect(result.audioCodec == .none)
+        #expect(result.audioCodecs == .none)
         #expect(result.videoCodec == .known(.h264))
     }
 
@@ -205,7 +204,7 @@ struct MediaProbeTests {
             Fixture.trak(stsdEntries: ["avc1"], handler: "vide"),
         ]))
         #expect(result.videoCodec == .known(.h264))
-        #expect(result.audioCodec == .none)
+        #expect(result.audioCodecs == .none)
     }
 
     @Test("a trak with no mdia box contributes nothing")
@@ -214,7 +213,7 @@ struct MediaProbeTests {
             Fixture.box("trak", Fixture.box("tkhd", Data(count: 16))),
         ]))
         #expect(result.videoCodec == .none)
-        #expect(result.audioCodec == .none)
+        #expect(result.audioCodecs == .none)
     }
 
     // MARK: - Completeness
@@ -284,7 +283,7 @@ struct MediaProbeTests {
         let result = try await probe(Fixture.ftyp() + Fixture.box("moov", malformed)
                                      + Fixture.box("mdat", Data(count: 8)))
         #expect(result.videoCodec == .none)
-        #expect(result.audioCodec == .none)
+        #expect(result.audioCodecs == .none)
     }
 
     @Test("the size == 1 largesize encoding is honoured on nested boxes too")
@@ -313,7 +312,7 @@ struct MediaProbeTests {
         )
         let result = try await MediaProbe.probe(reader)
         #expect(result.videoCodec == .unknown)
-        #expect(result.audioCodec == .unknown)
+        #expect(result.audioCodecs == .unknown)
         #expect(result.container == .mp4)
     }
 
@@ -327,7 +326,7 @@ struct MediaProbeTests {
         )
         let result = try await MediaProbe.probe(reader)
         #expect(result.videoCodec == .unknown)
-        #expect(result.audioCodec == .unknown)
+        #expect(result.audioCodecs == .unknown)
     }
 
     // MARK: - Container sniffing
@@ -401,7 +400,7 @@ struct MediaProbeTests {
         let result = try await probe(Data())
         #expect(result.container == nil)
         #expect(result.videoCodec == .none)
-        #expect(result.audioCodec == .none)
+        #expect(result.audioCodecs == .none)
     }
 
     // MARK: - Decode-order timestamp hazard

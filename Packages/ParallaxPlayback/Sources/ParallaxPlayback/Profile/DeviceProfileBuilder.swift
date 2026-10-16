@@ -2,13 +2,12 @@ import Foundation
 import os
 import ParallaxCore
 
-/// Builds a `DeviceCapabilities` value describing what this device can play
-/// via AVPlayer, with a minimal runtime probe for HDR and audio-output.
+/// Builds a `DeviceCapabilities` value describing what this device can play.
 ///
-/// The fixed AVPlayer whitelist (codecs, containers, resolution, bitrate) is
-/// sourced from `PlaybackCapabilityMatrix` — a single declaration shared with
-/// `EngineSelector`. Only `hdr` is probed via the injected `CapabilityProbe` so
-/// that `ParallaxPlayback` stays free of iOS-only APIs.
+/// HDR and AVPlayer's containers and codecs are probed through the injected
+/// `CapabilityProbe`, so `ParallaxPlayback` stays free of iOS-only APIs. The VLC
+/// tier is the shipped libvlc declaration (`PlaybackCapabilityMatrix.vlc*`) minus
+/// whatever AVPlayer plays.
 ///
 /// `build()` caches the result after the first probe; `invalidate()` clears
 /// the cache so the next `build()` re-probes. The cache is dropped on two
@@ -39,13 +38,9 @@ public actor DeviceProfileBuilder {
     public func build() async -> DeviceCapabilities {
         if let cached { return cached }
         let hdr = probe.hdrSupport()
+        let avPlayer = probe.avPlayerSupport()
         let caps = DeviceCapabilities(
-            supportedVideoCodecs: PlaybackCapabilityMatrix.avKitVideoCodecs
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            supportedAudioCodecs: PlaybackCapabilityMatrix.avKitAudioCodecs
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            supportedContainers: PlaybackCapabilityMatrix.avKitContainers
-                .sorted(by: { $0.rawValue < $1.rawValue }),
+            avPlayer: avPlayer,
             hdr: hdr,
             maxResolution: .uhd4K,
             // Unlimited by default: 360 Mbps LAN ceiling, serialized into the wire profile —
@@ -57,12 +52,9 @@ public actor DeviceProfileBuilder {
             maxBitrate: networkConstrained ? Self.lowDataBitrateCeiling : Self.lanBitrateCeiling,
             preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
                 .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareVideoCodecs: PlaybackCapabilityMatrix.softwareVideoCodecs
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareAudioCodecs: PlaybackCapabilityMatrix.softwareAudioCodecs
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareContainers: PlaybackCapabilityMatrix.softwareContainers
-                .sorted(by: { $0.rawValue < $1.rawValue })
+            vlcVideoCodecs: PlaybackCapabilityMatrix.vlcVideoCodecs,
+            vlcAudioCodecs: PlaybackCapabilityMatrix.vlcAudioCodecs,
+            vlcContainers: PlaybackCapabilityMatrix.vlcContainers
         )
         cached = caps
         return caps

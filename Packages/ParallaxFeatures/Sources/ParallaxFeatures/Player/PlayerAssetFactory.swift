@@ -123,7 +123,7 @@ struct PlayerAssetFactory {
                 scheme: resolved.url.scheme,
                 container: .hls,
                 videoCodec: nil,
-                audioCodec: nil,
+                audioCodecs: [],
                 subtitleFormats: []
             )
         case .directPlay:
@@ -131,7 +131,7 @@ struct PlayerAssetFactory {
                 scheme: resolved.url.scheme,
                 container: resolved.container,
                 videoCodec: resolved.videoCodec,
-                audioCodec: resolved.audioCodec,
+                audioCodecs: resolved.audioCodec.map { [$0] } ?? [],
                 subtitleFormats: []
             )
         }

@@ -3,6 +3,7 @@ import Testing
 import ParallaxTestScaling
 import ParallaxCore
 import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 import ParallaxCoreTestSupport
 @testable import ParallaxFeatures
 
@@ -15,7 +16,8 @@ struct RouteCase: Sendable, CustomTestStringConvertible {
     let scheme: String
     let container: Container?
     let videoCodec: VideoCodec?
-    let audioCodec: AudioCodec?
+    let audioCodecs: [AudioCodec]
+    var support: AVPlayerSupport = .baseline
     var testDescription: String { name }
 }
 
@@ -23,35 +25,48 @@ private let routeCases: [RouteCase] = [
     // The ONE bridge-eligible shape: a complete file whose container and both codecs are AVKit's.
     RouteCase(
         name: "complete h264/aac mp4 rides the bridge",
-        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true),
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac]), isComplete: true),
         sizeBytes: 1_234, usesBridge: true, scheme: "http",
-        container: .mp4, videoCodec: .h264, audioCodec: .aac
+        container: .mp4, videoCodec: .h264, audioCodecs: [.aac]
     ),
     // Every remaining row is a single disqualifier applied to that same shape.
     RouteCase(
         name: "incomplete file — VLC owns the read-rate duration estimate",
-        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: false),
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac]), isComplete: false),
         sizeBytes: 1_234, usesBridge: false, scheme: "smb",
-        container: .mp4, videoCodec: .h264, audioCodec: .aac
+        container: .mp4, videoCodec: .h264, audioCodecs: [.aac]
     ),
     RouteCase(
         name: "dts audio — not an AVKit audio codec",
-        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.dts), isComplete: true),
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.dts]), isComplete: true),
         sizeBytes: nil, usesBridge: false, scheme: "smb",
-        container: .mp4, videoCodec: .h264, audioCodec: .dts
+        container: .mp4, videoCodec: .h264, audioCodecs: [.dts]
     ),
     RouteCase(
-        name: "av1 video — not an AVKit video codec (selector rule 4)",
-        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.av1), audioCodec: .known(.aac), isComplete: true),
+        name: "av1 video on a device whose AVPlayer lacks AV1 (selector rule 4)",
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.av1), audioCodecs: .known([.aac]), isComplete: true),
         sizeBytes: nil, usesBridge: false, scheme: "smb",
-        container: .mp4, videoCodec: .av1, audioCodec: .aac
+        container: .mp4, videoCodec: .av1, audioCodecs: [.aac]
+    ),
+    RouteCase(
+        name: "av1 video on a device whose AVPlayer plays AV1 rides the bridge",
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.av1), audioCodecs: .known([.aac]), isComplete: true),
+        sizeBytes: nil, usesBridge: true, scheme: "http",
+        container: .mp4, videoCodec: .av1, audioCodecs: [.aac],
+        support: AVPlayerSupport(containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc, .av1], audioCodecs: [.aac])
+    ),
+    RouteCase(
+        name: "a second, dts audio track keeps the file on VLC",
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac, .dts]), isComplete: true),
+        sizeBytes: nil, usesBridge: false, scheme: "smb",
+        container: .mp4, videoCodec: .h264, audioCodecs: [.aac, .dts]
     ),
     // An unknown codec maps to nil in hints (only a known value survives) and never bridges.
     RouteCase(
         name: "a codec-unknown track, otherwise AVKit-clean",
-        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodec: .unknown, isComplete: true),
+        probe: MediaProbeResult(container: .mp4, videoCodec: .known(.h264), audioCodecs: .unknown, isComplete: true),
         sizeBytes: nil, usesBridge: false, scheme: "smb",
-        container: .mp4, videoCodec: .h264, audioCodec: nil
+        container: .mp4, videoCodec: .h264, audioCodecs: []
     ),
     // An UNRECOGNIZED container (ASF/OGM/FLV — magic bytes matched nothing): the probe
     // reports `container: nil, codecs: .none, isComplete: true`, the exact shape that used
@@ -60,16 +75,16 @@ private let routeCases: [RouteCase] = [
     // WMV decode-failed-error-page bug. An unidentified container must stay on VLC.
     RouteCase(
         name: "unrecognized container (wmv/asf) never bridges",
-        probe: MediaProbeResult(container: nil, videoCodec: .none, audioCodec: .none, isComplete: true),
+        probe: MediaProbeResult(container: nil, videoCodec: .none, audioCodecs: .none, isComplete: true),
         sizeBytes: 9_876, usesBridge: false, scheme: "smb",
-        container: nil, videoCodec: nil, audioCodec: nil
+        container: nil, videoCodec: nil, audioCodecs: []
     ),
     // A failed/timed-out probe: no codec knowledge at all, but the size still rides along.
     RouteCase(
         name: "nil probe (timeout/failure)",
         probe: nil,
         sizeBytes: 42, usesBridge: false, scheme: "smb",
-        container: nil, videoCodec: nil, audioCodec: nil
+        container: nil, videoCodec: nil, audioCodecs: []
     ),
     // An otherwise AVKit-clean h264/aac mp4, but the probe proved AVPlayer would misplay it
     // (degenerate ctts + real B-frames): the hazard alone must disqualify the bridge, even
@@ -77,11 +92,11 @@ private let routeCases: [RouteCase] = [
     RouteCase(
         name: "decode-order timestamp hazard — AVKit-clean file still stays on VLC",
         probe: MediaProbeResult(
-            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac]), isComplete: true,
             avPlayerHazards: [.decodeOrderTimestamps]
         ),
         sizeBytes: 1_234, usesBridge: false, scheme: "smb",
-        container: .mp4, videoCodec: .h264, audioCodec: .aac
+        container: .mp4, videoCodec: .h264, audioCodecs: [.aac]
     ),
     // A DIFFERENT hazard case proves the route gate is set-agnostic — ANY non-empty
     // `avPlayerHazards` disqualifies the bridge, not just `.decodeOrderTimestamps`
@@ -91,11 +106,11 @@ private let routeCases: [RouteCase] = [
     RouteCase(
         name: "interlaced-video hazard — AVKit-clean file still stays on VLC",
         probe: MediaProbeResult(
-            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac]), isComplete: true,
             avPlayerHazards: [.interlacedVideo]
         ),
         sizeBytes: 1_234, usesBridge: false, scheme: "smb",
-        container: .mp4, videoCodec: .h264, audioCodec: .aac
+        container: .mp4, videoCodec: .h264, audioCodecs: [.aac]
     ),
 ]
 
@@ -106,13 +121,13 @@ private let routeCases: [RouteCase] = [
 struct SMBPlaybackRouteTests {
     @Test("bridge eligibility and hints, per probe shape", arguments: routeCases)
     func route(_ row: RouteCase) {
-        let (hints, useBridge) = SMBPlaybackResolver.route(probe: row.probe, sizeBytes: row.sizeBytes)
+        let (hints, useBridge) = SMBPlaybackResolver.route(probe: row.probe, sizeBytes: row.sizeBytes, support: row.support)
 
         #expect(useBridge == row.usesBridge)
         #expect(hints.scheme == row.scheme)
         #expect(hints.container == row.container)
         #expect(hints.videoCodec == row.videoCodec)
-        #expect(hints.audioCodec == row.audioCodec)
+        #expect(hints.audioCodecs == row.audioCodecs)
         // The size rides along on EVERY route, bridged or not — VLC needs it for its duration
         // estimate just as much as the bridge needs it for range requests.
         #expect(hints.fileSizeBytes == row.sizeBytes)
@@ -132,7 +147,7 @@ struct SMBTimingRepairLibraryOptionsTests {
     @Test("a decode-order-timestamps probe → the two repair flags")
     func decodeOrderHazard() {
         let probe = MediaProbeResult(
-            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac]), isComplete: true,
             avPlayerHazards: [.decodeOrderTimestamps]
         )
         #expect(SMBPlaybackResolver.timingRepairLibraryOptions(for: probe) == [
@@ -143,7 +158,7 @@ struct SMBTimingRepairLibraryOptionsTests {
     @Test("a different hazard → nil (scoped to this one defect, not hazards in general)")
     func otherHazard() {
         let probe = MediaProbeResult(
-            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            container: .mp4, videoCodec: .known(.h264), audioCodecs: .known([.aac]), isComplete: true,
             avPlayerHazards: [.interlacedVideo]
         )
         #expect(SMBPlaybackResolver.timingRepairLibraryOptions(for: probe) == nil)

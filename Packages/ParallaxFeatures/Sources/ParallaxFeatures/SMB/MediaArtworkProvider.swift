@@ -141,6 +141,8 @@ public actor MediaArtworkProvider {
     private let elapsed: @Sendable () -> Duration
     /// The probe's deadline sleeps on it.
     private let clock: any Clock<Duration>
+    /// Its `avPlayer` support feeds `SMBPlaybackResolver.route`, the same decision playback makes.
+    private let deviceProfileBuilder: DeviceProfileBuilder
     private static let failureBackoff: Duration = .seconds(180)
     /// Backoff ceiling — deliberately NOT permanent: a decodable-but-slow file (a big MKV that
     /// times out over VPN but grabs in 1–3s on LAN) must get another chance when circumstances
@@ -167,9 +169,11 @@ public actor MediaArtworkProvider {
         serverStore: ServerStore,
         connections: SMBConnections,
         cacheDirectory: URL,
-        clock: any Clock<Duration>
+        clock: any Clock<Duration>,
+        deviceProfileBuilder: DeviceProfileBuilder
     ) {
         self.clock = clock
+        self.deviceProfileBuilder = deviceProfileBuilder
         self.elapsed = clock.stopwatch()
         self.thumbnailer = thumbnailer
         self.avThumbnailer = avThumbnailer
@@ -613,7 +617,8 @@ public actor MediaArtworkProvider {
             reader = newReader()
         }
         let sizeBytes: Int64? = key.size > 0 ? key.size : nil
-        let (_, useAV) = SMBPlaybackResolver.route(probe: probeResult, sizeBytes: sizeBytes)
+        let support = await deviceProfileBuilder.build().avPlayer
+        let (_, useAV) = SMBPlaybackResolver.route(probe: probeResult, sizeBytes: sizeBytes, support: support)
 
         // libvlc sniffs the container from the bytes; the advertised type is advisory only.
         let session = SMBBridgeSession(

@@ -1,15 +1,15 @@
 import Foundation
 import ParallaxCore
 
-/// Pure routing function. No I/O, no state. Exhaustively matrix-tested.
+/// Pure routing function. No I/O, no state.
 ///
 /// Priority order (first match wins):
 ///   1. `hints.scheme == "smb"` → `.vlcKit`  (SMB streams the app didn't bridge —
 ///      AVPlayer cannot open `smb://`; bridged SMB arrives as `http` with probed hints)
 ///   2. `hints.subtitleFormats` contains a non-AVPlayer-renderable format → `.vlcKit`
-///   3. `hints.container` is non-nil and not in the AVPlayer whitelist → `.vlcKit`
-///   4. `hints.videoCodec` is non-nil and not in the AVPlayer whitelist → `.vlcKit`
-///   5. `hints.audioCodec` is non-nil and not in the AVPlayer whitelist → `.vlcKit`
+///   3. `hints.container` is non-nil and not in the device's AVPlayer support → `.vlcKit`
+///   4. `hints.videoCodec` is non-nil and not in the device's AVPlayer support → `.vlcKit`
+///   5. any of `hints.audioCodecs` is not in the device's AVPlayer support → `.vlcKit`
 ///   6. Otherwise → `.avKit`
 ///
 /// Three production sources feed `hints`:
@@ -24,7 +24,7 @@ public enum EngineSelector {
 
     // MARK: — Selection
 
-    public static func select(hints: PlaybackHints) -> PlaybackEngineID {
+    public static func select(hints: PlaybackHints, support: AVPlayerSupport) -> PlaybackEngineID {
         // 1. SMB scheme → VLC (AVPlayer cannot open smb:// URIs)
         if hints.scheme == "smb" {
             return .vlcKit
@@ -40,20 +40,17 @@ public enum EngineSelector {
         }
 
         // 3. Container known and not in the AVPlayer set → VLC
-        if let container = hints.container,
-           !PlaybackCapabilityMatrix.avKitContainers.contains(container) {
+        if let container = hints.container, !support.containers.contains(container) {
             return .vlcKit
         }
 
         // 4. Video codec known and not in the AVPlayer set → VLC
-        if let video = hints.videoCodec,
-           !PlaybackCapabilityMatrix.avKitVideoCodecs.contains(video) {
+        if let video = hints.videoCodec, !support.videoCodecs.contains(video) {
             return .vlcKit
         }
 
-        // 5. Audio codec known and not in the AVPlayer set → VLC
-        if let audio = hints.audioCodec,
-           !PlaybackCapabilityMatrix.avKitAudioCodecs.contains(audio) {
+        // 5. Any audio codec not in the AVPlayer set → VLC
+        if !support.audioCodecs.isSuperset(of: hints.audioCodecs) {
             return .vlcKit
         }
 

@@ -43,16 +43,6 @@ struct MediaInfoTests {
         #expect(AudioCodec(identifier: identifier) == nil)
     }
 
-    /// `avPlayerSupported` is the hinge the whole engine-selection story turns on, so it gets a
-    /// membership test rather than being taken on trust from the codec list.
-    @Test("avPlayerSupported holds the hardware-decodable audio codecs only")
-    func avPlayerSupportedSet() {
-        #expect(AudioCodec.avPlayerSupported == [.aac, .ac3, .eac3, .mp3])
-        for codec in [AudioCodec.dts, .trueHD, .flac, .opus] {
-            #expect(AudioCodec.avPlayerSupported.contains(codec) == false)
-        }
-    }
-
     /// The VLC-only codecs' raw values ARE their ffmpeg wire strings — the profile the device
     /// sends to Jellyfin is built from them, so a rename would silently change the negotiation.
     @Test("VLC-only video codecs keep their ffmpeg raw values")
