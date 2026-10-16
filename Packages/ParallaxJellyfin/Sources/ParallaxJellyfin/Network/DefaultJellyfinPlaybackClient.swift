@@ -58,21 +58,6 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         startTimeTicks: Int?,
         selection: StreamSelection?
     ) async throws -> PlaybackInfoResponse {
-        var params = Paths.GetPostedPlaybackInfoParameters()
-        params.userID = userID
-        params.startTimeTicks = startTimeTicks
-        // Force the server to build the transcode around a specific source track
-        // (track switching on the transcode path). The media source id must ride
-        // along or the server throws both indices away — see `StreamSelection`.
-        params.mediaSourceID = selection?.mediaSourceID
-        params.audioStreamIndex = selection?.audioStreamIndex
-        params.subtitleStreamIndex = selection?.subtitleStreamIndex
-        params.enableDirectPlay = true
-        params.enableDirectStream = true
-        params.enableTranscoding = true
-        params.allowVideoStreamCopy = Self.allowsVideoStreamCopy(for: selection)
-        params.allowAudioStreamCopy = true
-
         let body = Self.playbackInfoBody(
             profile: profile,
             startTimeTicks: startTimeTicks,
@@ -80,7 +65,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             selection: selection
         )
 
-        let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
+        let request = Paths.getPostedPlaybackInfo(itemID: itemID, body)
         return try await client().send(request).value
     }
 
@@ -88,10 +73,10 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
     /// as a pure function (the test seam) so the body's fields — notably the
     /// stream-copy flags — are assertable without a live network round-trip.
     ///
-    /// The POST body is authoritative for this endpoint — the query-param copy in
-    /// `playbackInfo()` predates it and the server largely ignores query flags here.
-    /// Without `allowVideoStreamCopy`/`allowAudioStreamCopy` set on the body, the
-    /// server can decline eligible stream-copy and fully re-encode instead.
+    /// The body is the only carrier: the endpoint's query parameters are obsolete and
+    /// would override the body field by field. The selected track indices force the
+    /// server to build the transcode around that track, and the media source id must
+    /// ride along or the server throws both indices away — see `StreamSelection`.
     static func playbackInfoBody(
         profile: DeviceProfile,
         startTimeTicks: Int?,

@@ -110,7 +110,7 @@ struct DefaultJellyfinPlaybackClientWireTests {
         )
     }
 
-    @Test("playbackInfo POSTs to the item's PlaybackInfo endpoint with the selection in the query and body")
+    @Test("playbackInfo POSTs the selection to the item's PlaybackInfo endpoint in the body alone")
     func playbackInfoRequest() async throws {
         let stub = StubHTTPTransport()
         var response = PlaybackInfoResponse()
@@ -131,20 +131,13 @@ struct DefaultJellyfinPlaybackClientWireTests {
         let request = try stub.onlyExchange()
         #expect(request.method == "POST")
         #expect(request.path == "/Items/item-1/PlaybackInfo")
-        #expect(request.query("userId") == "u1")
-        #expect(request.query("startTimeTicks") == "120000000")
-        #expect(request.query("audioStreamIndex") == "2")
-        #expect(request.query("subtitleStreamIndex") == "3")
-        // Without this the server discards both indices above and rebuilds around its defaults.
-        #expect(request.query("mediaSourceId") == "ms-1")
-        // The body is authoritative for this endpoint — assert it on the wire, not only via the
-        // pure builder.
+        // The obsolete query parameters override the body field by field.
+        #expect(request.queryNames == [])
         let body = try request.decodedBody(PlaybackInfoDto.self)
         #expect(body.allowVideoStreamCopy == true)
         #expect(body.allowAudioStreamCopy == true)
         #expect(body.deviceProfile?.maxStreamingBitrate == Int(JellyfinFixtures.caps().maxBitrate.rawValue))
-        // Jellyfin only applies stream indices that arrive alongside the source they index into,
-        // so a track switch sent without the body copy looks accepted and rebuilds around defaults.
+        // Jellyfin only applies stream indices that arrive alongside the source they index into.
         #expect(body.mediaSourceID == "ms-1")
         #expect(body.audioStreamIndex == 2)
         #expect(body.subtitleStreamIndex == 3)
