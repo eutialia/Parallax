@@ -9,37 +9,43 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — Fixtures
 
+    static let withoutAV1 = AVPlayerSupport(
+        containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: [.aac, .ac3, .eac3]
+    )
+    static let withAV1 = AVPlayerSupport(
+        containers: [.mp4, .mov, .hls],
+        videoCodecs: [.h264, .hevc, .av1],
+        audioCodecs: [.aac, .ac3, .eac3, .flac, .opus]
+    )
+
     /// AVKit-native only: no software codecs, so no VLC tier may be emitted.
     private func avKitOnlyCaps() -> DeviceCapabilities {
-        JellyfinFixtures.caps(containers: [.mp4, .mov])
+        JellyfinFixtures.caps()
     }
 
     /// Both tiers present. `hdr: .none` on purpose — several tests below assert the HEVC range
-    /// whitelist does NOT shrink when the probe reports no HDR.
+    /// whitelist does NOT shrink when the probe reports no HDR. The AVPlayer containers include
+    /// `.hls`, as the probe reports them, which proves hls is stripped rather than never present.
     private func tieredCaps(
+        avPlayer: AVPlayerSupport = DeviceProfileTranslatorTests.withoutAV1,
         hdr: HDRSupport = .none,
-        maxResolution: Resolution = .uhd4K,
-        containers: [Container] = [.mp4, .mov]
+        maxResolution: Resolution = .uhd4K
     ) -> DeviceCapabilities {
         JellyfinFixtures.caps(
-            containers: containers,
+            avPlayer: avPlayer,
             hdr: hdr,
             maxResolution: maxResolution,
-            softwareVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
-            softwareAudioCodecs: [.dts, .flac, .opus],
-            softwareContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
+            vlcVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
+            vlcAudioCodecs: [.dts, .flac, .opus],
+            vlcContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
         )
     }
 
     /// Dolby Vision hardware decode confirmed — the one signal that adds bare DOVI to the gate.
-    private func dolbyVisionCaps(maxResolution: Resolution = .uhd4K) -> DeviceCapabilities {
-        tieredCaps(hdr: [.hdr10, .dolbyVision], maxResolution: maxResolution)
-    }
-
-    /// Mirrors `DeviceProfileBuilder.build()`, whose `supportedContainers` INCLUDES `.hls` — the
-    /// input shape that proves hls is stripped rather than never present.
-    private func realBuildCaps() -> DeviceCapabilities {
-        tieredCaps(containers: [.mp4, .mov, .hls])
+    private func dolbyVisionCaps(
+        avPlayer: AVPlayerSupport = DeviceProfileTranslatorTests.withoutAV1, maxResolution: Resolution = .uhd4K
+    ) -> DeviceCapabilities {
+        tieredCaps(avPlayer: avPlayer, hdr: [.hdr10, .dolbyVision], maxResolution: maxResolution)
     }
 
     // MARK: — Tier lookup
@@ -66,25 +72,19 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — AVKit DirectPlay tier
 
-    /// The AVKit tier is an EXACT set per field: anything extra would be advertised as
+    /// The AVKit tier is exactly the probed support: anything extra would be advertised as
     /// direct-playable when AVFoundation can't actually decode it.
-    @Test(
-        "The AVKit DirectPlay tier advertises exactly the hardware-native sets",
-        arguments: [ProfileField.container, .videoCodec, .audioCodec]
-    )
-    func avKitDirectPlayTier(field: ProfileField) throws {
-        let capabilities = tieredCaps()
-        let entry = try #require(avKitEntry(in: DeviceProfileTranslator.deviceProfile(from: capabilities)))
+    @Test("The AVKit DirectPlay tier advertises exactly the probed AVPlayer support", arguments: [
+        (withoutAV1, "mov,mp4", "h264,hevc", "aac,ac3,eac3"),
+        (withAV1, "mov,mp4", "av1,h264,hevc", "aac,ac3,eac3,flac,opus"),
+    ])
+    func avKitDirectPlayTier(support: AVPlayerSupport, containers: String, video: String, audio: String) throws {
+        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps(avPlayer: support))
+        let entry = try #require(avKitEntry(in: profile))
         #expect(entry.type == .video)
-        // Compared against the capabilities under test, not a re-typed codec list.
-        switch field {
-        case .container:
-            #expect(csvParts(entry.container) == Set(capabilities.supportedContainers.map(\.rawValue)))
-        case .videoCodec:
-            #expect(csvParts(entry.videoCodec) == Set(capabilities.supportedVideoCodecs.map(\.rawValue)))
-        case .audioCodec:
-            #expect(csvParts(entry.audioCodec) == Set(capabilities.supportedAudioCodecs.map(\.rawValue)))
-        }
+        #expect(entry.container == containers)
+        #expect(entry.videoCodec == video)
+        #expect(entry.audioCodec == audio)
     }
 
     enum ProfileField: Sendable { case container, videoCodec, audioCodec }
@@ -110,7 +110,7 @@ struct DeviceProfileTranslatorTests {
         case .audioCodec:
             let audio = csvParts(entry.audioCodec)
             #expect(audio.isSuperset(of: Set(capabilities.softwareAudioCodecs.map(\.rawValue))))
-            #expect(audio.isSuperset(of: Set(capabilities.supportedAudioCodecs.map(\.rawValue))))
+            #expect(audio.isSuperset(of: Set(capabilities.avPlayer.audioCodecs.map(\.rawValue))))
         }
     }
 
@@ -129,8 +129,8 @@ struct DeviceProfileTranslatorTests {
     /// from both tiers even though the capability set contains it.
     @Test("hls is stripped from both DirectPlay tiers", arguments: [Tier.avKit, .vlc])
     func directPlayExcludesHLS(tier: Tier) throws {
-        let capabilities = realBuildCaps()
-        #expect(capabilities.supportedContainers.contains(.hls), "the input must actually contain hls")
+        let capabilities = tieredCaps()
+        #expect(capabilities.avPlayer.containers.contains(.hls), "the input must actually contain hls")
         let profile = DeviceProfileTranslator.deviceProfile(from: capabilities)
         let entry = try #require(tier == .avKit ? avKitEntry(in: profile) : vlcEntry(in: profile))
         #expect(csvParts(entry.container).contains(Container.hls.rawValue) == false)
@@ -259,12 +259,34 @@ struct DeviceProfileTranslatorTests {
         #expect(condition?.value == "main|main10")
     }
 
-    @Test("Both video CodecProfiles cap Width/Height at capabilities.maxResolution")
+    /// The probe answers at codec-family level; the Main-profile gate is what keeps AV1
+    /// High/Professional streams off a decoder that rejects them.
+    @Test("An AV1 CodecProfile gates Main profile, ≤ 10-bit and the HDR10/HLG ranges, only when AVPlayer plays AV1")
+    func av1ProfileGuard() throws {
+        let without = DeviceProfileTranslator.deviceProfile(from: tieredCaps(avPlayer: Self.withoutAV1))
+        #expect((without.codecProfiles ?? []).contains { $0.codec == "av1" } == false)
+
+        let with = DeviceProfileTranslator.deviceProfile(from: tieredCaps(avPlayer: Self.withAV1))
+        let av1 = try #require((with.codecProfiles ?? []).first { $0.codec == "av1" && $0.type == .video })
+        #expect(av1.conditions == [
+            ProfileCondition(condition: .equalsAny, isRequired: false, property: .videoProfile, value: "main"),
+            ProfileCondition(condition: .lessThanEqual, isRequired: false, property: .videoBitDepth, value: "10"),
+            ProfileCondition(
+                condition: .equalsAny, isRequired: false, property: .videoRangeType, value: "SDR|HDR10|HDR10Plus|HLG"
+            ),
+            ProfileCondition(condition: .lessThanEqual, isRequired: false, property: .width, value: "3840"),
+            ProfileCondition(condition: .lessThanEqual, isRequired: false, property: .height, value: "2160"),
+        ])
+    }
+
+    @Test("Every video CodecProfile caps Width/Height at capabilities.maxResolution")
     func resolutionCeilingConditions() {
         let custom = Resolution(width: 1920, height: 1080)
-        let profile = DeviceProfileTranslator.deviceProfile(from: dolbyVisionCaps(maxResolution: custom))
+        let profile = DeviceProfileTranslator.deviceProfile(
+            from: dolbyVisionCaps(avPlayer: Self.withAV1, maxResolution: custom)
+        )
         let codecs = profile.codecProfiles ?? []
-        for codec in ["h264", "hevc"] {
+        for codec in ["h264", "hevc", "av1"] {
             let entry = codecs.first { $0.codec == codec && $0.type == .video }
             let width = entry?.conditions?.first { $0.property == .width }
             let height = entry?.conditions?.first { $0.property == .height }

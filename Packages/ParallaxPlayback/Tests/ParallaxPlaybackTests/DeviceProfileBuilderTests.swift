@@ -7,43 +7,42 @@ import ParallaxPlaybackTestSupport
 @Suite("DeviceProfileBuilder")
 struct DeviceProfileBuilderTests {
 
-    /// The profile a default (no-HDR) device produces — the shape 12 of these
-    /// tests need before they can look at one field.
-    private func defaultCaps() async -> DeviceCapabilities {
-        await DeviceProfileBuilder(probe: FakeCapabilityProbe()).build()
-    }
+    // MARK: — The VLC tier is what AVPlayer leaves over
 
-    // MARK: — The fixed AVPlayer whitelist comes from the matrix, not a second list
+    static let withoutAV1 = AVPlayerSupport(
+        containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: [.aac, .ac3, .eac3]
+    )
+    static let withAV1 = AVPlayerSupport(
+        containers: [.mp4, .mov, .hls],
+        videoCodecs: [.h264, .hevc, .av1],
+        audioCodecs: [.aac, .ac3, .eac3, .flac, .opus]
+    )
 
-    /// Compared against `PlaybackCapabilityMatrix` rather than re-typed literals: the
-    /// matrix suite owns *what* the lists contain, this suite owns *that the builder
-    /// serializes them into the wire profile*. Re-typing them here would let the two
-    /// drift apart with both suites still green.
-    @Test("build() serializes the matrix's AVKit whitelists into the profile")
-    func staticWhitelistsComeFromTheMatrix() async {
-        let caps = await defaultCaps()
-        #expect(Set(caps.supportedVideoCodecs) == PlaybackCapabilityMatrix.avKitVideoCodecs)
-        #expect(Set(caps.supportedAudioCodecs) == PlaybackCapabilityMatrix.avKitAudioCodecs)
-        #expect(Set(caps.supportedContainers) == PlaybackCapabilityMatrix.avKitContainers)
-        #expect(Set(caps.preferredSubtitleFormats) == PlaybackCapabilityMatrix.avKitSubtitleFormats)
+    @Test("build() carries the probed AVPlayer support", arguments: [withoutAV1, withAV1])
+    func avPlayerSupportPropagates(support: AVPlayerSupport) async {
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: support))
+        #expect(await builder.build().avPlayer == support)
     }
 
     /// The VLC tier rides the wire profile so servers direct-play VLC-only sources
-    /// instead of transcoding them. `DeviceProfileTranslator` drops the tier when
-    /// `softwareVideoCodecs` is empty, so an empty list here would silently force
-    /// every such source back through a transcode.
-    @Test("build() serializes the matrix's VLC software tier into the profile")
-    func softwareTierComesFromTheMatrix() async {
-        let caps = await defaultCaps()
-        #expect(Set(caps.softwareVideoCodecs) == PlaybackCapabilityMatrix.softwareVideoCodecs)
-        #expect(Set(caps.softwareAudioCodecs) == PlaybackCapabilityMatrix.softwareAudioCodecs)
-        #expect(Set(caps.softwareContainers) == PlaybackCapabilityMatrix.softwareContainers)
-        #expect(!caps.softwareVideoCodecs.isEmpty)
+    /// instead of transcoding them, and must never claim what AVPlayer plays: an
+    /// h264/hevc VLC tier would lose HDR/DV/Atmos on premium MKV content.
+    @Test("build() serializes the libvlc declaration minus AVPlayer's support as the VLC tier")
+    func softwareTierIsVLCMinusAVPlayer() async {
+        let without = await DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: Self.withoutAV1)).build()
+        #expect(without.softwareVideoCodecs == [.av1, .mpeg2video, .vc1, .vp9])
+        #expect(without.softwareAudioCodecs == [.dts, .flac, .mp3, .opus])
+        #expect(without.softwareContainers == [.avi, .flac, .mkv, .mp3, .ts, .webm])
+
+        let with = await DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: Self.withAV1)).build()
+        #expect(with.softwareVideoCodecs == [.mpeg2video, .vc1, .vp9])
+        #expect(with.softwareAudioCodecs == [.dts, .mp3])
+        #expect(with.softwareContainers == [.avi, .flac, .mkv, .mp3, .ts, .webm])
     }
 
     @Test("build() declares a 4K UHD ceiling")
     func staticResolution() async {
-        #expect(await defaultCaps().maxResolution == .uhd4K)
+        #expect(await DeviceProfileBuilder(probe: FakeCapabilityProbe()).build().maxResolution == .uhd4K)
     }
 
     // MARK: — Probed fields propagate verbatim

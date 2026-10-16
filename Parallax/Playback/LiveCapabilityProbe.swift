@@ -45,4 +45,12 @@ struct LiveCapabilityProbe: CapabilityProbe {
         }
         return support
     }
+
+    nonisolated func avPlayerSupport() -> AVPlayerSupport {
+        AVPlayerSupportProbe.probe(
+            isPlayable: AVURLAsset.isPlayableExtendedMIMEType,
+            mimeTypes: Set(AVURLAsset.audiovisualMIMETypes()),
+            decodesInHardware: VTIsHardwareDecodeSupported
+        )
+    }
 }

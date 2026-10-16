@@ -8,23 +8,23 @@ import ParallaxCore
 ///
 /// The profile encodes two direct-play tiers:
 ///
-/// 1. **AVKit tier** — `mp4,mov` containers; `h264,hevc` video; `aac,ac3,eac3,mp3` audio.
+/// 1. **AVKit tier** — the containers (`mp4,mov`) and codecs probed into `capabilities.avPlayer`.
 ///    When a file is in a non-AVKit container (e.g. MKV) but carries an AVKit-compatible
 ///    video codec, no entry matches → the server remuxes to HLS and the AVKit path
 ///    handles it (preserving HDR/DV/Atmos).
 ///
 /// 2. **VLC tier** — broad container set; video codecs from `softwareVideoCodecs`
-///    (explicitly **excludes** h264/hevc so MKV+HEVC falls through to the AVKit remux);
+///    (only what AVPlayer cannot play here, so MKV+HEVC falls through to the AVKit remux);
 ///    broad audio (all VLC audio, including AVKit audio, because audio breadth is safe
 ///    once the video-codec gate has already decided AVKit-vs-VLC).
 ///    Omitted when `softwareVideoCodecs` is empty (avKit-only caps).
 ///
-/// 3. **Transcode floor** — HLS fallback for anything neither tier covers (unchanged).
+/// 3. **Transcode floor** — HLS fallback for anything neither tier covers.
 ///
 /// ## `hls` divergence (preserved)
 ///
 /// `hls` is NOT in the DirectPlay container strings. It is a transcode delivery format,
-/// not a source container. `PlaybackCapabilityMatrix.avKitContainers` retains `.hls` for
+/// not a source container. `AVPlayerSupport.containers` retains `.hls` for
 /// EngineSelector routing; the translator deliberately subtracts it from BOTH tiers.
 enum DeviceProfileTranslator {
     static func deviceProfile(from capabilities: DeviceCapabilities) -> DeviceProfile {
@@ -62,14 +62,14 @@ enum DeviceProfileTranslator {
     // MARK: — Private: DirectPlay tiers
 
     private static func avKitDirectPlay(from capabilities: DeviceCapabilities) -> DirectPlayProfile {
-        let videoCodecs = capabilities.supportedVideoCodecs
+        let videoCodecs = capabilities.avPlayer.videoCodecs
             .map(\.rawValue).sorted().joined(separator: ",")
-        let audioCodecs = capabilities.supportedAudioCodecs
+        let audioCodecs = capabilities.avPlayer.audioCodecs
             .map(\.rawValue).sorted().joined(separator: ",")
         // Subtract .hls — it is a transcode delivery format, not a direct-play source
-        // container. PlaybackCapabilityMatrix.avKitContainers keeps .hls for routing;
+        // container. AVPlayerSupport.containers keeps .hls for routing;
         // that must not bleed into the Jellyfin wire profile.
-        let containers = Set(capabilities.supportedContainers).subtracting([.hls])
+        let containers = capabilities.avPlayer.containers.subtracting([.hls])
             .map(\.rawValue).sorted().joined(separator: ",")
 
         return DirectPlayProfile(
@@ -81,20 +81,20 @@ enum DeviceProfileTranslator {
     }
 
     private static func vlcDirectPlay(from capabilities: DeviceCapabilities) -> DirectPlayProfile {
-        // Video: software tier only (h264/hevc excluded by construction in
-        // PlaybackCapabilityMatrix.softwareVideoCodecs).
+        // Video: software tier only (whatever AVPlayer plays is excluded by
+        // construction in DeviceCapabilities).
         let videoCodecs = capabilities.softwareVideoCodecs
             .map(\.rawValue).sorted().joined(separator: ",")
 
         // Audio: union of AVKit audio + VLC-additional audio (the video-codec gate
         // already decided this is a VLC-routed file, so broad audio is safe).
-        let allVlcAudio = Set(capabilities.supportedAudioCodecs)
+        let allVlcAudio = capabilities.avPlayer.audioCodecs
             .union(Set(capabilities.softwareAudioCodecs))
         let audioCodecs = allVlcAudio.map(\.rawValue).sorted().joined(separator: ",")
 
         // Containers: union of avKit containers + software containers, minus hls
         // (hls is a delivery format, not a direct-play source container).
-        let allVlcContainers = Set(capabilities.supportedContainers)
+        let allVlcContainers = capabilities.avPlayer.containers
             .union(Set(capabilities.softwareContainers))
             .subtracting([.hls])
         let containers = allVlcContainers.map(\.rawValue).sorted().joined(separator: ",")
@@ -217,7 +217,7 @@ enum DeviceProfileTranslator {
         // condition gates regardless, and false only avoids a needless transcode
         // when the server couldn't read the profile/bit depth.
         //
-        // Width/Height cap both video codecs at capabilities.maxResolution —
+        // Width/Height cap every video codec at capabilities.maxResolution —
         // e.g. a source above the device's declared ceiling (4K today) gets
         // downscaled server-side instead of direct-played oversized.
         //
@@ -270,6 +270,33 @@ enum DeviceProfileTranslator {
             ),
         ]
 
+        // Apple's AV1 decoder handles Main profile only, and the probe's MIME check
+        // cannot see profiles.
+        let av1Profile = CodecProfile(
+            codec: "av1",
+            conditions: [
+                ProfileCondition(
+                    condition: .equalsAny,
+                    isRequired: false,
+                    property: .videoProfile,
+                    value: "main"
+                ),
+                ProfileCondition(
+                    condition: .lessThanEqual,
+                    isRequired: false,
+                    property: .videoBitDepth,
+                    value: "10"
+                ),
+                ProfileCondition(
+                    condition: .equalsAny,
+                    isRequired: false,
+                    property: .videoRangeType,
+                    value: "SDR|HDR10|HDR10Plus|HLG"
+                ),
+            ] + resolutionConditions,
+            type: .video
+        )
+
         return [
             CodecProfile(
                 codec: "h264",
@@ -320,6 +347,6 @@ enum DeviceProfileTranslator {
                 ] + resolutionConditions,
                 type: .video
             ),
-        ]
+        ] + (capabilities.avPlayer.videoCodecs.contains(.av1) ? [av1Profile] : [])
     }
 }

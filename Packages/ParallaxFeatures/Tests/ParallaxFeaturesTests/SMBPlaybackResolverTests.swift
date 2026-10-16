@@ -6,6 +6,8 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
+import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 import ParallaxCoreTestSupport
 @testable import ParallaxFeatures
 
@@ -73,7 +75,8 @@ struct SMBPlaybackResolverTests {
             serverStore: store,
             connections: world.connections(),
             resumeStore: resumeStore ?? SMBTestFixtures.inertResumeStore(),
-            clock: clock
+            clock: clock,
+            deviceProfileBuilder: DeviceProfileBuilder(probe: FakeCapabilityProbe())
         )
     }
 

@@ -11,8 +11,8 @@ public struct PlaybackHints: Sendable, Hashable {
     public let container: Container?
     /// The video codec, if known.
     public let videoCodec: VideoCodec?
-    /// The audio codec, if known.
-    public let audioCodec: AudioCodec?
+    /// Every audio track's codec, in track order. Empty when unknown or absent.
+    public let audioCodecs: [AudioCodec]
     /// The subtitle formats present, used to decide sidecar vs embedded rendering.
     public let subtitleFormats: [SubtitleFormat]
     /// Total size of the source file in bytes, when the caller knows it (the SMB lister does).
@@ -25,14 +25,14 @@ public struct PlaybackHints: Sendable, Hashable {
         scheme: String?,
         container: Container?,
         videoCodec: VideoCodec?,
-        audioCodec: AudioCodec?,
+        audioCodecs: [AudioCodec],
         subtitleFormats: [SubtitleFormat],
         fileSizeBytes: Int64? = nil
     ) {
         self.scheme = scheme
         self.container = container
         self.videoCodec = videoCodec
-        self.audioCodec = audioCodec
+        self.audioCodecs = audioCodecs
         self.subtitleFormats = subtitleFormats
         self.fileSizeBytes = fileSizeBytes
     }

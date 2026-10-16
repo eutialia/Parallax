@@ -18,8 +18,9 @@ import Testing
 /// Faked: the Keychain, `UserDefaults` (a private suite), the storage and caches directories (a
 /// scratch directory), the Jellyfin transport (`FakeJellyfinServer`s), the LAN discovery broadcast,
 /// the SMB connections under the real pool (`nas`), Bonjour browsing, the clock, reachability
-/// (scripted, online until told otherwise), the display's HDR support and its eligibility changes, the audio session, both frame
-/// thumbnailers, the playback engines (`engines`), Now Playing, the display and VLC's subtitle fonts.
+/// (scripted, online until told otherwise), the display's HDR support and its eligibility changes,
+/// what AVPlayer plays, the audio session, both frame thumbnailers, the playback engines
+/// (`engines`), Now Playing, the display and VLC's subtitle fonts.
 @MainActor
 final class AppWorld {
     private(set) var app: AppModel
@@ -59,13 +60,15 @@ final class AppWorld {
     /// tasks call them. `signedIn` accounts and `savedSMB` servers (with their passwords) were saved
     /// by an earlier launch; `discovering` are the servers that answer a LAN discovery broadcast.
     /// `subtitleFetchTimeout` is how long a subtitle request waits, in real time: a scenario about a
-    /// server that hasn't answered yet shortens it. Nothing else's timeout changes.
+    /// server that hasn't answered yet shortens it. Nothing else's timeout changes. `avPlayer` is
+    /// what the device's AVPlayer plays.
     static func launch(
         signedIn accounts: [(server: FakeJellyfinServer, user: String)] = [],
         savedSMB: [(server: SMBServerData, password: String)] = [],
         discovering lanServers: [FakeJellyfinServer] = [],
         launchReveal: LaunchRevealCoverage = .home,
-        subtitleFetchTimeout: Duration = AppEnvironment.defaultSubtitleFetchTimeout
+        subtitleFetchTimeout: Duration = AppEnvironment.defaultSubtitleFetchTimeout,
+        avPlayer: AVPlayerSupport = .baseline
     ) async throws -> AppWorld {
         let suiteName = "AppWorld-\(UUID().uuidString)"
         let storageDirectory = URL.temporaryDirectory.appending(path: suiteName, directoryHint: .isDirectory)
@@ -79,7 +82,7 @@ final class AppWorld {
         let engines = EngineLedger()
         let audioSession = RecordingAudioSession()
         let reachability = ScriptedReachability()
-        let display = ScriptedDisplay()
+        let display = ScriptedDisplay(avPlayer: avPlayer)
         let environment = AppEnvironment(
             keychain: keychain,
             defaults: UserDefaults(suiteName: suiteName)!,
@@ -589,8 +592,15 @@ private final class ScriptedDisplay: CapabilityProbe, Sendable {
     }
 
     private let state = Mutex(State())
+    private let avPlayer: AVPlayerSupport
+
+    init(avPlayer: AVPlayerSupport) {
+        self.avPlayer = avPlayer
+    }
 
     func hdrSupport() -> HDRSupport { state.withLock { $0.hdr } }
+
+    func avPlayerSupport() -> AVPlayerSupport { avPlayer }
 
     var eligibilityChanges: AsyncStream<Void> {
         let (stream, continuation) = AsyncStream<Void>.makeStream()

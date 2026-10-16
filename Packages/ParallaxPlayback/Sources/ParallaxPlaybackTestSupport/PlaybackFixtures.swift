@@ -16,7 +16,7 @@ extension PlaybackHints {
         scheme: String? = "https",
         container: Container? = .mp4,
         video: VideoCodec? = .h264,
-        audio: AudioCodec? = .aac,
+        audio: [AudioCodec] = [.aac],
         subtitles: [SubtitleFormat] = [],
         fileSizeBytes: Int64? = nil
     ) -> PlaybackHints {
@@ -24,7 +24,7 @@ extension PlaybackHints {
             scheme: scheme,
             container: container,
             videoCodec: video,
-            audioCodec: audio,
+            audioCodecs: audio,
             subtitleFormats: subtitles,
             fileSizeBytes: fileSizeBytes
         )
@@ -33,7 +33,7 @@ extension PlaybackHints {
     /// Hints carrying no signal at all — the "server transcoded it, we know nothing"
     /// shape the selector must still route.
     public static let unknown = PlaybackHints.fixture(
-        scheme: nil, container: nil, video: nil, audio: nil
+        scheme: nil, container: nil, video: nil, audio: []
     )
 }
 
@@ -130,10 +130,12 @@ extension CMTime {
 /// so by the time `build()` returns a test reads the landed value.
 public final class CountingFakeCapabilityProbe: CapabilityProbe {
     private let stubbedHDR: HDRSupport
+    private let stubbedAVPlayer: AVPlayerSupport
     private let calls = Mutex(0)
 
-    public init(hdr: HDRSupport = .none) {
+    public init(hdr: HDRSupport = .none, avPlayer: AVPlayerSupport = .baseline) {
         self.stubbedHDR = hdr
+        self.stubbedAVPlayer = avPlayer
     }
 
     public var callCount: Int { calls.withLock { $0 } }
@@ -142,4 +144,6 @@ public final class CountingFakeCapabilityProbe: CapabilityProbe {
         calls.withLock { $0 += 1 }
         return stubbedHDR
     }
+
+    public func avPlayerSupport() -> AVPlayerSupport { stubbedAVPlayer }
 }

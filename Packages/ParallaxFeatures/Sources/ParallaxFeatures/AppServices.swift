@@ -152,7 +152,8 @@ public struct AppServices {
             sessionConfiguration: environment.urlSessionConfiguration,
             cacheDirectory: environment.cachesDirectory
         )
-        deviceProfileBuilder = DeviceProfileBuilder(probe: environment.capabilityProbe)
+        let profileBuilder = DeviceProfileBuilder(probe: environment.capabilityProbe)
+        deviceProfileBuilder = profileBuilder
         playbackEngineFactory = environment.makePlaybackEngine
         audioSession = environment.audioSession
         makeNowPlaying = environment.makeNowPlaying
@@ -165,7 +166,8 @@ public struct AppServices {
         let resumeStore = SMBResumeStore(defaults: defaults)
         smbResumeStore = resumeStore
         smbPlaybackResolver = SMBPlaybackResolver(
-            serverStore: store, connections: connections, resumeStore: resumeStore, clock: environment.clock
+            serverStore: store, connections: connections, resumeStore: resumeStore, clock: environment.clock,
+            deviceProfileBuilder: profileBuilder
         )
         mediaArtworkProvider = MediaArtworkProvider(
             thumbnailer: environment.thumbnailer,
@@ -173,7 +175,8 @@ public struct AppServices {
             serverStore: store,
             connections: connections,
             cacheDirectory: environment.cachesDirectory.appending(path: "SMBThumbnails", directoryHint: .isDirectory),
-            clock: environment.clock
+            clock: environment.clock,
+            deviceProfileBuilder: profileBuilder
         )
     }
 }

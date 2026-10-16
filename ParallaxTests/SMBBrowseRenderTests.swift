@@ -76,7 +76,8 @@ struct SMBBrowseRenderTests {
                 serverStore: makeIsolatedServerStore(label: "SMBBrowseRenderTests"),
                 connections: .live(clock: ContinuousClock()),
                 cacheDirectory: .temporaryDirectory,
-                clock: ContinuousClock()
+                clock: ContinuousClock(),
+                deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe())
             ),
             onPlay: { _ in }
         )

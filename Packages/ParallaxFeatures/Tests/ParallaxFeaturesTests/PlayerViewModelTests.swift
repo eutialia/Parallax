@@ -21,11 +21,11 @@ private enum RoutingCase: String, CaseIterable, CustomTestStringConvertible {
     /// Source is MKV/AV1/DTS but the server DELIVERS an HLS transcode: the selector
     /// must gate on the delivery (AVKit-playable), not the source container.
     case transcodedMKVDeliversHLS
-    /// VC-1 sits outside EngineSelector's avKit video-codec set → .vlcKit.
+    /// VC-1 is never in AVPlayer's support → .vlcKit.
     case vc1MKVDirectPlay
     /// Same source with an AVKit-playable AAC track — the video codec still decides.
     case vc1MKVWithAACAudio
-    /// Container AND codec both outside the avKit whitelist → .vlcKit.
+    /// Container AND codec both outside AVPlayer's support → .vlcKit.
     case vp9WebMDirectPlay
 
     var testDescription: String { rawValue }
