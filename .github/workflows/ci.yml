@@ -95,9 +95,12 @@ jobs:
           # "name (UUID) (Shutdown) " string through as the destination.
           DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \([^)]*\) \([^)]*\) *$//')
           echo "Testing on simulator: ${DEVICE}"
+          # No diagnostics collection: after a failed run it waits up to 600s on the
+          # simulator, past the step timeout, and turns one red test into a killed job.
           xcodebuild test \
             -scheme ${{ matrix.scheme }} \
-            -destination "platform=iOS Simulator,name=${DEVICE}"
+            -destination "platform=iOS Simulator,name=${DEVICE}" \
+            -collect-test-diagnostics never
 
   app-build:
     runs-on: xcode-27
@@ -145,7 +148,8 @@ jobs:
             -project Parallax.xcodeproj \
             -scheme Parallax \
             -destination "platform=iOS Simulator,OS=latest,name=${DEVICE}" \
-            -only-testing:ParallaxTests
+            -only-testing:ParallaxTests \
+            -collect-test-diagnostics never
 
   # Release compiles whole-module under -O, and that pass rejects names
   # Debug's per-file pass lets through. The v1.2.0 archive failed on a
