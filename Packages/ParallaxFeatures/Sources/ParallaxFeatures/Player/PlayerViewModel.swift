@@ -193,12 +193,15 @@ public final class PlayerViewModel {
     ///
     /// `.landing` is where that stops being true: a `.projected` beat is the engine's estimate
     /// off its OWN seek target, which the seek-settle contract calls display-safe — the picture
-    /// is at (or running from) it. From that beat the published clock is honest again, so the
-    /// concrete indicator follows it instead of claiming the video never moved for the whole
-    /// multi-second settle window a VLC reload takes.
+    /// is at (or running from) it. From that beat the published clock is honest again, so this
+    /// reads it, and a gesture that starts during the settle anchors on the target rather than
+    /// on a position the picture has already left.
+    ///
+    /// This is not what the bar draws at rest. Outside a gesture the concrete indicator stays
+    /// parked at A until the flight ends (`ScrubIndicators.land()`), whatever stage it reached.
     ///
     /// Two readers, and they have to be the same expression or the bar contradicts itself: the
-    /// CONCRETE indicator draws this during a gesture (`PlayerProgressBar.init(vm:)`),
+    /// CONCRETE indicator draws this during a gesture (`PlayerScrubBar`, as `concreteFraction`),
     /// and every new flight anchors its `played` on it (`beginPreview`, `commitSeek`) — so a
     /// scrub made over a seek that never landed CHAINS back to the original A instead of claiming
     /// a B nothing ever played, and the crossing it commits starts from the dot the user has been
