@@ -493,10 +493,12 @@ final class RecordingThumbnailer: FrameThumbnailing {
     var hold: AsyncGate?
     private(set) var requests: [URL] = []
     private(set) var positions: [Float] = []
+    private(set) var containers: [Container?] = []
 
-    func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
+    func frame(from url: URL, at position: Float, container: Container?, timeout: Duration) async throws -> ThumbnailFrame {
         requests.append(url)
         positions.append(position)
+        containers.append(container)
         await hold?.pass()
         try Task.checkCancellation()
         guard !script.isEmpty else { return Self.frame }
