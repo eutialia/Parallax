@@ -124,9 +124,11 @@ public struct SMBPlaybackResolver {
                 startTime: startTime,
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
-                // Both bridge routes require a probe-proven complete file (bridgeEligible's
-                // gate for AVKit, the vlcOverBridge gate above for VLC), so the container's
-                // duration is real — no read-rate estimate in play.
+                // Both bridge routes require `isComplete` (bridgeEligible's gate for AVKit, the
+                // vlcOverBridge gate above for VLC), and the bridge pins Content-Length, so the
+                // duration covers every byte the session will serve — no read-rate estimate in
+                // play. Only mp4's moov walk can prove a file incomplete; every other container
+                // reports complete, so a still-growing recording plays to its open-time size.
                 hasTrustworthyDuration: true,
                 hints: hints,
                 // The borrow's LIFETIME disqualifies it from pool reuse: an hours-long playback
