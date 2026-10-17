@@ -555,10 +555,10 @@ struct VLCKitSeekSettleTests {
 
     private func playingEngine(
         _ spy: SpyVLCPlayer, atMs: Int32, stallDeadline: Duration = .seconds(45),
-        container: Container? = nil
+        container: Container? = nil, seekQuietWindow: Duration = .milliseconds(30)
     ) async throws -> VLCKitEngine {
         spy.advanceClock(toMs: atMs)
-        let engine = VLCKitEngine(control: spy, stallDeadline: stallDeadline)
+        let engine = VLCKitEngine(control: spy, stallDeadline: stallDeadline, seekQuietWindow: seekQuietWindow)
         try await engine.load(.fixture(hints: .fixture(container: container)))
         await engine.play()
         return engine
@@ -642,6 +642,11 @@ struct VLCKitSeekSettleTests {
         #expect(after.allSatisfy { $0 == 60 }, "observed beats after the release: \(after)")
     }
 
+    /// The quiet window for tests that assert no release while events keep arriving: the
+    /// events are spaced 5-10 ms apart, and a loaded CI runner stretches those sleeps past the
+    /// production 30 ms.
+    private let burstWindow = CITimeScale.seconds(0.25)
+
     /// The dot trails the resumed picture because VLC 3 publishes time only on its ~250ms input
     /// tick. The refill after a seek is a burst of `.buffering` events that stops when the data
     /// is in, and for a container whose seek lands on the target that stop IS the landing.
@@ -650,7 +655,7 @@ struct VLCKitSeekSettleTests {
         let spy = SpyVLCPlayer()
         spy.timeWritesMoveTheClock = true
         spy.demuxBytesPerPoll = 1
-        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv)
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv, seekQuietWindow: burstWindow)
         let log = PositionBeatLog(engine)
 
         await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
@@ -709,7 +714,7 @@ struct VLCKitSeekSettleTests {
         let spy = SpyVLCPlayer()
         spy.timeWritesMoveTheClock = true
         spy.demuxBytesPerPoll = 1
-        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv)
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv, seekQuietWindow: burstWindow)
         let log = PositionBeatLog(engine)
 
         await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
