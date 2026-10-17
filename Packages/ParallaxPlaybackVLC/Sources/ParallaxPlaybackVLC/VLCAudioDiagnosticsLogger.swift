@@ -47,6 +47,12 @@ final class VLCAudioDiagnosticsLogger: NSObject, VLCLogging, @unchecked Sendable
     private static let audioModules = ["aout", "audiotoolbox", "audiounit", "avsamplebuffer", "clock"]
 
     func handleMessage(_ message: String, logLevel level: VLCLogLevel, context: VLCLogContext?) {
+        // Every player VLCKit creates asks for the marquee and audiounit gain options this
+        // build doesn't compile in, and libvlc reports each miss as an ERROR. That is nine
+        // lines per player, none of them signal, logged on the creating (main) thread. Under
+        // xcodebuild the unified log is echoed synchronously to a pipe the runner drains
+        // slowly on CI, and those writes froze the main actor for up to a minute mid-suite.
+        if message.hasPrefix("option "), message.hasSuffix(" does not exist") { return }
         let module = context?.module ?? ""
         let isAudioModule = Self.audioModules.contains { module.contains($0) }
         // ERRORS pass unfiltered from any module — a decoder/aout open failure is the
