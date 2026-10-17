@@ -368,15 +368,36 @@ struct MediaProbeTests {
         #expect(result.container == nil)
     }
 
-    @Test("0x47 sync bytes at 188-byte strides sniff as MPEG-TS")
-    func tsSyncBytesMagicIsTs() async throws {
-        var data = Data(count: 377)
-        data[data.startIndex] = 0x47
-        data[data.startIndex + 188] = 0x47
-        data[data.startIndex + 376] = 0x47
+    @Test("sync bytes at 188-byte strides, or 192-byte M2TS strides after a 4-byte timestamp, sniff as MPEG-TS",
+          arguments: [(first: 0, stride: 188, length: 377), (first: 4, stride: 192, length: 389)])
+    func tsSyncBytesMagicIsTs(first: Int, stride: Int, length: Int) async throws {
+        var data = Data(count: length)
+        for n in 0..<3 { data[data.startIndex + first + n * stride] = 0x47 }
         let result = try await probe(data)
         #expect(result.container == .ts)
         #expect(result.isComplete)
+    }
+
+    @Test("an M2TS whose third sync byte is missing is not ts")
+    func m2tsMissingThirdSyncIsNotTs() async throws {
+        var data = Data(count: 389)
+        data[data.startIndex + 4] = 0x47
+        data[data.startIndex + 196] = 0x47
+        let result = try await probe(data)
+        #expect(result.container == nil)
+    }
+
+    @Test("the MPEG-PS pack start code sniffs as mpegps")
+    func packStartCodeIsMpegPs() async throws {
+        let result = try await probe(Data([0x00, 0x00, 0x01, 0xBA]) + Data(count: 64))
+        #expect(result.container == .mpegps)
+        #expect(result.isComplete)
+    }
+
+    @Test("a start code that is not the pack header is not mpegps")
+    func otherStartCodeIsNotMpegPs() async throws {
+        let result = try await probe(Data([0x00, 0x00, 0x01, 0xB3]) + Data(count: 64))
+        #expect(result.container == nil)
     }
 
     /// One missing sync byte disqualifies the stride test — otherwise any file with a stray

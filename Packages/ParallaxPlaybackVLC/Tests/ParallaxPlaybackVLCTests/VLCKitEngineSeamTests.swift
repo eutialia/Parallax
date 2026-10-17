@@ -153,22 +153,22 @@ struct VLCKitMediaOptionTests {
         #expect(options.contains(where: { $0.contains("freetype") }) == false)
     }
 
-    /// VLC's ASF demuxer seeks by byte estimate on a non-fast-seekable access (-5s..+26s off on
-    /// device), so ASF alone is handed to avformat. Other containers keep VLC's own demuxers.
-    @Test("avformat is forced for ASF and for nothing else",
-          arguments: [(Container.asf, true), (.webm, false), (.mkv, false), (nil, false)] as [(Container?, Bool)])
-    func avformatDemuxRidesAsfOnly(container: Container?, forced: Bool) {
+    /// VLC's ASF, ts and ps demuxers misplace or refuse seeks on a non-fast-seekable access, so
+    /// they are handed to avformat. Other containers keep VLC's own demuxers.
+    @Test("avformat is forced for ASF, ts and mpegps and for nothing else",
+          arguments: [(Container.asf, true), (.ts, true), (.mpegps, true), (.webm, false), (.mkv, false), (.mp4, false), (nil, false)] as [(Container?, Bool)])
+    func avformatDemuxRidesRoutedContainersOnly(container: Container?, forced: Bool) {
         let options = VLCKitEngine.mediaOptions(for: .fixture(hints: .fixture(container: container)))
         #expect(options.contains(":demux=avformat,any") == forced)
     }
 
-    /// mkv, webm and asf are device-measured (asf only because avformat demuxes it); mp4 and mov
-    /// are audited from VLC 3.0.21's demuxer code. Everything else waits for the republish.
+    /// The avformat containers (asf, ts, mpegps) and mkv/webm are measured, mp4 and mov are audited
+    /// from VLC 3.0.21's demuxer code. Everything else waits for the republish.
     @Test("which containers' seeks land on the target", arguments: Container.allCases)
     func seekLandsOnTargetMapping(container: Container) {
         let expected: [Container: Bool] = [
             .mp4: true, .mov: true, .mkv: true, .webm: true, .asf: true,
-            .ts: false, .hls: false, .flac: false, .mp3: false, .avi: false,
+            .ts: true, .mpegps: true, .hls: false, .flac: false, .mp3: false, .avi: false,
         ]
         #expect(VLCKitEngine.seekLandsOnTarget(container) == expected[container])
     }
@@ -681,9 +681,9 @@ struct VLCKitSeekSettleTests {
     }
 
     /// Only a container whose VLC seek lands on the target may release at it. Anything else
-    /// (ts seeks by byte fraction) waits for the real republish, burst or no burst.
+    /// (avi, which nothing here justifies) waits for the real republish, burst or no burst.
     @Test("a quiet buffering burst does not release a container outside the accurate set",
-          arguments: [nil, Container.ts] as [Container?])
+          arguments: [nil, Container.avi] as [Container?])
     func quietBurstWaitsForTheRepublishOutsideTheAccurateSet(container: Container?) async throws {
         let spy = SpyVLCPlayer()
         spy.demuxBytesPerPoll = 1

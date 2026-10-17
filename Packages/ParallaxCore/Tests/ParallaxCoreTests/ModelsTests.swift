@@ -8,7 +8,7 @@ struct MediaInfoTests {
     /// Jellyfin container lists, so a case or spelling change is a compatibility event.
     @Test("Container raw values are exactly the wire spellings the profile sends")
     func containerRawValues() {
-        #expect(Set(Container.allCases.map(\.rawValue)) == ["mp4", "mov", "mkv", "webm", "ts", "hls", "flac", "mp3", "avi", "asf"])
+        #expect(Set(Container.allCases.map(\.rawValue)) == ["mp4", "mov", "mkv", "webm", "ts", "hls", "flac", "mp3", "avi", "asf", "mpeg"])
     }
 
     /// One table for every wire spelling the mapper must accept: server strings arrive

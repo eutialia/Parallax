@@ -1325,7 +1325,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     nonisolated static func mediaOptions(for asset: PlayableAsset) -> [String] {
         var options = [":network-caching=\(cacheDepthMs(for: asset.hints))"]
         if let container = asset.hints.container, avformatDemuxContainers.contains(container) {
-            options.append(":demux=avformat,any")
+            options.append(avformatDemuxOption)
         }
         // The app renders every text subtitle itself, so libvlc's SPU renderer must be blind
         // for the whole input — not merely deselected once the app gets around to it. VLC
@@ -1370,23 +1370,30 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     /// Containers handed to avformat instead of VLC's own demuxer. VLC's ASF demuxer cannot read
     /// the Simple Index on an access that is not fast-seekable (the HTTP bridge, smb://), so it
-    /// seeks by a byte estimate off the average bitrate and lands seconds away. avformat reads
-    /// the index or binary-searches by pts; `,any` (in `mediaOptions`) keeps playback if a build
-    /// lacks it.
-    nonisolated static let avformatDemuxContainers: Set<Container> = [.asf]
+    /// seeks by a byte estimate off the average bitrate and lands seconds away. Its ts demuxer
+    /// cannot size or seek the stream there at all, and its ps demuxer seeks by byte fraction.
+    /// avformat reads the index or binary-searches by pts; `,any` (in `mediaOptions`) keeps
+    /// playback if a build lacks it.
+    nonisolated static let avformatDemuxContainers: Set<Container> = [.asf, .ts, .mpegps]
+
+    nonisolated static let avformatDemuxOption = ":demux=avformat,any"
 
     /// Whether a seek in this container lands on the requested target, so a hold may release AT
-    /// the target. Device-measured: mkv and webm land at target plus elapsed playback, and so
-    /// does ASF, but only because `avformatDemuxContainers` routes it through avformat. mp4 and
-    /// mov are audited, not measured: VLC 3.0.21's mp4 demuxer seeks through the sample table.
-    /// `.ts` falls back to a byte fraction on SET_TIME. hls, flac and mp3 are not video seeks
-    /// anyone has measured, and nothing in this file justifies avi, so they wait for the
-    /// republish. A new container must be classified here.
+    /// the target. Every `avformatDemuxContainers` member does, because avformat demuxes it: ASF
+    /// and ts are device-measured, mpegps simulator-measured. Of VLC's own demuxers, mkv and webm
+    /// are device-measured to land at target plus elapsed playback; mp4 and mov are audited, not
+    /// measured: VLC 3.0.21's mp4 demuxer seeks through the sample table. Its ASF, ts and ps
+    /// demuxers do not land, hls, flac and mp3 are not video seeks anyone has measured, and
+    /// nothing in this file justifies avi, so they wait for the republish. Should `,any` fall back
+    /// to VLC's own demuxer, this still answers true: that file's seeks were broken before the
+    /// routing, and refusing the fallback would lose its playback. A new container must be
+    /// classified here.
     nonisolated static func seekLandsOnTarget(_ container: Container?) -> Bool {
         guard let container else { return false }
+        if avformatDemuxContainers.contains(container) { return true }
         switch container {
-        case .mkv, .webm, .asf, .mp4, .mov: return true
-        case .ts, .hls, .flac, .mp3, .avi: return false
+        case .mkv, .webm, .mp4, .mov: return true
+        case .asf, .ts, .mpegps, .hls, .flac, .mp3, .avi: return false
         }
     }
 
