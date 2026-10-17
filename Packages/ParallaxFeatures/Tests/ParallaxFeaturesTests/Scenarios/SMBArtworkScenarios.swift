@@ -194,6 +194,105 @@ struct SMBArtworkScenarios {
         #expect(world.thumbnailer.positions == [])
     }
 
+    @Test("leaving a folder withdraws its queued thumbnails; only the folder on screen is fetched")
+    func leavingAFolderWithdrawsItsThumbnails() async throws {
+        let (world, hold) = try await Self.launchOverWAN()
+        let provider = world.app.services.mediaArtworkProvider
+        let (root, rootScreen) = world.showSMBLevel("")
+        try await world.until { root.media.map(\.displayTitle) == ["Alpha", "Omega"] }
+        let alpha = Task { await provider.artwork(for: root.media[0], ref: AppWorld.smbRef, sidecar: nil) }
+        await hold.awaitArrivals(1)
+
+        world.leave(root, rootScreen)
+        alpha.cancel()
+        let (films, filmsScreen) = world.showSMBLevel("Films")
+        try await world.until { films.media.count == 8 }
+        let firstFilm = Task { await provider.artwork(for: films.media[0], ref: AppWorld.smbRef, sidecar: nil) }
+        films.prefetchWindow(from: 0, lookahead: 7)
+        try await world.until { () async in await provider.queuedGenerations() == (visible: 1, prefetch: 7) }
+
+        world.leave(films, filmsScreen)
+        firstFilm.cancel()
+        await filmsScreen.value
+        let (_, rootAgain) = world.showSMBLevel(root)
+        let alphaAgain = Task { await provider.artwork(for: root.media[0], ref: AppWorld.smbRef, sidecar: nil) }
+        root.prefetchWindow(from: 0, lookahead: 1)
+        await hold.open()
+        try await world.until { () async in world.requestedFiles.contains("Omega.wmv") }
+        _ = await alphaAgain.value
+        rootAgain.cancel()
+
+        #expect(world.requestedFiles.sorted() == ["Alpha.wmv", "Alpha.wmv", "Omega.wmv"])
+    }
+
+    @Test("a thumbnail scrolled past in the folder on screen still finishes while the backlog has room; files the viewport never neared are not fetched")
+    func scrollingPastKeepsTheFolderWork() async throws {
+        let (world, hold) = try await Self.launchOverWAN()
+        let provider = world.app.services.mediaArtworkProvider
+        let (films, filmsScreen) = world.showSMBLevel("Films")
+        try await world.until { films.media.count == 8 }
+
+        films.prefetchWindow(from: 0, lookahead: 3)
+        await hold.awaitArrivals(1)
+        let firstFilm = Task { await provider.artwork(for: films.media[0], ref: AppWorld.smbRef, sidecar: nil) }
+        films.prefetchWindow(from: 5, lookahead: 3)
+        let sixthFilm = Task { await provider.artwork(for: films.media[5], ref: AppWorld.smbRef, sidecar: nil) }
+        firstFilm.cancel()
+        sixthFilm.cancel()
+        await hold.open()
+        try await world.until { () async in world.requestedFiles.count == 7 }
+        filmsScreen.cancel()
+
+        #expect(world.requestedFiles.sorted() == [
+            "Film 1.wmv", "Film 2.wmv", "Film 3.wmv", "Film 4.wmv", "Film 6.wmv", "Film 7.wmv", "Film 8.wmv",
+        ])
+    }
+
+    @Test("a folder that appears again while its last appearance winds down hands its lookahead over again")
+    func reappearingFolderHandsItsLookaheadAgain() async throws {
+        let (world, hold) = try await Self.launchOverWAN()
+        let (films, firstScreen) = world.showSMBLevel("Films")
+        try await world.until { films.media.count == 8 }
+        films.prefetchWindow(from: 0, lookahead: 3)
+        await hold.awaitArrivals(1)
+
+        world.leave(films, firstScreen)
+        let (_, secondScreen) = world.showSMBLevel(films)
+        // Polled, not observed: the new appearance must have taken over before its tiles appear.
+        try await world.until { () async in films.isOnScreen }
+        films.prefetchWindow(from: 0, lookahead: 2)
+        films.prefetchWindow(from: 1, lookahead: 2)
+        await hold.open()
+        await firstScreen.value
+        films.prefetchWindow(from: 4, lookahead: 0)
+        try await world.until { () async in world.requestedFiles.count == 6 }
+        secondScreen.cancel()
+
+        #expect(world.requestedFiles.sorted() == [
+            "Film 1.wmv", "Film 1.wmv", "Film 2.wmv", "Film 3.wmv", "Film 4.wmv", "Film 5.wmv",
+        ])
+    }
+
+    /// A share whose root holds a Films folder plus Alpha and Omega, with Film 1 to Film 8 listed in
+    /// that order inside Films. The NAS answers slowly enough to class as WAN, so one thumbnail
+    /// generates at a time; the returned gate parks each decode once the thumbnailer has recorded it.
+    private static func launchOverWAN() async throws -> (AppWorld, AsyncGate) {
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+        world.nas.setLatency(.milliseconds(400), host: AppWorld.smbServer.host)
+        world.nas.setFolder([
+            SMBDirectoryEntry(name: "Films", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Alpha.wmv", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: 2)),
+            SMBDirectoryEntry(name: "Omega.wmv", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: 1)),
+        ], share: "Media")
+        world.nas.setFolder((1...8).map {
+            SMBDirectoryEntry(name: "Film \($0).wmv", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: TimeInterval(100 - $0)))
+        }, share: "Media", path: "Films")
+        world.nas.setContents(Data(repeating: 0, count: 4096))
+        let hold = AsyncGate(open: false)
+        world.thumbnailer.hold = hold
+        return (world, hold)
+    }
+
     private static func key(of item: Item, ref: SMBServerRef) throws -> SMBThumbnailKey {
         guard case .movie(let movie) = item, let (share, path) = SMBSourceResolver.shareAndPath(for: item) else {
             throw StateNotFound()
@@ -235,4 +334,27 @@ struct SMBArtworkScenarios {
         default: return "unknown"
         }
     }
+}
+
+private extension AppWorld {
+    /// Puts a level of the Media share on screen, as `SMBBrowseView`'s `.task` does. Cancelling the
+    /// returned task is SwiftUI taking the level off screen.
+    func showSMBLevel(_ path: String) -> (SMBBrowseViewModel, Task<Void, Never>) {
+        showSMBLevel(app.makeSMBBrowse(SMBBrowsePath(ref: AppWorld.smbRef, share: "Media", path: path)))
+    }
+
+    /// Puts an already built level back on screen, as popping back to it does.
+    func showSMBLevel(_ level: SMBBrowseViewModel) -> (SMBBrowseViewModel, Task<Void, Never>) {
+        (level, Task { await level.appear() })
+    }
+
+    /// Takes a level off screen the way pushing past it or popping it does: SwiftUI cancels its
+    /// `.task` and runs its `onDisappear`.
+    func leave(_ level: SMBBrowseViewModel, _ screen: Task<Void, Never>) {
+        screen.cancel()
+        level.isOnScreen = false
+    }
+
+    /// The file names the frame thumbnailer was asked to decode, in order.
+    var requestedFiles: [String] { thumbnailer.requests.map(\.lastPathComponent) }
 }

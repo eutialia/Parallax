@@ -85,8 +85,9 @@ struct SMBBrowseScenarios {
         #expect(level.setup == .opening)
         #expect(level.folders.isEmpty)
 
-        await level.appear()
+        let secondAppearance = Task { await level.appear() }
         try await world.until { level.folders.map(\.name) == ["Movies"] }
+        secondAppearance.cancel()
         #expect(level.setup == .open)
     }
 

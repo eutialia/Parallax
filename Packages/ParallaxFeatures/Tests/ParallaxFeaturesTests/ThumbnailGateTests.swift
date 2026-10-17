@@ -188,6 +188,54 @@ struct ThumbnailGateTests {
         for task in later { #expect(await task.value) }
     }
 
+    @Test("a queued prefetch waiter whose generation is cancelled is abandoned and leaves the queue")
+    func cancelledWaiterLeavesTheQueue() async {
+        let gate = ThumbnailGate()
+        await fillPermits(gate)
+        let withdrawn = Task { await gate.wait(key: key("withdrawn"), host: testHost, link: .lan) }
+        await waitUntil("waiter should queue") { await gate.queueDepths().prefetch == 1 }
+
+        withdrawn.cancel()
+
+        #expect(await withdrawn.value == false)
+        #expect(await gate.queueDepths() == (visible: 0, prefetch: 0))
+    }
+
+    @Test("cancelling one of two waiters queued for the same key withdraws only that one")
+    func cancelWithdrawsOnlyItsOwnWaiter() async {
+        let gate = ThumbnailGate()
+        await fillPermits(gate)
+        let kept = Task { await gate.wait(key: key("k"), host: testHost, link: .lan) }
+        await waitUntil("first waiter should queue") { await gate.queueDepths().prefetch == 1 }
+        let withdrawn = Task { await gate.wait(key: key("k"), host: testHost, link: .lan) }
+        await waitUntil("second waiter should queue") { await gate.queueDepths().prefetch == 2 }
+
+        withdrawn.cancel()
+        await waitUntil("the cancelled waiter should leave") { await gate.queueDepths().prefetch == 1 }
+        await gate.signal(host: testHost, outcome: .success)
+
+        #expect(await withdrawn.value == false)
+        #expect(await kept.value == true)
+    }
+
+    @Test("a waiter cancelled right after its admission keeps its permit, and releasing it admits the next")
+    func cancelAfterAdmissionReleasesNormally() async {
+        let gate = ThumbnailGate()
+        await fillPermits(gate)
+        let admitted = Task { await gate.wait(key: key("admitted"), host: testHost, link: .lan) }
+        await waitUntil("first waiter should queue") { await gate.queueDepths().prefetch == 1 }
+        let next = Task { await gate.wait(key: key("next"), host: testHost, link: .lan) }
+        await waitUntil("second waiter should queue") { await gate.queueDepths().prefetch == 2 }
+
+        await gate.signal(host: testHost, outcome: .success)
+        admitted.cancel()
+        #expect(await admitted.value == true)
+        #expect(await gate.queueDepths() == (visible: 0, prefetch: 1))
+
+        await gate.signal(host: testHost, outcome: .success)
+        #expect(await next.value == true)
+    }
+
     @Test("a second host admits independently while the first has a waiter queued")
     func hostsDoNotShareABudget() async {
         let gate = ThumbnailGate()
@@ -206,8 +254,8 @@ struct ThumbnailGateTests {
 
     /// Per-host windows deliberately don't share a budget, which is exactly why a GLOBAL bound is
     /// needed on top: two healthy hosts at their own ceilings would otherwise stack twice the
-    /// concurrent bridges + demuxes, and generations are never cancelled so every one of them runs
-    /// to the end. The bound is a safety net, not the operating point — AIMD stays in charge below it.
+    /// concurrent bridges + demuxes. The bound is a safety net, not the operating point — AIMD stays
+    /// in charge below it.
     @Test("a global in-flight ceiling caps two healthy hosts, and drains back open")
     func globalInFlightCeiling() async {
         let gate = ThumbnailGate()
