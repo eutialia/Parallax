@@ -10,6 +10,7 @@ public enum Container: String, Sendable, Hashable, Codable, CaseIterable {
     case flac
     case mp3
     case avi
+    case asf          // ASF / WMV / WMA
 }
 
 public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {

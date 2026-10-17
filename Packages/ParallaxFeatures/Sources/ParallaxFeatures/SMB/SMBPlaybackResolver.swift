@@ -108,7 +108,7 @@ public struct SMBPlaybackResolver {
             default:
                 // AVKit bridge only qualifies containers AVKit opens (mp4 family), so its
                 // fallback stays video/mp4. Everything else here is VLC-over-bridge — ts,
-                // webm, avi, unidentified ASF/OGM — where a wrong mime hint can only
+                // webm, avi, asf, unidentified OGM — where a wrong mime hint can only
                 // mislead libvlc's demuxer pick; the honest "no hint" lets it probe the
                 // bytes (same reason the thumbnail bridge uses octet-stream).
                 contentType = vlcOverBridge ? "application/octet-stream" : "video/mp4"
@@ -218,7 +218,7 @@ public struct SMBPlaybackResolver {
     /// builds the matching `PlaybackHints`.
     ///
     /// Bridge ONLY when: the probe ran, it positively IDENTIFIED the container (`nil` means
-    /// "magic bytes matched nothing" — ASF/OGM/FLV land here, and the selector's AVKit verdict
+    /// "magic bytes matched nothing" — OGM/FLV land here, and the selector's AVKit verdict
     /// on container-less hints is a default, not proof, so they'd bridge straight into
     /// AVFoundation's "Cannot Open"), the file is complete (an incomplete download needs
     /// VLC + the read-rate duration estimate), no track was codec-`.unknown` (unknown → VLC
