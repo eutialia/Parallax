@@ -19,7 +19,7 @@ public enum PlaybackCapabilityMatrix {
     /// tail that AVKit cannot open.
     public static let vlcContainers: Set<Container> = [
         .mp4, .mov, .hls,
-        .mkv, .webm, .avi, .ts, .flac, .mp3,
+        .mkv, .webm, .avi, .asf, .ts, .mpegps, .flac, .mp3,
     ]
 
     /// Video codecs libvlc / VideoToolbox can decode on iOS.
