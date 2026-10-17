@@ -79,6 +79,14 @@ private let routeCases: [RouteCase] = [
         sizeBytes: 9_876, usesBridge: false, scheme: "smb",
         container: nil, videoCodec: nil, audioCodecs: []
     ),
+    // A now-identified ASF: the container survives into the hints (VLC picks its demuxer by
+    // it) and, being outside AVKit's set, still never bridges.
+    RouteCase(
+        name: "identified asf never bridges and keeps its container",
+        probe: MediaProbeResult(container: .asf, videoCodec: .none, audioCodecs: .none, isComplete: true),
+        sizeBytes: 9_876, usesBridge: false, scheme: "smb",
+        container: .asf, videoCodec: nil, audioCodecs: []
+    ),
     // A failed/timed-out probe: no codec knowledge at all, but the size still rides along.
     RouteCase(
         name: "nil probe (timeout/failure)",

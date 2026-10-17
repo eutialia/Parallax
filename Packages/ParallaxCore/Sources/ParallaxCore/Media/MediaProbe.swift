@@ -73,9 +73,14 @@ public enum MediaProbe {
     /// of an unbounded LAN read.
     private static let moovByteCap = 64 * 1024 * 1024
 
+    /// ASF Header Object GUID {75B22630-668E-11CF-A6D9-00AA0062CE6C}, in file byte order.
+    private static let asfHeaderObjectGUID: [UInt8] = [
+        0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C,
+    ]
+
     public static func probe(_ reader: any RandomAccessReading) async throws -> MediaProbeResult {
         let size = try await reader.fileSize
-        let head = try await reader.read(offset: 0, length: 12)
+        let head = try await reader.read(offset: 0, length: 16)
 
         if head.count >= 8, fourCharString(head, at: 4) == "ftyp" {
             let majorBrand = head.count >= 12 ? fourCharString(head, at: 8) : ""
@@ -91,6 +96,10 @@ public enum MediaProbe {
 
         if head.count >= 12, fourCharString(head, at: 0) == "RIFF", fourCharString(head, at: 8) == "AVI " {
             return MediaProbeResult(container: .avi, videoCodec: .none, audioCodecs: .none, isComplete: true)
+        }
+
+        if head.starts(with: asfHeaderObjectGUID) {
+            return MediaProbeResult(container: .asf, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }
 
         if size >= 377 {
