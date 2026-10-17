@@ -11,7 +11,9 @@ import CoreMedia
 public enum PositionProvenance: Sendable, Equatable {
     /// An observed decoder clock with no seek of the engine's own outstanding. The ONLY value
     /// that counts as evidence a seek landed, and the only one a consumer may treat as
-    /// authoritative about where the media is.
+    /// authoritative about where the media is. An engine whose container seeks land on the
+    /// request may also ship the requested target as the landing once its post-seek buffering
+    /// has gone quiet, ahead of the clock republishing.
     case observed
     /// The engine's forward estimate from its OWN outstanding seek target: the target echoed
     /// back, an extrapolation off it, a starvation scrim pinned at it, a pause frozen on it.
