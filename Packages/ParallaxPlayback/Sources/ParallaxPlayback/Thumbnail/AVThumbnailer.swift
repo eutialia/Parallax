@@ -182,7 +182,7 @@ public enum AVThumbnailError: Error, Sendable {
 }
 
 extension AVThumbnailer: FrameThumbnailing {
-    public func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
+    public func frame(from url: URL, at position: Float, container: Container?, timeout: Duration) async throws -> ThumbnailFrame {
         try await thumbnailData(for: url, position: position, timeout: timeout)
     }
 }

@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import CoreGraphics
 import ImageIO
+import ParallaxCore
 import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
@@ -40,6 +41,23 @@ struct MediaParseDeadlineTests {
     @Test("an absurd deadline saturates instead of trapping")
     func saturates() {
         #expect(MediaParseAwaiter.milliseconds(.seconds(10_000_000_000)) == Int32.max)
+    }
+}
+
+@Suite("VLCThumbnailer — media options")
+struct VLCThumbnailerMediaOptionsTests {
+
+    /// Measured over the HTTP range bridge: avformat fixes ps (VLC's own demuxer times out) but
+    /// decodes H.264 ts to grey, and a ts probe cannot tell the codecs apart, so ts stays native.
+    @Test("only mpegps is handed to avformat", arguments: [
+        (Container.mpegps, [":network-caching=500", ":demux=avformat,any", ":smb-user=alice"]),
+        (.ts, [":network-caching=500", ":smb-user=alice"]),
+        (.asf, [":network-caching=500", ":smb-user=alice"]),
+        (.mkv, [":network-caching=500", ":smb-user=alice"]),
+        (nil, [":network-caching=500", ":smb-user=alice"]),
+    ] as [(Container?, [String])])
+    func avformatForPSOnly(container: Container?, expected: [String]) {
+        #expect(VLCThumbnailer.mediaOptions(container: container, options: [":smb-user=alice"]) == expected)
     }
 }
 

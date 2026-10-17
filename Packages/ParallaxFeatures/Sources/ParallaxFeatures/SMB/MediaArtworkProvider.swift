@@ -664,7 +664,8 @@ public actor MediaArtworkProvider {
 
         let result = await decodeAndStore(
             via: bridgeURL, session: session, key: key, fileName: fileName, link: link,
-            useAV: useAV, deadline: deadline, probeTransportFault: probeTransportFault)
+            container: probeResult?.container, useAV: useAV, deadline: deadline,
+            probeTransportFault: probeTransportFault)
         // Torn down on EVERY exit (decodeAndStore never throws): starves a zombie fetch the moment we
         // stop caring instead of it streaming SMB for up to 45s more. AWAITED, not fire-and-forget:
         // the caller releases the gate permit right after we return, and the bridge-first teardown
@@ -684,7 +685,7 @@ public actor MediaArtworkProvider {
     /// `useAV` is false, VLC runs alone with the whole remainder.
     private func decodeAndStore(
         via bridgeURL: URL, session: SMBBridgeSession, key: SMBThumbnailKey, fileName: String,
-        link: SMBLinkClass?, useAV: Bool, deadline: GenerationDeadline,
+        link: SMBLinkClass?, container: Container?, useAV: Bool, deadline: GenerationDeadline,
         probeTransportFault: Bool
     ) async -> FrameGrabAttempt {
         let start = elapsed()
@@ -701,7 +702,7 @@ public actor MediaArtworkProvider {
             if useAV {
                 do {
                     frame = try await avThumbnailer.frame(
-                        from: bridgeURL, at: 0.05,
+                        from: bridgeURL, at: 0.05, container: container,
                         timeout: deadline.capped(at: Self.avGenerationTimeout))
                 } catch is CancellationError {
                     throw CancellationError()
@@ -721,11 +722,11 @@ public actor MediaArtworkProvider {
                     Self.log.info("thumbnail AV fell through: \(fileName, privacy: .public) [tier=framegrab-av \(Self.context(link), privacy: .public)] (\(String(describing: error), privacy: .public)) — VLC fallback")
                     tier = "framegrab-av+vlc"
                     frame = try await thumbnailer.frame(
-                        from: bridgeURL, at: 0.05, timeout: deadline.remaining)
+                        from: bridgeURL, at: 0.05, container: container, timeout: deadline.remaining)
                 }
             } else {
                 frame = try await thumbnailer.frame(
-                    from: bridgeURL, at: 0.05, timeout: deadline.remaining)
+                    from: bridgeURL, at: 0.05, container: container, timeout: deadline.remaining)
             }
             var retryPositions = Self.greyRetryPositions[...]
             var usable = FrameQuality.isUsable(frame.data)
@@ -734,7 +735,7 @@ public actor MediaArtworkProvider {
                 if useAV { tier = "framegrab-av+vlc" }
                 Self.log.info("thumbnail grey frame: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] — retrying at \(position, privacy: .public)")
                 frame = try await thumbnailer.frame(
-                    from: bridgeURL, at: position, timeout: deadline.remaining)
+                    from: bridgeURL, at: position, container: container, timeout: deadline.remaining)
                 usable = FrameQuality.isUsable(frame.data)
             }
             guard usable else {

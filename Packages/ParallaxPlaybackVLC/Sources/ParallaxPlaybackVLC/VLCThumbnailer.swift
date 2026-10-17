@@ -55,14 +55,41 @@ public final class VLCThumbnailer {
         let delegate: ThumbnailDelegate
     }
 
+    /// Containers a frame grab hands to avformat; playback's wider set is
+    /// `VLCKitEngine.avformatDemuxContainers`. Measured on the HTTP range bridge at 5%: VLC's own
+    /// ps demuxer cannot resolve a duration and its mpg grab times out at the 45s internal
+    /// ceiling, where avformat resolves the duration and decodes in about a second. ts is held
+    /// back on purpose: avformat fixes mpeg2 ts but decodes H.264 ts to a grey mid-GOP frame at
+    /// every position, where VLC's own demuxer yields a usable one, and a ts probe cannot tell
+    /// the codecs apart. asf is unmeasured here.
+    nonisolated static let avformatContainers: Set<Container> = [.mpegps]
+
     /// Keyed by a per-fetch id so concurrent calls don't clobber each other's refs.
     private var inFlight: [UUID: Fetch] = [:]
+
+    /// Every libvlc media option a grab gets, in application order. Pure so the option strings are
+    /// testable without a live decode. **Never log the result**: `options` can hold SMB credentials.
+    ///
+    /// Deliberately NOT the engine's 3000ms caching: that value sizes a smooth-playback
+    /// read-ahead, and the input pre-fills it before decode starts, so a frame grab
+    /// would pay ~3s of stream bytes up front — the dominant per-fetch cost on a
+    /// high-RTT link (SMB over VPN). A grab needs only a few frames; 500ms cuts
+    /// time-to-first-frame without starving the decoder. Caller options follow,
+    /// applied verbatim. Order is irrelevant — libvlc merges per-media options.
+    nonisolated static func mediaOptions(container: Container?, options: [String]) -> [String] {
+        var result = [":network-caching=500"]
+        if let container, avformatContainers.contains(container) {
+            result.append(VLCKitEngine.avformatDemuxOption)
+        }
+        return result + options
+    }
 
     /// Generates a still frame from `url`, returned as HEIC data (JPEG on a host with no HEVC encoder).
     /// - Parameters:
     ///   - url: local file or `smb://` URL to thumbnail.
     ///   - options: pre-built VLC media option strings (e.g. credential options for
     ///     `smb://`, like `":smb-user=alice"`). Applied verbatim; never logged.
+    ///   - container: the probed container; those in `avformatContainers` are demuxed by avformat.
     ///   - width: target width; `0` lets libvlc derive it from the source aspect (default).
     ///   - height: target height (default 320).
     ///   - position: 0–1 fraction of the video duration to snapshot (default 0.3). Fractions
@@ -75,6 +102,7 @@ public final class VLCThumbnailer {
     public func thumbnailData(
         for url: URL,
         options: [String] = [],
+        container: Container? = nil,
         width: CGFloat = 0,
         height: CGFloat = 320,
         position: Float = 0.3,
@@ -88,14 +116,7 @@ public final class VLCThumbnailer {
         // reports an unusable input during the parse below, which the `.done` check turns
         // into `.parseTimedOut`.
         let media = VLCMedia(url: url)
-        // Deliberately NOT the engine's 3000ms: that value sizes a smooth-playback
-        // read-ahead, and the input pre-fills it before decode starts, so a frame grab
-        // would pay ~3s of stream bytes up front — the dominant per-fetch cost on a
-        // high-RTT link (SMB over VPN). A grab needs only a few frames; 500ms cuts
-        // time-to-first-frame without starving the decoder. Caller options follow,
-        // applied verbatim. Order is irrelevant — libvlc merges per-media options.
-        media.addOption(":network-caching=500")
-        for option in options {
+        for option in Self.mediaOptions(container: container, options: options) {
             media.addOption(option)
         }
 
@@ -381,8 +402,8 @@ private final class ThumbnailDelegate: NSObject, VLCMediaThumbnailerDelegate {
 }
 
 extension VLCThumbnailer: FrameThumbnailing {
-    public func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
-        try await thumbnailData(for: url, position: position, timeout: timeout)
+    public func frame(from url: URL, at position: Float, container: Container?, timeout: Duration) async throws -> ThumbnailFrame {
+        try await thumbnailData(for: url, container: container, position: position, timeout: timeout)
     }
 }
 

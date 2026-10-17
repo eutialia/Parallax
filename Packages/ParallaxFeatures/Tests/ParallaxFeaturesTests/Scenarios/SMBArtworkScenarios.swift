@@ -81,6 +81,22 @@ struct SMBArtworkScenarios {
         #expect(world.thumbnailer.positions == [0.05, 0.15])
     }
 
+    @Test("the frame grab is told which container the probe identified, on every position it tries",
+          arguments: [
+            (Data([0x00, 0x00, 0x01, 0xBA]) + Data(repeating: 0, count: 4092), Container.mpegps),
+            (Data([0x1A, 0x45, 0xDF, 0xA3]) + Data(repeating: 0, count: 4092), .mkv),
+            (Data(repeating: 0, count: 4096), nil),
+          ] as [(Data, Container?)])
+    func grabCarriesTheProbedContainer(contents: Data, expected: Container?) async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat(contents: contents)
+        world.thumbnailer.script = [TestFrames.mosaic]
+
+        _ = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+
+        #expect(world.thumbnailer.positions == [0.05, 0.15])
+        #expect(world.thumbnailer.containers == [expected, expected])
+    }
+
     @Test("a file that only decodes to grey shows no artwork and is not grabbed again within its backoff")
     func mosaicOnlyFileBacksOff() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
@@ -313,13 +329,15 @@ struct SMBArtworkScenarios {
 
     private struct StateNotFound: Error {}
 
-    private static func openHeat() async throws -> (AppWorld, MediaArtworkProvider, Item, SMBServerRef) {
+    private static func openHeat(
+        contents: Data = Data(repeating: 0, count: 4096)
+    ) async throws -> (AppWorld, MediaArtworkProvider, Item, SMBServerRef) {
         let ref = AppWorld.smbRef
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
             SMBDirectoryEntry(name: "Heat.wmv", isDirectory: false, size: 4096, modifiedAt: nil),
         ], share: "Media")
-        world.nas.setContents(Data(repeating: 0, count: 4096))
+        world.nas.setContents(contents)
         let root = await world.openSMBFolder(ref, share: "Media")
         try await world.until { root.media.count == 1 }
         return (world, world.app.services.mediaArtworkProvider, root.media[0], ref)
