@@ -325,7 +325,10 @@ struct VLCKitPollGateTests {
         // pre-seek 60_000 (01:00), target 480_000 (08:00) → the midpoint is 270_000.
         // `previous` is the raw clock the hold sampled one tick earlier (the pre-seek clock on
         // the first tick); nil where the row is about the poll budget alone.
-        ("convergence releases immediately", Int32(480_000), nil, 1, Int32(60_000), true),
+        ("convergence releases immediately", Int32(480_093), nil, 1, Int32(60_000), true),
+        ("the echo (getter == target) is not a landing", 480_000, nil, 1, 60_000, false),
+        ("the echo is not a landing even past the expiry budget", 480_000, nil, 10, 60_000, false),
+        ("the echo is not a jump either", 480_000, 60_000, 1, 60_000, false),
         ("a keyframe snap inside tolerance releases", 478_000, nil, 1, 60_000, true),
         ("mid-hold, clock still pre-seek: keep holding", 60_000, nil, 4, 60_000, false),
         ("budget spent, clock still pre-seek: keep holding", 60_000, nil, 10, 60_000, false),
@@ -407,6 +410,9 @@ struct VLCKitPollGateTests {
         // Counted on THAT, the cap would never arrive; counted on the original seek, it does.
         ("a reassert reset does not extend the cap", 480_000, 60_000, 1, 30, true),
         ("nor does one just short of it", 480_000, 60_000, 1, 29, false),
+        // The getter reading the echo must not outlive the cap.
+        ("the echo one poll short of the cap still holds", 480_000, 480_000, 1, 29, false),
+        ("the echo past the cap is abandoned", 480_000, 480_000, 1, 30, true),
     ] as [(String, Int32, Int32, Int, Int, Bool)])
     func abandonCapEndsAnImmortalHold(label: String, target: Int32, now: Int32,
                                       polls: Int, totalPolls: Int, expected: Bool) {

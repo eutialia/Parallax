@@ -200,6 +200,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// still resumes live tracking.
     private var pendingSeekMs: Int32?
     private var pendingSeekPolls = 0
+    /// Whether the loaded container's VLC seek lands on the requested target, computed once at
+    /// load (`seekLandsOnTarget(_:)`).
+    private var containerSeeksAccurately = false
+    private var quietReleaseTask: Task<Void, Never>?
+    /// When the latest `.buffering` event of the in-flight seek arrived; the quiet task releases
+    /// once `seekQuietWindow` has passed with no newer one. Cleared wherever the task is cancelled.
+    private var lastBufferingAt: ContinuousClock.Instant?
     /// The raw clock (ms) sampled immediately BEFORE the in-flight seek's `setTime`, or nil
     /// when libvlc had no clock then. The hold's give-up test reads it: after the poll budget
     /// runs out, a `clockMs` that is still nearer this than the target has not moved off the
@@ -552,6 +559,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         lastEstimateMs = 0        // new media → re-estimate from scratch (a reused engine must not
                                   // carry the previous item's read-rate runtime estimate)
         fileSizeBytes = asset.hints.fileSizeBytes
+        containerSeeksAccurately = Self.seekLandsOnTarget(asset.hints.container)
         estimateAnchoredAtZero = pendingStartMs == nil   // a resume offset invalidates the read-rate estimate
         // 3.x's `VLCMedia(url:)` is non-failable: libvlc accepts any URL here and only
         // reports an unplayable input later, through the `.error` player state, which
@@ -724,6 +732,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         stallWatchdog.disarm()
         resumeTask?.cancel()
         resumeTask = nil
+        quietReleaseTask?.cancel()
+        quietReleaseTask = nil
+        lastBufferingAt = nil
         // The poll has nothing honest left to say about a stopped input: its inventory diff
         // would read the emptied track arrays as a change and publish a `.ready` with no
         // tracks at all, under a player that is already sliding away.
@@ -791,7 +802,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// that publish the raw clock during a seek window — an expired hold releasing, or the
     /// abandon cap ending one — clear `pendingSeekMs` first (`seekHoldShouldRelease`), so by
     /// the time the clock reaches the wire there is no seek of ours outstanding to make it
-    /// anything but observed.
+    /// anything but observed. The quiet release (`armQuietRelease`) also clears it first and then
+    /// publishes the requested target, not the clock: it relies on the echo having already put
+    /// that target in the getter, so the polls after it read the target too.
     ///
     /// **`rateFlushAnchorMs` is deliberately NOT here**, though it does hold `heldPositionMs`.
     /// A speed change is not a seek: the anchor is the CURRENT clock frozen while the re-decode
@@ -893,8 +906,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     /// **Seek-settle contract (see `PlaybackEngine.seek(to:)`).** VLC's `.observed` is the
-    /// strong form: it means libvlc's own clock converged on the target (±3s, see
-    /// `seekHasConverged`), not merely that a call returned. Every beat from here until then is
+    /// strong form: libvlc's own clock converged on the target (±3s, see `seekHasConverged`) or,
+    /// on a container whose seek lands on the target (`seekLandsOnTarget`), the `.buffering`
+    /// burst after the seek went quiet and the REQUESTED target ships as the landing
+    /// (`armQuietRelease`). Either way more than a call returning. Every beat from here until then is
     /// `.projected` — the `seek()` echo below, the hold's extrapolations, its starvation
     /// `.buffering`, and any `pause()` landing inside the window — because the engine publishes
     /// the HELD value on all of them (`heldPositionMs`), never the clock that is still lying.
@@ -943,6 +958,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // at the new offset" from "libvlc is still reporting where the seek started" — the
         // latter must never ship as a landing (`seekHoldShouldRelease`).
         recordPreSeekClock()
+        quietReleaseTask?.cancel()
+        quietReleaseTask = nil
+        lastBufferingAt = nil
         player.time = VLCTime(int: ms)
         // Gate the poll until VLC's clock settles on this target so its transient
         // post-seek reads can't surface as an overshoot (see pendingSeekMs).
@@ -970,11 +988,72 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         seekHoldPreviousSample = preSeekClockMs.map { ($0, ContinuousClock.now) }
     }
 
+    /// Quiet-window release of a seek hold. VLC 3 publishes time and stats only on its ~250 ms
+    /// input tick, so waiting for the republish leaves the dot 120-400 ms behind a picture that
+    /// has already resumed. While es_out refills after a seek VLC fires a burst of `.buffering`
+    /// state events (160-380 per seek) and the burst stops when the data is in: on device that
+    /// stop tracked playback restart within 0-140 ms on fast seeks, and on slow seeks the burst
+    /// simply arrives late (852 ms, 1396 ms), so the hold and its scrim outlast the wait. Only a
+    /// container whose seek lands on the target (`seekLandsOnTarget`) may release at the target.
+    ///
+    /// Relies on the echo: libvlc writes the requested target into the getter within 21 ms of the
+    /// `time` write, and the release fires at least `seekQuietWindow` (30 ms) after a buffering
+    /// event that follows that write, so the getter already reads the target and the poll cannot
+    /// republish the pre-seek clock behind the release.
+    ///
+    /// One task per quiet run, not one per event: each event only moves `lastBufferingAt`, and
+    /// the task re-sleeps while a newer event has pushed the deadline out.
+    private func armQuietRelease() {
+        guard containerSeeksAccurately, let target = pendingSeekMs else { return }
+        lastBufferingAt = .now
+        guard quietReleaseTask == nil else { return }
+        quietReleaseTask = Task { [weak self] in
+            while let deadline = self?.quietDeadline {
+                try? await Task.sleep(until: deadline, clock: .continuous)
+                guard !Task.isCancelled, let self else { return }
+                if let moved = self.quietDeadline, moved > deadline { continue }
+                self.quietReleaseTask = nil
+                self.lastBufferingAt = nil
+                guard self.pendingSeekMs == target,
+                      self.pendingStartMs == nil, self.rateFlushAnchorMs == nil,
+                      Self.shouldRunLiveTick(desiredPlaying: self.desiredPlaying, isPlaying: self.player.isPlaying)
+                else { return }
+                self.clearSeekHold()
+                self.emitPosition(isPlaying: true, positionMs: target)
+                return
+            }
+        }
+    }
+
+    private var quietDeadline: ContinuousClock.Instant? {
+        lastBufferingAt.map { $0 + Self.seekQuietWindow }
+    }
+
     private func clearSeekHold() {
+        quietReleaseTask?.cancel()
+        quietReleaseTask = nil
+        lastBufferingAt = nil
         pendingSeekMs = nil
         preSeekClockMs = nil
         seekHoldPreviousSample = nil
         seekHoldTotalPolls = 0
+    }
+
+    /// Samples the clock against the hold and answers whether it has landed
+    /// (`seekHoldShouldRelease`). Shared by the poll and the time-changed event, so the two can
+    /// never disagree about what a landing is.
+    private func seekHoldLanded(target: Int32, nowMs: Int32) -> Bool {
+        let sampledAt = ContinuousClock.now
+        let previous = seekHoldPreviousSample
+        // An echo (`seekHoldShouldRelease`) is no sample: the next real reading would measure
+        // its jump from the target instead of from the clock.
+        if nowMs >= 0, nowMs != target { seekHoldPreviousSample = (nowMs, sampledAt) }
+        let elapsedMs = previous.map { Int($0.at.duration(to: sampledAt) / .milliseconds(1)) } ?? 0
+        return Self.seekHoldShouldRelease(
+            now: nowMs, previous: previous?.clockMs, target: target,
+            polls: pendingSeekPolls, totalPolls: seekHoldTotalPolls,
+            preSeekClockMs: preSeekClockMs,
+            jumpMs: Self.seekHoldJumpMs(elapsedMs: elapsedMs, pollMs: Self.pollIntervalMs, rate: desiredRate))
     }
 
     /// 3.x selects by writing the libvlc track id onto `currentAudioTrackIndex` (the id
@@ -1235,6 +1314,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// SMB credentials.
     nonisolated static func mediaOptions(for asset: PlayableAsset) -> [String] {
         var options = [":network-caching=\(cacheDepthMs(for: asset.hints))"]
+        if let container = asset.hints.container, avformatDemuxContainers.contains(container) {
+            options.append(":demux=avformat,any")
+        }
         // The app renders every text subtitle itself, so libvlc's SPU renderer must be blind
         // for the whole input — not merely deselected once the app gets around to it. VLC
         // auto-selects a default/forced embedded text track as the demux discovers it, and
@@ -1275,6 +1357,32 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         options.append(contentsOf: asset.vlcOptions ?? [])
         return options
     }
+
+    /// Containers handed to avformat instead of VLC's own demuxer. VLC's ASF demuxer cannot read
+    /// the Simple Index on an access that is not fast-seekable (the HTTP bridge, smb://), so it
+    /// seeks by a byte estimate off the average bitrate and lands seconds away. avformat reads
+    /// the index or binary-searches by pts; `,any` (in `mediaOptions`) keeps playback if a build
+    /// lacks it.
+    nonisolated static let avformatDemuxContainers: Set<Container> = [.asf]
+
+    /// Whether a seek in this container lands on the requested target, so a hold may release AT
+    /// the target. Device-measured: mkv and webm land at target plus elapsed playback, and so
+    /// does ASF, but only because `avformatDemuxContainers` routes it through avformat. mp4 and
+    /// mov are audited, not measured: VLC 3.0.21's mp4 demuxer seeks through the sample table.
+    /// `.ts` falls back to a byte fraction on SET_TIME. hls, flac and mp3 are not video seeks
+    /// anyone has measured, and nothing in this file justifies avi, so they wait for the
+    /// republish. A new container must be classified here.
+    nonisolated static func seekLandsOnTarget(_ container: Container?) -> Bool {
+        guard let container else { return false }
+        switch container {
+        case .mkv, .webm, .asf, .mp4, .mov: return true
+        case .ts, .hls, .flac, .mp3, .avi: return false
+        }
+    }
+
+    /// How long `.buffering` events must stay silent after a seek before the hold releases at
+    /// the target (see `armQuietRelease`).
+    nonisolated static let seekQuietWindow: Duration = .milliseconds(30)
 
     /// Progress poll cadence (ms), matching `AVKitEngine`'s periodic observer. Named because
     /// it is also the seek hold's clock: `seekHoldPositionMs` derives elapsed time from the
@@ -1441,17 +1549,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 if let target = self.pendingSeekMs {
                     self.pendingSeekPolls += 1
                     self.seekHoldTotalPolls += 1
-                    let sampledAt = ContinuousClock.now
-                    let previous = self.seekHoldPreviousSample
-                    if nowMs >= 0 { self.seekHoldPreviousSample = (nowMs, sampledAt) }
-                    let elapsedMs = previous.map { Int($0.at.duration(to: sampledAt) / .milliseconds(1)) } ?? 0
-                    if Self.seekHoldShouldRelease(now: nowMs, previous: previous?.clockMs, target: target,
-                                                  polls: self.pendingSeekPolls,
-                                                  totalPolls: self.seekHoldTotalPolls,
-                                                  preSeekClockMs: self.preSeekClockMs,
-                                                  jumpMs: Self.seekHoldJumpMs(elapsedMs: elapsedMs,
-                                                                              pollMs: Self.pollIntervalMs,
-                                                                              rate: self.desiredRate)) {
+                    if self.seekHoldLanded(target: target, nowMs: nowMs) {
                         self.clearSeekHold()
                     } else {
                         // A seek still filling after ~1s (2 polls) may be a real network wait, and
@@ -1931,11 +2029,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     /// Whether a post-seek poll should drop the hold and resume publishing the raw clock.
     ///
-    /// Convergence releases it. The abandon cap releases it too, unconditionally — see
-    /// `seekHoldAbandoned` for the two shapes that would otherwise hold forever; what ships
-    /// then is the honest raw clock, labelled `.observed`, never a re-dressed pre-seek value
-    /// (by then the clock either moved or the seek is unknowable, and freezing the bar on a
-    /// guess for the rest of the session is the worse lie).
+    /// The abandon cap releases it first and unconditionally — see `seekHoldAbandoned` for the
+    /// two shapes that would otherwise hold forever; what ships then is the honest raw clock,
+    /// labelled `.observed`, never a re-dressed pre-seek value (by then the clock either moved
+    /// or the seek is unknowable, and freezing the bar on a guess for the rest of the session
+    /// is the worse lie).
+    ///
+    /// A clock reading exactly the target never releases. Device: libvlc echoes the `time` write
+    /// back within 21 ms (getter == target), and the real republish follows 280-480 ms later and
+    /// is never exactly the target, so the echo is not a landing.
+    ///
+    /// Otherwise convergence releases it.
     ///
     /// Expiry releases as well — but only once the clock is NEARER the
     /// target than the position the seek started from, and that condition is the whole reason
@@ -1974,9 +2078,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         now: Int32, previous: Int32?, target: Int32, polls: Int, totalPolls: Int,
         preSeekClockMs: Int32?, jumpMs: Int32
     ) -> Bool {
+        if seekHoldAbandoned(polls: totalPolls) { return true }
+        if now == target { return false }
         if seekHasConverged(now: now, target: target) { return true }
         if let previous, now >= 0, abs(Int(now) - Int(previous)) > Int(jumpMs) { return true }
-        if seekHoldAbandoned(polls: totalPolls) { return true }
         guard seekHoldExpired(polls: polls) else { return false }
         guard let preSeekClockMs else { return true }
         return abs(Int(now) - Int(target)) < abs(Int(now) - Int(preSeekClockMs))
@@ -2151,6 +2256,23 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
         }
     }
 
+    /// libvlc republished its clock. While a seek hold stands, this is where the landing ships:
+    /// the poll only looks every `pollIntervalMs`, and the app parks the progress dot until the
+    /// first `.observed` beat, so waiting for the next tick leaves it at the pre-drag spot after
+    /// audio and video have moved. Only the release lives here; counting, extrapolation and
+    /// stall handling stay on the poll.
+    public nonisolated func mediaPlayerTimeChanged(_ aNotification: Notification) {
+        MainActor.assumeIsolated {
+            guard let target = pendingSeekMs, pendingStartMs == nil, rateFlushAnchorMs == nil,
+                  Self.shouldRunLiveTick(desiredPlaying: desiredPlaying, isPlaying: player.isPlaying)
+            else { return }
+            let nowMs = clockMs
+            guard seekHoldLanded(target: target, nowMs: nowMs) else { return }
+            clearSeekHold()
+            emitPosition(isPlaying: true, positionMs: nowMs)
+        }
+    }
+
     /// Snapshot taken: `saveVideoSnapshot(at:withWidth:andHeight:)` finished writing SOME PNG.
     /// The notification carries no path or capture identity, so it can't tell a genuine write for
     /// the in-flight `captureFrame()` apart from a stale notification belonging to an earlier,
@@ -2222,6 +2344,7 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             // remote pause landing before the first frame (pause() emits nothing: there is no
             // clock yet) or a slow first frame would let the deadline fire on healthy media.
             loadWatchdog.disarm()
+            if state == .buffering { armQuietRelease() }
         @unknown default:
             break
         }

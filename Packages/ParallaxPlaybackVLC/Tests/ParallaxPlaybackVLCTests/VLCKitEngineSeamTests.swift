@@ -6,6 +6,7 @@ import MobileVLCKit
 #else
 import TVVLCKit
 #endif
+import ParallaxCore
 import ParallaxPlaybackTestSupport
 import ParallaxPlaybackVLCTestSupport
 import ParallaxTestScaling
@@ -84,9 +85,9 @@ struct VLCKitDisplayClockTests {
         await engine.play()
         await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
 
-        spy.advanceClock(toMs: 60_000)      // libvlc's time-changed event lands
-        try await pollUntil { CMTimeGetSeconds(engine.currentTime) == 60 }
-        #expect(CMTimeGetSeconds(engine.currentTime) == 60)
+        spy.advanceClock(toMs: 60_093)      // the real republish: just past the request, never on it
+        try await pollUntil { CMTimeGetSeconds(engine.currentTime) == 60.093 }
+        #expect(CMTimeGetSeconds(engine.currentTime) == 60.093)
 
         spy.advanceClock(toMs: 61_000)
         try await pollUntil { CMTimeGetSeconds(engine.currentTime) == 61 }
@@ -150,6 +151,31 @@ struct VLCKitMediaOptionTests {
         let options = VLCKitEngine.mediaOptions(for: .fixture())
         #expect(options.contains(where: { $0.hasPrefix(":ssa-fontsdir") }) == false)
         #expect(options.contains(where: { $0.contains("freetype") }) == false)
+    }
+
+    /// VLC's ASF demuxer seeks by byte estimate on a non-fast-seekable access (-5s..+26s off on
+    /// device), so ASF alone is handed to avformat. Other containers keep VLC's own demuxers.
+    @Test("avformat is forced for ASF and for nothing else",
+          arguments: [(Container.asf, true), (.webm, false), (.mkv, false), (nil, false)] as [(Container?, Bool)])
+    func avformatDemuxRidesAsfOnly(container: Container?, forced: Bool) {
+        let options = VLCKitEngine.mediaOptions(for: .fixture(hints: .fixture(container: container)))
+        #expect(options.contains(":demux=avformat,any") == forced)
+    }
+
+    /// mkv, webm and asf are device-measured (asf only because avformat demuxes it); mp4 and mov
+    /// are audited from VLC 3.0.21's demuxer code. Everything else waits for the republish.
+    @Test("which containers' seeks land on the target", arguments: Container.allCases)
+    func seekLandsOnTargetMapping(container: Container) {
+        let expected: [Container: Bool] = [
+            .mp4: true, .mov: true, .mkv: true, .webm: true, .asf: true,
+            .ts: false, .hls: false, .flac: false, .mp3: false, .avi: false,
+        ]
+        #expect(VLCKitEngine.seekLandsOnTarget(container) == expected[container])
+    }
+
+    @Test("an unknown container waits for the republish")
+    func seekLandsOnTargetNilIsFalse() {
+        #expect(VLCKitEngine.seekLandsOnTarget(nil) == false)
     }
 
     /// Caller-supplied options are applied LAST so they can override the engine's defaults.
@@ -528,11 +554,12 @@ struct VLCKitEventsConfigurationTests {
 struct VLCKitSeekSettleTests {
 
     private func playingEngine(
-        _ spy: SpyVLCPlayer, atMs: Int32, stallDeadline: Duration = .seconds(45)
+        _ spy: SpyVLCPlayer, atMs: Int32, stallDeadline: Duration = .seconds(45),
+        container: Container? = nil
     ) async throws -> VLCKitEngine {
         spy.advanceClock(toMs: atMs)
         let engine = VLCKitEngine(control: spy, stallDeadline: stallDeadline)
-        try await engine.load(.fixture())
+        try await engine.load(.fixture(hints: .fixture(container: container)))
         await engine.play()
         return engine
     }
@@ -558,13 +585,173 @@ struct VLCKitSeekSettleTests {
         // it, so nothing on this engine is ever `.stale`.
         #expect(log.beats.allSatisfy { $0.provenance != .stale })
 
-        spy.advanceClock(toMs: 60_000)   // libvlc's time-changed event finally lands on the target
+        spy.advanceClock(toMs: 60_093)   // libvlc's time-changed event finally lands, just past the request
         try await requireEventually({ log.from(60).contains { $0.provenance == .observed } },
                               "the hold never released")
 
         let observed = try #require(log.from(60).first { $0.provenance == .observed })
-        #expect(observed.seconds == 60)
+        #expect(observed.seconds == 60.093)
         #expect(observed.isBuffering == false)
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// The scrub-commit lag: the app parks the progress dot until the first `.observed` beat, so
+    /// a landing that waits for the next 500ms poll holds the dot at the pre-drag spot for up to
+    /// a poll after audio and video are already at the target. The landing has to ship when the
+    /// clock republishes. Starts right after a poll tick, so a poll-bound release is ~450ms away.
+    ///
+    /// The echo is on, as on device: libvlc reads the request straight back as its clock, which
+    /// is not a landing. Releasing on it ships `.observed` at the target and the real reading
+    /// then yanks the dot back.
+    @Test("the landing beat ships when the clock republishes, not on the request's echo or the next poll")
+    func landingShipsOnTheRepublish() async throws {
+        let spy = SpyVLCPlayer()
+        spy.timeWritesMoveTheClock = true
+        spy.demuxBytesPerPoll = 1
+        let engine = try await playingEngine(spy, atMs: 10_000)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        try await requireEventually({ log.from(60).count >= 2 }, "the hold never ticked")
+
+        spy.advanceClock(toMs: 60_093)   // webm: the real landing sits just past the request
+        // Same main-actor turn as the republish: no poll tick can have run, so a hold that is
+        // already gone was released by the time-changed event itself, not by the next tick.
+        #expect(CMTimeGetSeconds(engine.currentTime) == 60.093, "the republish did not release the hold")
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds > 60 } },
+                                    "the landing never shipped", timeout: CITimeScale.seconds(5))
+
+        let observed = log.beats.filter { $0.provenance == .observed }.map(\.seconds)
+        #expect(observed.first == 60.093, "first observed beat: \(observed)")
+        #expect(!observed.contains(60), "the request's echo shipped as a landing")
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// The release at the target, as on device: the echo has already put the target in the
+    /// getter, so the polls after the release read 60s. Waits for one poll to publish after the
+    /// release, then requires every `.observed` beat from the release on to sit at the target; a
+    /// getter still on the pre-seek clock (no echo) would have that poll snap the dot back.
+    private func requireNoSnapBackAfterRelease(_ log: PositionBeatLog) async throws {
+        let observedAtTarget = { log.beats.filter { $0.provenance == .observed && $0.seconds == 60 }.count }
+        try await requireEventually({ observedAtTarget() >= 2 }, "no poll ran after the release",
+                                    timeout: CITimeScale.seconds(5))
+        let release = try #require(log.beats.firstIndex { $0.provenance == .observed && $0.seconds == 60 })
+        let after = log.beats[release...].filter { $0.provenance == .observed }.map(\.seconds)
+        #expect(after.allSatisfy { $0 == 60 }, "observed beats after the release: \(after)")
+    }
+
+    /// The dot trails the resumed picture because VLC 3 publishes time only on its ~250ms input
+    /// tick. The refill after a seek is a burst of `.buffering` events that stops when the data
+    /// is in, and for a container whose seek lands on the target that stop IS the landing.
+    @Test("a quiet buffering burst releases the hold at the target, then the republish follows")
+    func quietBufferingBurstReleasesAtTheTarget() async throws {
+        let spy = SpyVLCPlayer()
+        spy.timeWritesMoveTheClock = true
+        spy.demuxBytesPerPoll = 1
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        for _ in 0..<3 {
+            spy.emitState(.buffering)
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!log.beats.contains { $0.provenance == .observed && $0.seconds == 60 },
+                "released while the burst was still running")
+
+        // The echo is exact (60s), which the hold never takes for a landing, so only the quiet
+        // window can produce this beat.
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 60 } },
+                                    "the quiet burst never released the hold", timeout: CITimeScale.seconds(5))
+        try await requireNoSnapBackAfterRelease(log)
+
+        spy.emitState(.playing)
+        spy.advanceClock(toMs: 60_093)   // the real republish, just past the request
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 60.093 } },
+                                    "the republish never followed the early release")
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// Only a container whose VLC seek lands on the target may release at it. Anything else
+    /// (ts seeks by byte fraction) waits for the real republish, burst or no burst.
+    @Test("a quiet buffering burst does not release a container outside the accurate set",
+          arguments: [nil, Container.ts] as [Container?])
+    func quietBurstWaitsForTheRepublishOutsideTheAccurateSet(container: Container?) async throws {
+        let spy = SpyVLCPlayer()
+        spy.demuxBytesPerPoll = 1
+        let engine = try await playingEngine(spy, atMs: 10_000, container: container)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        for _ in 0..<3 {
+            spy.emitState(.buffering)
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await Task.sleep(for: .milliseconds(300))   // ten quiet windows
+        #expect(log.beats.filter { $0.provenance == .observed && $0.seconds >= 60 }.isEmpty)
+
+        spy.emitState(.playing)
+        spy.advanceClock(toMs: 60_093)
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 60.093 } },
+                                    "the republish never released the hold")
+        #expect(!log.beats.contains { $0.provenance == .observed && $0.seconds == 60 })
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A slow share: the burst keeps arriving while the data is not in, so the hold (and the
+    /// scrim behind it) stays up until the burst actually stops.
+    @Test("a buffering burst that keeps arriving holds the seek until it stops")
+    func slowFetchHoldsUntilTheBurstStops() async throws {
+        let spy = SpyVLCPlayer()
+        spy.timeWritesMoveTheClock = true
+        spy.demuxBytesPerPoll = 1
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        for _ in 0..<20 {
+            spy.emitState(.buffering)
+            try await Task.sleep(for: .milliseconds(10))
+            #expect(!log.beats.contains { $0.provenance == .observed && $0.seconds == 60 },
+                    "released while buffering events were still arriving")
+        }
+
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 60 } },
+                                    "the hold never released once the burst stopped",
+                                    timeout: CITimeScale.seconds(5))
+        try await requireNoSnapBackAfterRelease(log)
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A paused seek has no resumed picture to catch up with; the release is for a playing
+    /// input. Resuming is the positive control that the burst would otherwise have released.
+    @Test("a quiet buffering burst does not release a paused seek")
+    func pausedSeekIsNotReleasedEarly() async throws {
+        let spy = SpyVLCPlayer()
+        spy.timeWritesMoveTheClock = true
+        spy.demuxBytesPerPoll = 1
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        await engine.pause()
+        for _ in 0..<3 {
+            spy.emitState(.buffering)
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(log.beats.filter { $0.provenance == .observed && $0.seconds >= 60 }.isEmpty)
+
+        await engine.play()
+        spy.emitState(.buffering)
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 60 } },
+                                    "the resumed input never released the hold", timeout: CITimeScale.seconds(5))
+        try await requireNoSnapBackAfterRelease(log)
         log.stop()
         await engine.teardown()
     }

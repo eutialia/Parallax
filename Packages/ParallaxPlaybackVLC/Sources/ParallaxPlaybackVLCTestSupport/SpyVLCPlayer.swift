@@ -12,13 +12,14 @@ import TVVLCKit
 /// `VLCKitEngine.init(control:)` so the poll loop, the seek/resume holds, the track latches
 /// and the delay round-trip can be exercised without a decode.
 ///
-/// **Models 3.x's clock honestly:** by default, writing `time` records a seek but does NOT
-/// change what the getter returns. That is exactly what libvlc does — `player.time` is a cache
-/// its time-changed event refreshes, so it keeps reporting the pre-seek position for as long as
-/// the input takes to demux at the new offset. Tests move the clock by assigning
-/// `stubbedTime`, which is the analogue of that event landing.
-/// `timeWritesMoveTheClock` flips that, for the one thing the default cannot express — see
-/// its own note.
+/// **Models 3.x's clock:** `player.time` is a cache that libvlc's time-changed event refreshes.
+/// On device (VLCKit 3, iPad) a `time` write is echoed straight back: one time-changed event
+/// 0-21 ms later, with the getter reading exactly the requested value. The real republish
+/// follows 280-480 ms after that and is never exactly the request (webm: about +93 ms; wmv: a
+/// byte-estimated offset, -4 s to +26 s). By default a write is only recorded and the getter
+/// keeps its pre-seek value, which is the quieter half of that behaviour;
+/// `timeWritesMoveTheClock` switches on the echo. Tests move the clock to the real republish
+/// by calling `advanceClock`, which also delivers the time-changed event.
 ///
 /// `@unchecked Sendable`: the engine drives every member from the `@MainActor` except
 /// `stop()`, which it deliberately runs detached — that one path is lock-guarded.
@@ -64,14 +65,14 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
 
     /// What the clock reports, independent of what has been written to `time`.
     public var stubbedTime: VLCTime = .null()
-    /// Makes a `time` write land in the getter, the way libvlc's cached clock does on a build
-    /// (or at a moment) where `set_time` reaches it before the input republishes.
+    /// Makes a `time` write echo the way the device does: the getter takes the written value
+    /// at once, and a time-changed event follows on a LATER main-actor turn, after the engine's
+    /// `seek()` has armed its hold.
     ///
-    /// Off by default because the opposite is the shape 3.x usually shows, and the whole file
-    /// turns on it. It exists so a test can pin the one thing the default silently hides:
-    /// WHERE a read of `player.time` sits relative to a write. Code that samples the pre-seek
-    /// clock AFTER writing the target reads correctly only while this is off — it is not a
-    /// property of the code, it is libvlc's timing, and this is how a test says so.
+    /// Off by default, so tests that do not care about the echo see the pre-seek clock until
+    /// they move it. It also pins WHERE a read of `player.time` sits relative to a write: code
+    /// that samples the pre-seek clock AFTER writing the target reads correctly only while this
+    /// is off.
     public var timeWritesMoveTheClock = false
     /// What `demuxReadBytes` reports — the fetch-liveness signal the seek hold and the stall
     /// detector both gate on. Flat across polls = starving; climbing = the fetch is fine and
@@ -99,9 +100,25 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
 
     public init() {}
 
-    /// Move the clock the way libvlc's time-changed event does.
+    /// Move the clock the way libvlc's time-changed event does: the cached getter updates, then
+    /// the delegate hears about it. Call on the main actor, where the real event is delivered.
+    @MainActor
     public func advanceClock(toMs ms: Int32) {
         stubbedTime = VLCTime(int: ms)
+        notifyTimeChanged()
+    }
+
+    /// Move the player state the way libvlc's state-changed event does: the cached getter
+    /// updates, then the delegate hears about it. A refill after a seek is a burst of
+    /// `.buffering`. Call on the main actor.
+    @MainActor
+    public func emitState(_ state: VLCMediaPlayerState) {
+        stubbedState = state
+        delegate?.mediaPlayerStateChanged?(Notification(name: Notification.Name("VLCMediaPlayerStateChanged")))
+    }
+
+    private func notifyTimeChanged() {
+        delegate?.mediaPlayerTimeChanged?(Notification(name: Notification.Name("VLCMediaPlayerTimeChanged")))
     }
 
     // MARK: - VLCPlayerControlling
@@ -112,7 +129,10 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
             let ms = newValue.value.map { Int32(clamping: $0.int64Value) }
             seekWritesMs.append(ms)
             orderedWrites.append(.seek(ms))
-            if timeWritesMoveTheClock { stubbedTime = newValue }
+            if timeWritesMoveTheClock {
+                stubbedTime = newValue
+                Task { @MainActor [weak self] in self?.notifyTimeChanged() }
+            }
         }
     }
 
