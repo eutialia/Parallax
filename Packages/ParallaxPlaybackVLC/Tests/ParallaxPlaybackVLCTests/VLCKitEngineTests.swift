@@ -392,8 +392,8 @@ struct VLCKitPollGateTests {
     ///  • a clock that never republishes at all while the demux keeps climbing — the same
     ///    unmoved reading forever, with the `.buffer` arm (and so the stall watchdog) never
     ///    reached because the fetch is healthy.
-    /// The cap releases both, and the reassert escalation's `pendingSeekPolls = 0` cannot buy
-    /// them more time: it is counted on the ORIGINAL seek.
+    /// The cap releases both, and the reassert escalation's fresh hold (`polls` back to 0) cannot
+    /// buy them more time: it is counted on the ORIGINAL seek.
     @Test("the abandon cap ends the holds the conditional rule would keep forever", arguments: [
         // A backward seek: pre-seek 480_000 (08:00), target 60_000 (01:00), clock free-running
         // forward from 08:00. Nearer the ORIGIN at every one of these.
@@ -406,7 +406,7 @@ struct VLCKitPollGateTests {
         ("never-republishing clock, budget spent", 480_000, 60_000, 10, 10, false),
         ("never-republishing clock, one poll short", 480_000, 60_000, 29, 29, false),
         ("never-republishing clock, abandoned at 30", 480_000, 60_000, 30, 30, true),
-        // The reassert escalation re-anchors every 6 ticks and restarts `pendingSeekPolls`.
+        // The reassert escalation re-anchors every 6 ticks and restarts the hold's `polls`.
         // Counted on THAT, the cap would never arrive; counted on the original seek, it does.
         ("a reassert reset does not extend the cap", 480_000, 60_000, 1, 30, true),
         ("nor does one just short of it", 480_000, 60_000, 1, 29, false),
