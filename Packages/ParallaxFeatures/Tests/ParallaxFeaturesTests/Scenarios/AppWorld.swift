@@ -488,7 +488,8 @@ final class RecordingThumbnailer: FrameThumbnailing {
     static let frame = ThumbnailFrame(data: TestFrames.scene, duration: .seconds(42))
     var script: [Data] = []
     /// Set and close it to park every decode after it has been recorded. Left nil it adds no
-    /// suspension, which the timing-sensitive scenarios rely on.
+    /// suspension, which the timing-sensitive scenarios rely on. A decode cancelled while parked
+    /// throws `CancellationError` once released, as both real thumbnailers do.
     var hold: AsyncGate?
     private(set) var requests: [URL] = []
     private(set) var positions: [Float] = []
@@ -497,6 +498,7 @@ final class RecordingThumbnailer: FrameThumbnailing {
         requests.append(url)
         positions.append(position)
         await hold?.pass()
+        try Task.checkCancellation()
         guard !script.isEmpty else { return Self.frame }
         return ThumbnailFrame(data: script.removeFirst(), duration: Self.frame.duration)
     }

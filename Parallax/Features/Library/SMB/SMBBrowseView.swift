@@ -107,8 +107,8 @@ struct SMBBrowseView: View {
             .tvHidesTabSidebar()
         }
         // Lifecycle: on back-navigation `appear()` finds the level already open and keeps the cached
-        // listing — fast and stale-tolerant. There is no matching teardown: the level holds no
-        // connection, only a pooled borrower.
+        // listing — fast and stale-tolerant. It runs for as long as the level is on screen, so
+        // SwiftUI cancelling it on a push or pop withdraws the level's thumbnail work.
         .task {
             let level = model ?? app.makeSMBBrowse(path)
             model = level

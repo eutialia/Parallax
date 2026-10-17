@@ -40,6 +40,10 @@ public struct SMBBrowsePath: Hashable {
 /// point: coming back to the level finds the listing already there instead of an empty wall,
 /// because the view rebuilds against this same model.
 ///
+/// **Leaving a level DOES withdraw its thumbnails.** Prefetch covers only the level on screen:
+/// `appear()` holds the level's thumbnail work for as long as the view's `.task` runs, and SwiftUI
+/// cancelling that task on a push or pop withdraws whatever is still queued.
+///
 /// Loading cancels any in-flight task before starting a new one; a stale-guard on the current
 /// path ensures a slow, cancelled load can't overwrite the live directory. The level's path is
 /// fixed for the model's lifetime, so the guard collapses to the cancellation check — but it's
@@ -134,6 +138,12 @@ public final class SMBBrowseViewModel {
     /// the same main-actor turn a fresh listing lands, so no re-materialized cell's onAppear can
     /// read the dead order's watermark.
     private var prefetchedThrough = -1
+    /// Where `prefetchWindow` sends a window. With no appearance holding the level, windows wait in
+    /// a buffer, so one asked for before `appear` takes over (a tile materialising on the pop back,
+    /// ahead of the view's `.task`) still lands. Each appearance owns its own stream, tagged with its
+    /// epoch, so one still winding down after a newer one started never touches the newer one's state.
+    private var prefetchSink = PrefetchSink.buffering([])
+    private var appearances = 0
     /// Monotonic token so only the LATEST listing flight may clear its own progress flag
     /// (`isLoading` for `load`, `isRefreshing` for `refresh`). A re-sort or foreground revalidate
     /// cancels the prior task, but AMSMB2's `list` ignores cooperative cancellation, so the
@@ -158,12 +168,35 @@ public final class SMBBrowseViewModel {
         self.playback = playback
     }
 
-    /// What the view calls each time it appears: marks the level as the one on screen and opens it
-    /// if it isn't open yet. An open that was cancelled before it built the lister left the level
-    /// `.opening`, so the next appearance picks it up again.
+    /// What the view's `.task` runs each time the level appears: marks it as the one on screen, opens
+    /// it if it isn't open yet, then runs its thumbnail prefetch until the task is cancelled — the
+    /// level leaving the screen, pushed past or popped. The cancellation withdraws every thumbnail
+    /// the level still waits on. An open that was cancelled before it built the lister left the
+    /// level `.opening`, so the next appearance picks it up again.
     public func appear() async {
         isOnScreen = true
         await open()
+        guard !Task.isCancelled else { return }
+        appearances += 1
+        let epoch = appearances
+        let (windows, sink) = AsyncStream<PrefetchWindow>.makeStream()
+        switch prefetchSink {
+        case .buffering(let buffered):
+            buffered.forEach { sink.yield($0) }
+        case .appearance:
+            // The previous appearance is still winding down and withdraws what it was handed.
+            prefetchedThrough = -1
+        }
+        prefetchSink = .appearance(epoch, sink)
+        let (artworkProvider, ref) = (artworkProvider, path.ref)
+        await withDiscardingTaskGroup { group in
+            for await window in windows {
+                group.addTask { await artworkProvider.prefetch(window.items, ref: ref, sidecars: window.sidecars) }
+            }
+        }
+        guard case .appearance(epoch, _) = prefetchSink else { return }
+        prefetchSink = .buffering([])
+        prefetchedThrough = -1
     }
 
     /// Builds this level's lister and starts the first list. Failure before the lister exists lands
@@ -244,19 +277,29 @@ public final class SMBBrowseViewModel {
         playback.playSMB(item, ref: path.ref)
     }
 
-    /// Viewport-ahead prefetch: when the media tile at `index` materialises, hands the thumbnail
-    /// provider the next `lookahead` items past the current watermark. Monotonic, so each item is
-    /// handed over once per listing; the provider dedupes any overlap (cache / pending /
-    /// negative-cache) anyway. The tile's own artwork request covers `index` itself at visible
-    /// priority.
+    /// Viewport-ahead prefetch: when the media tile at `index` materialises, hands the level's
+    /// prefetch the tile's own item and the next `lookahead` items, all those past the current
+    /// watermark. Monotonic, so each item is handed over once per listing and appearance; the
+    /// provider dedupes any overlap (cache / pending / negative-cache) anyway. A tile below the
+    /// watermark was already claimed by the level, so scrolling it off withdraws only its visible
+    /// priority: its thumbnail still finishes while the level is on screen, unless the bounded
+    /// prefetch backlog evicts it first.
     public func prefetchWindow(from index: Int, lookahead: Int) {
         let upper = min(index + lookahead, media.count - 1)
-        let lower = max(prefetchedThrough + 1, index + 1)
+        let lower = max(prefetchedThrough + 1, index)
         guard lower <= upper else { return }
-        let slice = Array(media[lower...upper])
         prefetchedThrough = upper
-        let (artworkProvider, ref, sidecars) = (artworkProvider, path.ref, artwork)
-        Task { await artworkProvider.prefetch(slice, ref: ref, sidecars: sidecars) }
+        let window = PrefetchWindow(items: Array(media[lower...upper]), sidecars: artwork)
+        switch prefetchSink {
+        case .buffering(let buffered):
+            prefetchSink = .buffering(buffered + [window])
+        case .appearance(_, let sink):
+            // The appearance was cancelled but has not wound down yet: the window belongs to the next.
+            guard case .terminated = sink.yield(window) else { return }
+            prefetchSink = .buffering([])
+            prefetchedThrough = -1
+            prefetchWindow(from: index, lookahead: lookahead)
+        }
     }
 
     public func load() {
@@ -349,4 +392,16 @@ public final class SMBBrowseViewModel {
         artwork = listing.artwork
         prefetchedThrough = -1
     }
+}
+
+/// Items a level hands its thumbnail prefetch, with the sidecar matches from the same listing.
+private struct PrefetchWindow: Sendable {
+    let items: [Item]
+    let sidecars: [ItemID: SMBDirectoryEntry]
+}
+
+/// A buffer while no appearance holds the level, or the stream of the appearance that does.
+private enum PrefetchSink {
+    case buffering([PrefetchWindow])
+    case appearance(Int, AsyncStream<PrefetchWindow>.Continuation)
 }

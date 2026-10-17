@@ -1,16 +1,14 @@
 import Foundation
 import ParallaxFileBrowse
 
-/// FIFO list of continuation waiters, keyed by an optional generation key and host (both nil for
-/// the playback hold, which is key- and host-agnostic). A waiter carries NO link class: the class
-/// only ever seeds a host's window, and that seeding happens once at arrival in
-/// `ThumbnailGate.wait` — a class baked into a queued waiter would be stale by the time it is read.
-/// A value type
-/// owned by an actor: every mutation runs under that actor's isolation, so the stored
-/// `CheckedContinuation`s never cross an isolation boundary. Continuations resume with a Bool —
-/// true = proceed (permit granted / hold released), false = ABANDONED (evicted from the bounded
-/// prefetch backlog; the generation bails without SMB work). Shared by `ThumbnailGate` and
-/// `MediaArtworkProvider`'s playback hold so the FIFO bookkeeping exists once.
+/// FIFO list of `ThumbnailGate` waiters, each with an id unique within the gate, its generation
+/// key and its host. A waiter carries NO link class: the class only ever seeds a host's window, and
+/// that seeding happens once at arrival in `ThumbnailGate.wait` — a class baked into a queued
+/// waiter would be stale by the time it is read. A value type owned by the gate actor: every
+/// mutation runs under its isolation, so the stored `CheckedContinuation`s never cross an isolation
+/// boundary. Continuations resume with a Bool — true = proceed (permit granted), false = ABANDONED
+/// (evicted from the bounded prefetch backlog, or withdrawn because its generation was cancelled;
+/// the generation bails without SMB work).
 ///
 /// Marked `nonisolated` at the type level because the app target defaults every declaration to
 /// `@MainActor` — without it, the gate actor's synchronous calls into this value type inherit a
@@ -18,8 +16,9 @@ import ParallaxFileBrowse
 /// isolation warnings. Same precedent as `SMBThumbnailKey`.
 nonisolated struct WaiterList {
     typealias Waiter = (
-        key: SMBThumbnailKey?,
-        host: String?,
+        id: Int,
+        key: SMBThumbnailKey,
+        host: String,
         continuation: CheckedContinuation<Bool, Never>
     )
 
@@ -28,17 +27,18 @@ nonisolated struct WaiterList {
     var count: Int { waiters.count }
 
     mutating func add(
-        key: SMBThumbnailKey?,
-        host: String?,
+        id: Int,
+        key: SMBThumbnailKey,
+        host: String,
         _ continuation: CheckedContinuation<Bool, Never>
     ) {
-        waiters.append((key, host, continuation))
+        waiters.append((id, key, host, continuation))
     }
 
     /// Removes and returns the first waiter whose host passes `admissible`, or nil. FIFO within
     /// the admissible subset — a waiter blocked by its own host's window is skipped, not
     /// head-of-line blocking waiters for other hosts behind it.
-    mutating func removeFirst(where admissible: (String?) -> Bool) -> Waiter? {
+    mutating func removeFirst(where admissible: (String) -> Bool) -> Waiter? {
         guard let index = waiters.firstIndex(where: { admissible($0.host) }) else { return nil }
         return waiters.remove(at: index)
     }
@@ -54,11 +54,10 @@ nonisolated struct WaiterList {
         return waiters.remove(at: index)
     }
 
-    /// Releases every waiter to proceed. Snapshot-then-clear so no resume observes a stale queue.
-    mutating func resumeAll() {
-        let all = waiters
-        waiters = []
-        for waiter in all { waiter.continuation.resume(returning: true) }
+    /// Removes the waiter with `id`, or nil.
+    mutating func removeWaiter(id: Int) -> Waiter? {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return nil }
+        return waiters.remove(at: index)
     }
 }
 
@@ -121,9 +120,9 @@ nonisolated private struct HostAdmission {
 /// the bottom waited behind the entire scrolled-past backlog (the "fetches always start from the
 /// top" bug).
 actor ThumbnailGate {
-    /// Ceiling on QUEUED prefetch waiters. Prefetch windows accumulate across folders (generations
-    /// are never cancelled), so without a bound a drill-through-many-folders session queues stale
-    /// work that saturates a WAN link for minutes after the user left. Beyond the cap, the OLDEST
+    /// Ceiling on QUEUED prefetch waiters. Leaving a folder withdraws its waiters, but windows still
+    /// accumulate as the user scrolls one long folder, so without a bound a fast fling queues the
+    /// whole listing behind the rows actually on screen. Beyond the cap, the OLDEST
     /// queued prefetch waiter is resumed as ABANDONED (false) — it did no SMB work, records no
     /// failure, and a visible request or a re-entered window simply reschedules it. Roughly one
     /// window's worth: newer windows describe where the user actually is. Demoted waiters land at
@@ -133,8 +132,7 @@ actor ThumbnailGate {
     /// SAFETY BOUND on concurrent generations across ALL hosts — not an operating cap. Per-host
     /// AIMD owns the operating point and normally sits well under this; the bound only stops two
     /// or three healthy hosts' windows from stacking (2 hosts at the per-host ceiling is already 8
-    /// simultaneous bridges + demuxes, and generations are never cancelled, so every one of them
-    /// runs to the end).
+    /// simultaneous bridges + demuxes).
     private static let maxGlobalInFlight = 6
 
     /// Per-host AIMD windows, each remembering the link class it was seeded from. Lazily seeded on
@@ -149,30 +147,47 @@ actor ThumbnailGate {
     /// waiter lands in the band the current demand says — not the one that was true when its
     /// generation was scheduled.
     private var visibleClaims: [SMBThumbnailKey: Int] = [:]
+    /// Source of waiter ids, so a cancelled waiter leaves the queue by identity: a key can be
+    /// queued twice while a cancelled generation's withdrawal and its replacement cross.
+    private var nextWaiterID = 0
 
     /// Acquires a permit for `host`, suspending (FIFO within the band) until that host's window
     /// has a free slot. The band is read from the gate-owned demand record at enqueue — callers
     /// declare nothing. Returns true with the permit held, or false when the waiter was evicted
-    /// from the bounded prefetch backlog — the caller must bail without SMB work and WITHOUT
-    /// `signal`ing (no permit was granted).
+    /// from the bounded prefetch backlog or the calling task was cancelled — the caller must bail
+    /// without SMB work and WITHOUT `signal`ing (no permit was granted).
     ///
     /// This is the ONLY place a host's window is seeded or re-seeded: an arrival is a real event
     /// carrying the class the pool believes RIGHT NOW. Everything else (admission scans, the
     /// completion feedback in `signal`) reads the stored window and never writes a seed.
     func wait(key: SMBThumbnailKey, host: String, link: SMBLinkClass?) async -> Bool {
         seed(host: host, link: link)
+        guard !Task.isCancelled else { return false }
         if admissible(host: host) {
             account(host: host)
             return true
         }
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            if visibleClaims[key] != nil {
-                visible.add(key: key, host: host, continuation)
-            } else {
-                addPrefetch(key: key, host: host, continuation)
+        let id = nextWaiterID
+        nextWaiterID += 1
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                guard !Task.isCancelled else { return continuation.resume(returning: false) }
+                if visibleClaims[key] != nil {
+                    visible.add(id: id, key: key, host: host, continuation)
+                } else {
+                    addPrefetch(id: id, key: key, host: host, continuation)
+                }
             }
+        } onCancel: {
+            Task { await self.withdraw(id) }
         }
-        // Resumed by `admit` (true; permit already accounted) or backlog eviction (false).
+        // Resumed by `admit` (true; permit already accounted), backlog eviction or withdrawal (false).
+    }
+
+    /// Resumes a cancelled generation's queued waiter as abandoned. A no-op once it was admitted,
+    /// evicted or never queued.
+    private func withdraw(_ id: Int) {
+        (visible.removeWaiter(id: id) ?? prefetch.removeWaiter(id: id))?.continuation.resume(returning: false)
     }
 
     /// Releases a held permit for `host`, feeds `outcome` into that host's STORED admission window,
@@ -212,15 +227,15 @@ actor ThumbnailGate {
         let claims = (visibleClaims[key] ?? 0) + 1
         visibleClaims[key] = claims
         guard claims == 1, let waiter = prefetch.removeWaiter(key: key) else { return }
-        visible.add(key: key, host: waiter.host, waiter.continuation)
+        visible.add(id: waiter.id, key: key, host: waiter.host, waiter.continuation)
     }
 
     /// Closes one visible claim: a tile that wanted `key` stopped waiting (scroll-off, or its
     /// await completed). Counted reverse of `promote`, safe against a claim already closed (a
     /// late demote after the generation finished is a no-op): only when the LAST claim closes does
     /// the queued visible waiter move to the prefetch band's TAIL, behind everything the user
-    /// still wants — where the bounded backlog's eviction ages it out under pressure. The
-    /// generation itself is never cancelled; only its place in line changes.
+    /// still wants — where the bounded backlog's eviction ages it out under pressure. Only its
+    /// place in line changes.
     func demote(_ key: SMBThumbnailKey) {
         guard let claims = visibleClaims[key] else { return }
         guard claims == 1 else {
@@ -229,7 +244,7 @@ actor ThumbnailGate {
         }
         visibleClaims[key] = nil
         guard let waiter = visible.removeWaiter(key: key) else { return }
-        addPrefetch(key: key, host: waiter.host, waiter.continuation)
+        addPrefetch(id: waiter.id, key: key, host: waiter.host, waiter.continuation)
     }
 
     /// Queued waiter counts per band — test introspection only (the tests poll these to sequence
@@ -241,11 +256,12 @@ actor ThumbnailGate {
     /// Appends to the prefetch band and applies the backlog cap, evicting the OLDEST waiter as
     /// abandoned when over. Shared by `wait` (fresh enqueue) and `demote` (band move).
     private func addPrefetch(
+        id: Int,
         key: SMBThumbnailKey,
-        host: String?,
+        host: String,
         _ continuation: CheckedContinuation<Bool, Never>
     ) {
-        prefetch.add(key: key, host: host, continuation)
+        prefetch.add(id: id, key: key, host: host, continuation)
         if prefetch.count > Self.maxQueuedPrefetch, let evicted = prefetch.removeOldest() {
             evicted.continuation.resume(returning: false)
         }
@@ -288,28 +304,11 @@ actor ThumbnailGate {
     /// band first, then prefetch, skipping over waiters whose host window is full (a blocked host
     /// does not head-of-line-block other hosts behind it). Each admitted waiter's permit is
     /// accounted here (its `wait` won't re-account).
-    ///
-    /// A host-less waiter is simply never admissible. Only the playback hold enqueues one, and that
-    /// `WaiterList` is a different list entirely — so this is a shape the bands can't hold, not an
-    /// invariant worth trapping on inside the admission loop.
     private func admit() {
-        while true {
-            guard let waiter = visible.removeFirst(where: hasFreeSlot)
-                    ?? prefetch.removeFirst(where: hasFreeSlot) else { break }
-            guard let host = waiter.host else {
-                // Unreachable (the predicate excluded it) — resume as ABANDONED rather than
-                // leaking a suspended continuation.
-                waiter.continuation.resume(returning: false)
-                continue
-            }
-            account(host: host)
+        while let waiter = visible.removeFirst(where: admissible(host:))
+                ?? prefetch.removeFirst(where: admissible(host:)) {
+            account(host: waiter.host)
             waiter.continuation.resume(returning: true)
         }
-    }
-
-    /// `admissible`, over the optional host a queued waiter carries. Pure, like everything it calls.
-    private func hasFreeSlot(host: String?) -> Bool {
-        guard let host else { return false }
-        return admissible(host: host)
     }
 }

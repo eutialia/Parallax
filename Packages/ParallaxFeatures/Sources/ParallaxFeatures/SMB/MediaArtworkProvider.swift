@@ -30,17 +30,17 @@ public nonisolated struct MediaArtwork: Sendable, Equatable {
 ///
 /// **Coalescing scheduler.** Every key maps to at most one provider-owned generation `Task`
 /// (`pending`). A second request for the same key — a re-appearing tile, or a prefetch that a tile
-/// then visibly demands — awaits that shared task rather than starting a duplicate. Generation tasks
-/// RUN TO COMPLETION once started: they are never cancelled, so a scrolled-past tile's frame-grab is
-/// NOT wasted work — the viewport-ahead prefetch window wants every nearby key anyway, and abandoning
-/// the decode would just re-charge it on the next scroll. A tile scrolling off abandons its *await* of the shared
-/// task (awaiting a `Never`-failure `Task.value` doesn't propagate the awaiter's cancellation) and
-/// withdraws the key's VISIBLE claim (`gate.demote`) — never the generation itself.
+/// then visibly demands — joins that shared task rather than starting a duplicate. Each request
+/// holds a CLAIM on it for as long as it awaits (`hold`): a tile while it is on screen, a folder
+/// level's prefetch while the level is. The generation lives while any claim does and is cancelled
+/// when the last one goes, so leaving a folder withdraws its work while scrolling within it does
+/// not — the level still claims every key a tile of it asked for, and a scrolled-off tile only
+/// withdraws its VISIBLE claim (`gate.demote`).
 ///
 /// **Gate.** A multi-permit, two-band async gate (`ThumbnailGate`) bounds concurrent SMB work
 /// with a per-host AIMD admission window. Visibly demanded keys outrank prefetch warming, and the
 /// demand record is GATE-OWNED and COUNTED, bracketed here around each visible await
-/// (`awaitVisibly`): `promote` opens a claim before awaiting, `demote` closes it when the await
+/// (`hold`): `promote` opens a claim before awaiting, `demote` closes it when the await
 /// ends — by the tile's cancellation (scroll-off) or by the generation completing. So the band a
 /// generation queues in always reflects what is on screen NOW — not what was when it was
 /// scheduled. Without the demote half, a fast scroll left every transiently mounted tile queued at
@@ -86,9 +86,9 @@ public actor MediaArtworkProvider {
     /// from the 2026-07-10 2-permit-worse-over-VPN measurement; the window then adapts per host.
     private let gate = ThumbnailGate()
 
-    /// At most one in-flight generation `Task` per key. A duplicate request awaits the existing task's
-    /// value; the task removes its own entry on completion. Awaiting the task never cancels it.
-    private var pending: [SMBThumbnailKey: Task<MediaArtwork, Never>] = [:]
+    /// At most one generation per key, with the number of requests still holding it. The generation
+    /// removes its own entry when it finishes; the last release removes it and cancels the task.
+    private var pending: [SMBThumbnailKey: (task: Task<MediaArtwork, Never>, claims: Int)] = [:]
 
     /// Hard ceiling for the WHOLE post-sidecar pipeline, anchored when cover-art / frame-grab
     /// work starts: the MKV cover-art extract, the container probe, an AV attempt and a VLC
@@ -157,7 +157,7 @@ public actor MediaArtworkProvider {
     /// negative-cache skips still return instantly — only demux waits (the permit is kept, so
     /// everything queued behind it is paused too).
     private var playbackActive = false
-    private var playbackWaiters = WaiterList()
+    private var playbackWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// - Parameters:
     ///   - connections: the app's one SMB connection pool, so browse + playback reuse the same
@@ -188,68 +188,27 @@ public actor MediaArtworkProvider {
     ///
     /// Order matters for cost: the cache key is built from the ItemID's decoded path alone (no
     /// Keychain), so a disk hit or a negative-cache skip returns WITHOUT a Keychain round-trip or the
-    /// gate. Only a genuine miss coalesces onto gated generation, with a visible claim on the key
-    /// held in the gate for the lifetime of this await (`awaitVisibly`) — the shared generation
-    /// runs to completion either way, only its place in line changes.
+    /// gate. Only a genuine miss joins gated generation, claiming the key visibly for the lifetime
+    /// of this await (`hold`).
     public func artwork(for item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?) async -> MediaArtwork {
         guard let key = thumbnailKey(for: item, ref: ref) else { return .none }
 
         if let hit = await cache.existing(for: key) { return MediaArtwork(source: .local(hit.url), duration: hit.duration) }
         if await isNegativelyCached(key) { return .none }
 
-        // A key another request already scheduled coalesces onto the pending task; only a genuine
-        // first request schedules. Either way `awaitVisibly` opens the visible claim — for a
-        // coalesced prefetch generation, `promote` also moves its already-queued waiter up.
-        let generation = pending[key] ?? scheduleGeneration(key: key, item: item, ref: ref, sidecar: sidecar)
-        return await awaitVisibly(generation, key: key)
-    }
-
-    /// Awaits a shared generation on behalf of a VISIBLE tile, holding a visible claim on `key` in
-    /// the gate for exactly the await's lifetime: `promote` opens it; `demote` closes it on the
-    /// tile's cancellation (scroll-off, item-identity change — the queued waiter then moves behind
-    /// the tiles still on screen) or when the await returns. The generation itself is never
-    /// cancelled (see the type doc).
-    ///
-    /// The claim is COUNTED in the gate, so the pairing survives unordered actor hops (a stale
-    /// cancellation demote landing after a re-appearing tile's promote closes only its own claim).
-    /// The two close paths RACE for one claim, though: a cancelled awaiter still returns when the
-    /// generation finishes, so without the one-shot guard it would demote twice — and the extra
-    /// close can strip a claim a concurrent awaiter of the same key opened, mis-banding a visible
-    /// generation into the evictable prefetch backlog. Whichever path wins the lock closes; the
-    /// loser is a no-op.
-    private func awaitVisibly(_ task: Task<MediaArtwork, Never>, key: SMBThumbnailKey) async -> MediaArtwork {
-        await gate.promote(key)
-        let gate = gate
-        let closed = OSAllocatedUnfairLock(initialState: false)
-        @Sendable func closeClaim() async {
-            let firstClose = closed.withLock { alreadyClosed in
-                defer { alreadyClosed = true }
-                return !alreadyClosed
-            }
-            if firstClose { await gate.demote(key) }
-        }
-        let value = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            // Runs at scroll-off; `gate`/`closed` are Sendable values, readable here.
-            Task { await closeClaim() }
-        }
-        await closeClaim()
-        return value
+        let generation = claim(key: key, item: item, ref: ref, sidecar: sidecar)
+        return await hold(generation, key: key, visible: true)
     }
 
     /// Warms a viewport-ahead SLICE of a browsed folder — the view hands over ~a dozen rows past the
     /// tile that just appeared, NOT the whole listing (explicit user policy, perception over
     /// completeness: scroll landings stay warm while a huge directory never fetches wall-to-wall).
-    /// Schedules generation for the items not already cached / negatively-cached / pending — with
-    /// no visible claim, so they queue in the prefetch band (yielding to visible tiles) — and does
-    /// NOT await them. Runs on every link
-    /// class; the coalescing (a visible `artwork(for:)` for the same key just awaits the
-    /// already-running task) means a prefetch is never duplicated work, only earlier work.
+    /// Joins generation for the items not already cached or negatively cached — with no visible
+    /// claim, so they queue in the prefetch band behind the tiles on screen — and holds each until
+    /// it finishes. Runs on every link class.
     ///
-    /// Already-scheduled generations still run to completion after the folder is left — the window
-    /// bounds how much gets SCHEDULED, not what finishes. The only pauses are the playback hold and
-    /// app termination.
+    /// The caller is the folder level on screen. Cancelling it releases every claim it holds, which
+    /// cancels each generation nothing else still claims: leaving the folder withdraws its work.
     func prefetch(_ items: [Item], ref: SMBServerRef, sidecars: [ItemID: SMBDirectoryEntry]) async {
         // Classify the host BEFORE scheduling: every generation bakes its link class at schedule
         // time, so without this an entire first-of-session batch reads nil — conservatively
@@ -257,13 +216,87 @@ public actor MediaArtworkProvider {
         // after. One probe checkout measures the class AND leaves a warm connection the first
         // fetch then reuses. Best-effort: a probe failure just leaves the batch conservative.
         await classifyHostIfNeeded(items: items, ref: ref)
-        for item in items {
-            guard let key = thumbnailKey(for: item, ref: ref) else { continue }
-            if pending[key] != nil { continue }
-            if await cache.existing(for: key) != nil { continue }
-            if await isNegativelyCached(key) { continue }
-            _ = scheduleGeneration(key: key, item: item, ref: ref, sidecar: sidecars[item.id])
+        await withDiscardingTaskGroup { group in
+            for item in items where !Task.isCancelled {
+                guard let key = thumbnailKey(for: item, ref: ref) else { continue }
+                if pending[key] == nil {
+                    if await cache.existing(for: key) != nil { continue }
+                    if await isNegativelyCached(key) { continue }
+                }
+                let generation = claim(key: key, item: item, ref: ref, sidecar: sidecars[item.id])
+                group.addTask { _ = await self.hold(generation, key: key, visible: false) }
+            }
         }
+    }
+
+    /// Joins `key`'s pending generation, or starts one, and counts one more claim on it. Synchronous,
+    /// so a generation never exists without a claim. Every claim is released by exactly one `hold`.
+    private func claim(
+        key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?
+    ) -> Task<MediaArtwork, Never> {
+        let generation = pending[key]?.task ?? Task { [self] in
+            let artwork = await generate(key: key, item: item, ref: ref, sidecar: sidecar)
+            // Only the release that removed this generation's entry cancels it, so an uncancelled
+            // one still owns `pending[key]`; a cancelled one's slot may hold its replacement.
+            if !Task.isCancelled { pending[key] = nil }
+            return artwork
+        }
+        pending[key] = (generation, (pending[key]?.claims ?? 0) + 1)
+        return generation
+    }
+
+    /// Awaits a claimed generation and releases the claim when the await ends: on the caller's
+    /// cancellation, or when the generation finishes. A VISIBLE hold also keeps a visible claim on
+    /// `key` in the gate for the same span (`promote` opens it, `demote` closes it), so a tile that
+    /// scrolls off moves its queued waiter behind the tiles still on screen.
+    ///
+    /// The two close paths RACE: a cancelled awaiter still returns when the generation finishes
+    /// (awaiting a `Never`-failure `Task.value` doesn't propagate the awaiter's cancellation), so
+    /// without the one-shot guard it would close twice — and the extra close would strip a claim a
+    /// concurrent awaiter of the same key holds. Whichever path wins the lock closes; the loser is a
+    /// no-op. The gate's visible claims are COUNTED, so a stale demote landing after a re-appearing
+    /// tile's promote closes only its own claim.
+    private func hold(
+        _ generation: Task<MediaArtwork, Never>, key: SMBThumbnailKey, visible: Bool
+    ) async -> MediaArtwork {
+        if visible { await gate.promote(key) }
+        let gate = gate
+        let closed = OSAllocatedUnfairLock(initialState: false)
+        @Sendable func close() async {
+            let firstClose = closed.withLock { alreadyClosed in
+                defer { alreadyClosed = true }
+                return !alreadyClosed
+            }
+            guard firstClose else { return }
+            if visible { await gate.demote(key) }
+            await self.release(key, from: generation)
+        }
+        let value = await withTaskCancellationHandler {
+            await generation.value
+        } onCancel: {
+            Task { await close() }
+        }
+        await close()
+        return value
+    }
+
+    /// Drops one claim on `generation`. The last one removes it from `pending` and cancels it: a
+    /// queued one leaves the gate, an in-flight one stops at its next cancellation point. A
+    /// generation that already finished has removed its own entry, so this is a no-op.
+    private func release(_ key: SMBThumbnailKey, from generation: Task<MediaArtwork, Never>) {
+        guard let entry = pending[key], entry.task == generation else { return }
+        guard entry.claims == 1 else {
+            pending[key] = (generation, entry.claims - 1)
+            return
+        }
+        pending[key] = nil
+        generation.cancel()
+    }
+
+    /// Generations queued for a gate permit, per band. Test introspection only: a queued generation
+    /// leaves no other trace until it is admitted.
+    func queuedGenerations() async -> (visible: Int, prefetch: Int) {
+        await gate.queueDepths()
     }
 
     /// The cache key for a browsed SMB item, or nil for a non-movie (anything else carries server
@@ -324,28 +357,10 @@ public actor MediaArtworkProvider {
         _ = await connections.ensureLinkClass(ctx.target(ref))
     }
 
-    /// Creates (or returns the existing) shared generation task for `key`, stored in `pending`. The
-    /// task runs to completion and clears its own `pending` entry. It carries NO band of its own:
-    /// the gate's demand record decides visible-vs-prefetch when the generation reaches `wait`, and
-    /// that record is owned entirely by the visible awaiters (`awaitVisibly`) — nothing to clean
-    /// up here on completion.
-    private func scheduleGeneration(
-        key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?
-    ) -> Task<MediaArtwork, Never> {
-        if let existing = pending[key] { return existing }
-        let task = Task { [self] in
-            let result = await generate(key: key, item: item, ref: ref, sidecar: sidecar)
-            pending[key] = nil
-            return result
-        }
-        pending[key] = task
-        return task
-    }
-
     // MARK: - Generation
 
     /// One full generation: read the link class, acquire a gate permit for this host (or bail if
-    /// the bounded prefetch backlog evicted this waiter), run the held-permit pipeline
+    /// the bounded prefetch backlog evicted this waiter or it was cancelled), run the held-permit pipeline
     /// (sidecar → cover-art → frame-grab), then release with a completion outcome that feeds the
     /// host's AIMD window. Never throws.
     private func generate(
@@ -358,8 +373,8 @@ public actor MediaArtworkProvider {
 
         guard await gate.wait(key: key, host: host, link: link) else {
             // Evicted from the bounded prefetch backlog (superseded by newer windows before any
-            // permit): no SMB work happened, so record NOTHING — a visible request or a re-entered
-            // window simply reschedules it (the pending entry clears in scheduleGeneration's tail).
+            // permit) or cancelled: no SMB work happened, so record NOTHING — a visible request or
+            // a re-entered window simply reschedules it once its claims are released.
             return .none
         }
         let (result, outcome) = await generateHoldingPermit(
@@ -378,12 +393,17 @@ public actor MediaArtworkProvider {
     ///
     /// Exits that never touched the network report `.inconclusive`: they release the permit without
     /// pretending the link proved anything.
+    ///
+    /// A cancelled generation stops at the next tier boundary, also `.inconclusive`. A tier swallows
+    /// its own cancellation as a fall-through, and the probe and libsmb2 calls ignore cancellation,
+    /// so without these checks a withdrawn generation would walk the rest of the ladder over SMB.
     private func generateHoldingPermit(
         key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?,
         link: SMBLinkClass?
     ) async -> (MediaArtwork, ThumbnailFetchOutcome) {
         // Yield the uplink to playback first; the re-checks below run AFTER the hold.
         await awaitPlaybackIdle()
+        guard !Task.isCancelled else { return (.none, .inconclusive) }
 
         if let hit = await cache.existing(for: key) {
             return (MediaArtwork(source: .local(hit.url), duration: hit.duration), .inconclusive)
@@ -416,6 +436,7 @@ public actor MediaArtworkProvider {
                 earlierTierTransportFault = transportFault
             }
         }
+        guard !Task.isCancelled else { return (.none, .inconclusive) }
 
         // ONE ceiling shared by cover-art + frame-grab (probe / AV / VLC) — see `GenerationDeadline`.
         let deadline = GenerationDeadline(elapsed: elapsed, budget: Self.generationTimeout)
@@ -431,6 +452,7 @@ public actor MediaArtworkProvider {
             case .fellThrough(let transportFault):
                 earlierTierTransportFault = earlierTierTransportFault || transportFault
             }
+            guard !Task.isCancelled else { return (.none, .inconclusive) }
         }
 
         let grab = await frameGrab(
@@ -652,9 +674,8 @@ public actor MediaArtworkProvider {
     }
 
     /// The decode + cache-store + outcome-logging half of a frame-grab, running against an
-    /// already-started bridge session. Never throws; the caller owns the session teardown. A failure
-    /// poisons the key (records the failure) — the shared task is never cancelled, so a thrown error
-    /// here is always a real decode/link failure, never a scroll-off.
+    /// already-started bridge session. Never throws; the caller owns the session teardown. A
+    /// content-level failure poisons the key (records the failure); a cancellation never does.
     ///
     /// When `useAV` is true (route said AVKit-eligible), try AVFoundation first, capped at
     /// `avGenerationTimeout` but never past what `deadline` has left. A transport-class fault aborts
@@ -841,7 +862,9 @@ public actor MediaArtworkProvider {
         guard active != playbackActive else { return }
         playbackActive = active
         guard !active else { return }
-        playbackWaiters.resumeAll()
+        let waiting = playbackWaiters
+        playbackWaiters = []
+        waiting.forEach { $0.resume() }
     }
 
     /// Whether generation is paused for a player on screen.
@@ -850,21 +873,16 @@ public actor MediaArtworkProvider {
     /// Generations parked by the playback hold, holding their permits.
     public var generationsPausedForPlayback: Int { playbackWaiters.count }
 
-    /// Suspends while playback is active. Not cancellable: only a generation task (which runs to
-    /// completion, never cancelled) ever awaits this, so the resume only ever comes from
-    /// `setPlaybackActive(false)`.
+    /// Suspends while playback is active. Not cancellable: everything queued behind the held permit
+    /// is paused anyway, so the resume only ever comes from `setPlaybackActive(false)`, and a
+    /// generation cancelled meanwhile bails right after it (`generateHoldingPermit`).
     private func awaitPlaybackIdle() async {
         guard playbackActive else { return }
-        // The Bool is the WaiterList's abandon channel; the playback hold never abandons, so the
-        // value is always true and deliberately ignored.
-        _ = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             // Re-check: playback may have ended between the guard above and this closure running
             // (actor turns can interleave across the awaits).
-            guard playbackActive else {
-                continuation.resume(returning: true)
-                return
-            }
-            playbackWaiters.add(key: nil, host: nil, continuation)
+            guard playbackActive else { return continuation.resume() }
+            playbackWaiters.append(continuation)
         }
     }
 
