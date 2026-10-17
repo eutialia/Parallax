@@ -11,6 +11,7 @@ public enum Container: String, Sendable, Hashable, Codable, CaseIterable {
     case mp3
     case avi
     case asf          // ASF / WMV / WMA
+    case mpegps = "mpeg"  // MPEG program stream (.mpg / .vob); ffmpeg and Jellyfin call it "mpeg"
 }
 
 public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {

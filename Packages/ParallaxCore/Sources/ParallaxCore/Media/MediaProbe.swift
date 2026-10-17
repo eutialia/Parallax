@@ -78,9 +78,16 @@ public enum MediaProbe {
         0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C,
     ]
 
+    /// MPEG-TS sync bytes: 188-byte packets, or M2TS's 192 (a 4-byte timestamp ahead of each
+    /// sync byte). Three in a row is the signature.
+    private static let tsStrides = [(first: 0, stride: 188), (first: 4, stride: 192)]
+
+    /// Enough of the file to see three M2TS sync bytes; every other magic fits in it.
+    private static let headLength = 4 + 2 * 192 + 1
+
     public static func probe(_ reader: any RandomAccessReading) async throws -> MediaProbeResult {
         let size = try await reader.fileSize
-        let head = try await reader.read(offset: 0, length: 16)
+        let head = try await reader.read(offset: 0, length: Int(min(size, UInt64(headLength))))
 
         if head.count >= 8, fourCharString(head, at: 4) == "ftyp" {
             let majorBrand = head.count >= 12 ? fourCharString(head, at: 8) : ""
@@ -102,12 +109,18 @@ public enum MediaProbe {
             return MediaProbeResult(container: .asf, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }
 
-        if size >= 377 {
-            let ts = try await reader.read(offset: 0, length: 377)
-            if ts.count == 377,
-               ts[ts.startIndex] == 0x47, ts[ts.startIndex + 188] == 0x47, ts[ts.startIndex + 376] == 0x47 {
-                return MediaProbeResult(container: .ts, videoCodec: .none, audioCodecs: .none, isComplete: true)
+        if head.starts(with: [0x00, 0x00, 0x01, 0xBA]) {
+            return MediaProbeResult(container: .mpegps, videoCodec: .none, audioCodecs: .none, isComplete: true)
+        }
+
+        let isTS = tsStrides.contains { first, stride in
+            (0..<3).allSatisfy { packet in
+                let offset = first + packet * stride
+                return offset < head.count && head[head.startIndex + offset] == 0x47
             }
+        }
+        if isTS {
+            return MediaProbeResult(container: .ts, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }
 
         return MediaProbeResult(container: nil, videoCodec: .none, audioCodecs: .none, isComplete: true)
