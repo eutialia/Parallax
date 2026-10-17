@@ -32,12 +32,12 @@ struct DeviceProfileBuilderTests {
         let without = await DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: Self.withoutAV1)).build()
         #expect(without.softwareVideoCodecs == [.av1, .mpeg2video, .vc1, .vp9])
         #expect(without.softwareAudioCodecs == [.dts, .flac, .mp3, .opus])
-        #expect(without.softwareContainers == [.avi, .flac, .mkv, .mp3, .ts, .webm])
+        #expect(without.softwareContainers == [.asf, .avi, .flac, .mkv, .mp3, .mpegps, .ts, .webm])
 
         let with = await DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: Self.withAV1)).build()
         #expect(with.softwareVideoCodecs == [.mpeg2video, .vc1, .vp9])
         #expect(with.softwareAudioCodecs == [.dts, .mp3])
-        #expect(with.softwareContainers == [.avi, .flac, .mkv, .mp3, .ts, .webm])
+        #expect(with.softwareContainers == [.asf, .avi, .flac, .mkv, .mp3, .mpegps, .ts, .webm])
     }
 
     @Test("build() declares a 4K UHD ceiling")
