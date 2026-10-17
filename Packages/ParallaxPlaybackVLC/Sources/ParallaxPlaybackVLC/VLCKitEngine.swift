@@ -306,6 +306,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// produce, and no suite can wait 45 wall-clock seconds for one.
     private let stallDeadline: Duration
 
+    /// How long `.buffering` events must stay silent after a seek before the hold releases at
+    /// the target (see `armQuietRelease`). 30 ms in production; injectable through the test seam
+    /// init because a suite cannot space its events reliably inside 30 ms on a loaded CI runner.
+    private let seekQuietWindow: Duration
+
     /// Frozen-clock + frozen-demux stall counter, fed once per poll ABOVE the seek hold — a seek
     /// in flight does not suspend a network death, and the hold's `continue` used to hide those
     /// ticks from it entirely. It owns `isStalled`/`stallWatchdog`: the hold branches decide only
@@ -458,9 +463,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// vending a real (idle, media-less) `VLCMediaPlayer` so the drawable-host contract still
     /// holds. Internal — the app has no reason to substitute a player.
     convenience init(control: any VLCPlayerControlling, loadDeadline: Duration = .seconds(30),
-                     stallDeadline: Duration = .seconds(45)) {
+                     stallDeadline: Duration = .seconds(45), seekQuietWindow: Duration = .milliseconds(30)) {
         self.init(mediaPlayer: Self.makePlayer(libraryOptions: nil), control: control,
-                  loadDeadline: loadDeadline, stallDeadline: stallDeadline)
+                  loadDeadline: loadDeadline, stallDeadline: stallDeadline, seekQuietWindow: seekQuietWindow)
     }
 
     /// **The only place a `VLCMediaPlayer` is ever constructed.** Installing
@@ -509,7 +514,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// The one designated init. `mediaPlayer` is the drawable handle `vlcPlayer` vends;
     /// `control` is the command seam — the same object in production, a spy in tests.
     private init(mediaPlayer: VLCMediaPlayer, control: any VLCPlayerControlling,
-                 loadDeadline: Duration = .seconds(30), stallDeadline: Duration = .seconds(45)) {
+                 loadDeadline: Duration = .seconds(30), stallDeadline: Duration = .seconds(45),
+                 seekQuietWindow: Duration = .milliseconds(30)) {
         let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
@@ -517,6 +523,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         self.player = control
         self.loadWatchdog = LoadWatchdog(timeout: loadDeadline)
         self.stallDeadline = stallDeadline
+        self.seekQuietWindow = seekQuietWindow
         super.init()
         player.delegate = self
     }
@@ -1026,7 +1033,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     private var quietDeadline: ContinuousClock.Instant? {
-        lastBufferingAt.map { $0 + Self.seekQuietWindow }
+        lastBufferingAt.map { $0 + seekQuietWindow }
     }
 
     private func clearSeekHold() {
@@ -1379,10 +1386,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         case .ts, .hls, .flac, .mp3, .avi: return false
         }
     }
-
-    /// How long `.buffering` events must stay silent after a seek before the hold releases at
-    /// the target (see `armQuietRelease`).
-    nonisolated static let seekQuietWindow: Duration = .milliseconds(30)
 
     /// Progress poll cadence (ms), matching `AVKitEngine`'s periodic observer. Named because
     /// it is also the seek hold's clock: `seekHoldPositionMs` derives elapsed time from the
