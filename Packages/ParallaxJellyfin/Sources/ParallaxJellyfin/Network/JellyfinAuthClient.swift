@@ -76,7 +76,7 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
         self.clock = clock
     }
 
-    private func newClient(accessToken: String? = nil) -> JellyfinClient {
+    private func newClient(accessToken: String? = nil) -> ShieldedJellyfinClient {
         let config = JellyfinClient.Configuration(
             url: serverURL,
             accessToken: accessToken,
@@ -85,7 +85,7 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
             deviceID: identity.deviceID,
             version: identity.version
         )
-        return JellyfinClient(configuration: config, sessionConfiguration: sessionConfiguration)
+        return ShieldedJellyfinClient(JellyfinClient(configuration: config, sessionConfiguration: sessionConfiguration))
     }
 
     public func signIn(username: String, password: String) async throws -> AuthenticationResult {
@@ -135,7 +135,7 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
     }
 
     private static func runQuickConnect(
-        client: JellyfinClient,
+        client: ShieldedJellyfinClient,
         polling: QuickConnectPolling,
         clock: any Clock<Duration>,
         yield: (QuickConnect.Event) -> Void

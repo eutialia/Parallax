@@ -25,7 +25,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
         self.sessionConfiguration = sessionConfiguration
     }
 
-    private func client() -> JellyfinClient {
+    private func client() -> ShieldedJellyfinClient {
         let config = JellyfinClient.Configuration(
             url: session.serverURL,
             accessToken: session.accessToken,
@@ -36,11 +36,11 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
         )
         // The validator sees every response this client receives, so a dead token is caught
         // whichever screen happens to ask first.
-        return JellyfinClient(
+        return ShieldedJellyfinClient(JellyfinClient(
             configuration: config,
             delegate: JellyfinResponseValidator(session: session, onTokenRejected: onTokenRejected),
             sessionConfiguration: sessionConfiguration
-        )
+        ))
     }
 
     private var userID: String { session.user.id }
