@@ -62,7 +62,7 @@ public actor PlaybackInfoService {
                 selection: selection
             )
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
 
         guard let source = response.mediaSources?.first else {
