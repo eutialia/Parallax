@@ -29,7 +29,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         self.sessionConfiguration = sessionConfiguration
     }
 
-    private func client() -> JellyfinClient {
+    private func client() -> ShieldedJellyfinClient {
         let config = JellyfinClient.Configuration(
             url: session.serverURL,
             accessToken: session.accessToken,
@@ -41,11 +41,11 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         // Playback shares the browse chokepoint on purpose: a token revoked mid-session kills
         // the stream too, and reporting it here turns "the server returned an error" into the
         // accurate "your session expired" — plus the same sign-in-again route out.
-        return JellyfinClient(
+        return ShieldedJellyfinClient(JellyfinClient(
             configuration: config,
             delegate: JellyfinResponseValidator(session: session, onTokenRejected: onTokenRejected),
             sessionConfiguration: sessionConfiguration
-        )
+        ))
     }
 
     private var userID: String { session.user.id }
