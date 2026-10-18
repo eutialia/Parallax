@@ -4,6 +4,12 @@ import JellyfinAPI
 import ParallaxCore
 
 public enum ErrorMapping {
+    /// What a service throws on: `CancellationError` passes through, so a caller can tell a torn-down
+    /// load from a failed one; everything else becomes an `AppError`.
+    public static func thrown(from error: Error) -> any Error {
+        error is CancellationError ? error : appError(from: error)
+    }
+
     public static func appError(from error: Error) -> AppError {
         if let appError = error as? AppError { return appError }
 

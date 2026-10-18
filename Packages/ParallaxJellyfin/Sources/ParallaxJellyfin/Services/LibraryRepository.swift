@@ -16,7 +16,7 @@ public actor LibraryRepository {
             let dtos = try await client.getCollections()
             return dtos.compactMap { $0.toMediaCollection() }
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -37,7 +37,7 @@ public actor LibraryRepository {
                 limit: Self.pageSize
             )
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
 
         let items: [Item] = response.items.compactMap(Self.dtoToItem)
@@ -57,7 +57,7 @@ public actor LibraryRepository {
         do {
             dto = try await client.getItemDetail(itemID: itemID.rawValue)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
         guard let detail = dto.toItemDetail() else {
             throw AppError.unexpected("Library detail missing required fields for item \(itemID.rawValue)", underlying: nil)
@@ -70,7 +70,7 @@ public actor LibraryRepository {
             let dtos = try await client.getSeasons(seriesID: seriesID.rawValue)
             return dtos.compactMap { $0.toSeason() }
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -79,7 +79,7 @@ public actor LibraryRepository {
             let dtos = try await client.getEpisodes(seasonID: seasonID.rawValue)
             return dtos.compactMap { $0.toEpisode() }
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -89,7 +89,7 @@ public actor LibraryRepository {
             let items = dtos.compactMap(Self.dtoToItem)
             return try await enrichHomeShelfItems(items)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -99,7 +99,7 @@ public actor LibraryRepository {
             let items = dtos.compactMap(Self.dtoToItem)
             return try await enrichHomeShelfItems(items)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -160,7 +160,7 @@ public actor LibraryRepository {
                 continueWatching: continueWatching
             )
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -168,7 +168,7 @@ public actor LibraryRepository {
         do {
             return try await client.setFavorite(itemID: itemID.rawValue, isFavorite: isFavorite)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -180,7 +180,7 @@ public actor LibraryRepository {
         do {
             return try await client.setPlayed(itemID: itemID.rawValue, isPlayed: isPlayed)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -189,7 +189,7 @@ public actor LibraryRepository {
         do {
             dto = try await client.seriesNextUp(seriesID: id.rawValue)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
         return dto?.toEpisode()
     }
@@ -201,7 +201,7 @@ public actor LibraryRepository {
             let dtos = try await client.mediaSegments(itemID: itemID.rawValue)
             return dtos.compactMap { $0.toMediaSegment() }
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -213,7 +213,7 @@ public actor LibraryRepository {
         do {
             dtos = try await client.adjacentEpisodes(seriesID: seriesID.rawValue, episodeID: episodeID.rawValue)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
         return AdjacentEpisodes(around: episodeID, in: dtos.compactMap { $0.toEpisode() })
     }
@@ -222,7 +222,7 @@ public actor LibraryRepository {
         do {
             return try await client.genres(scope: scope)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 
@@ -254,7 +254,7 @@ public actor LibraryRepository {
                 return SearchResults(movies: [], series: [], episodes: dtos.compactMap { $0.toEpisode() })
             }
         } catch {
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
     }
 

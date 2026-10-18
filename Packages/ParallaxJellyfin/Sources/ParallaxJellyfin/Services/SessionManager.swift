@@ -24,7 +24,7 @@ public actor SessionManager {
             publicInfo = try await client.fetchPublicSystemInfo()
         } catch {
             Log.network.error("signIn publicInfo failed: \(error.networkDiagnostic)")
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
         try Self.requireSupported(publicInfo)
 
@@ -33,7 +33,7 @@ public actor SessionManager {
             authResult = try await client.signIn(username: username, password: password)
         } catch {
             Log.network.error("signIn authenticate failed: \(error.networkDiagnostic)")
-            throw ErrorMapping.appError(from: error)
+            throw ErrorMapping.thrown(from: error)
         }
 
         let session = try buildSession(authResult: authResult, server: server, publicInfo: publicInfo)
@@ -95,6 +95,9 @@ public actor SessionManager {
         do {
             info = try await client.fetchPublicSystemInfo()
             try Self.requireSupported(info)
+        } catch is CancellationError {
+            continuation.finish()
+            return
         } catch {
             Log.network.error("quickConnect publicInfo failed: \(error.networkDiagnostic)")
             continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
@@ -148,6 +151,9 @@ public actor SessionManager {
         let auth: AuthenticationResult
         do {
             auth = try await client.signIn(quickConnectSecret: secret)
+        } catch is CancellationError {
+            continuation.finish()
+            return
         } catch {
             Log.network.error("quickConnect authenticate failed: \(error.networkDiagnostic)")
             continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
