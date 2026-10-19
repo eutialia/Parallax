@@ -36,9 +36,5 @@ public func pollUntil(
     _ condition: () -> Bool,
     timeout: Duration = CITimeScale.seconds(5)
 ) async throws -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while !condition(), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    return condition()
+    try await Ceiling.poll(timeout) { condition() }
 }

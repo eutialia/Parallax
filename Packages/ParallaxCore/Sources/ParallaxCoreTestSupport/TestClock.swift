@@ -162,7 +162,7 @@ public final class TestClock: Clock, Sendable {
                 return true
             }
             group.addTask {
-                try await Task.sleep(for: CITimeScale.seconds(5))
+                try await Ceiling.expire(CITimeScale.seconds(5))
                 return false
             }
             defer { group.cancelAll() }

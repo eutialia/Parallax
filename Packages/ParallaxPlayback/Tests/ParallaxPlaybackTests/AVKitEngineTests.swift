@@ -47,7 +47,7 @@ extension AVKitEngine {
             return nil
         }
         let deadline = Task {
-            try await Task.sleep(for: timeout)
+            try await Ceiling.expire(timeout)
             drain.cancel()
         }
         defer { deadline.cancel() }

@@ -507,7 +507,7 @@ private final class DrainBarrier: Sendable {
         guard ledger.withLock({ $0.processed < target }) else { return true }
         return try await withThrowingTaskGroup(of: Bool.self) { group in
             group.addTask { await self.park(until: target); return true }
-            group.addTask { try await Task.sleep(for: timeout); return false }
+            group.addTask { try await Ceiling.expire(timeout); return false }
             // First child to finish wins; the loser is cancelled (the parked waiter
             // resumes through its cancellation handler, the sleeper just throws).
             let drained = try await group.next() ?? false
