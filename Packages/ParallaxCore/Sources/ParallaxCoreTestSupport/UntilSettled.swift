@@ -8,7 +8,8 @@ import Testing
 /// condition is `async` so a test can poll actor state (`pool.condemnedCount`) as easily as the
 /// world's plain ledgers.
 ///
-/// Scheduler turns first, then a wall-clock tail for anything a `Task.yield` alone does not drive.
+/// Scheduler turns first, then a `Ceiling`-bounded tail for anything a `Task.yield` alone does not
+/// drive.
 ///
 /// Exhaustion records an Issue at the CALL SITE (`#_sourceLocation`) rather than returning quietly:
 /// a silent give-up left the following `#expect` to report the failure, and where the poll was the
@@ -21,11 +22,9 @@ public func untilSettled(
         if await condition() { return }
         await Task.yield()
     }
-    let deadline = ContinuousClock().now.advanced(by: CITimeScale.seconds(5))
-    while ContinuousClock().now < deadline {
-        if await condition() { return }
-        guard (try? await Task.sleep(for: .milliseconds(1))) != nil else { return }
-    }
+    guard let settled = try? await Ceiling.poll(CITimeScale.seconds(5), every: .milliseconds(1), until: condition),
+          !settled
+    else { return }
     Issue.record(
         "the condition never settled within 1,000 scheduler turns and \(CITimeScale.seconds(5))",
         sourceLocation: sourceLocation

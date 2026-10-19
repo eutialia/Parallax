@@ -78,10 +78,7 @@ struct PlayerViewModelTests {
         // Drain: the consumer runs real awaits between beats (preferred-track
         // apply on .ready, session teardown on .ended), so a fixed sleep races
         // it. Poll for the full beat sequence with a bounded deadline instead.
-        let deadline = ContinuousClock.now.advanced(by: CITimeScale.seconds(5))
-        while await reporting.events.count < 3, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        _ = try await Ceiling.poll(CITimeScale.seconds(5)) { await reporting.events.count >= 3 }
 
         #expect(vm.phase == .playing)
 

@@ -80,7 +80,7 @@ func rawHTTPExchange(
 
     // Cancelling on the deadline fails the pending receive, which ends the loop below.
     let deadline = Task {
-        try? await Task.sleep(for: timeout)
+        try? await Ceiling.expire(timeout)
         guard Task.isCancelled == false else { return }
         queue.async { connection.cancel() }
     }
