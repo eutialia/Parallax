@@ -58,6 +58,7 @@ let package = Package(
             dependencies: [
                 "ParallaxPlaybackVLC",
                 "ParallaxPlaybackVLCTestSupport",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
                 .product(name: "ParallaxPlaybackTestSupport", package: "ParallaxPlayback"),
                 .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],

@@ -7,6 +7,7 @@ import MobileVLCKit
 import TVVLCKit
 #endif
 import ParallaxCore
+import ParallaxCoreTestSupport
 import ParallaxPlaybackTestSupport
 import ParallaxPlaybackVLCTestSupport
 import ParallaxTestScaling
@@ -555,10 +556,10 @@ struct VLCKitSeekSettleTests {
 
     private func playingEngine(
         _ spy: SpyVLCPlayer, atMs: Int32, stallDeadline: Duration = .seconds(45),
-        container: Container? = nil, seekQuietWindow: Duration = .milliseconds(30)
+        container: Container? = nil, quietClock: any Clock<Duration> = ContinuousClock()
     ) async throws -> VLCKitEngine {
         spy.advanceClock(toMs: atMs)
-        let engine = VLCKitEngine(control: spy, stallDeadline: stallDeadline, seekQuietWindow: seekQuietWindow)
+        let engine = VLCKitEngine(control: spy, stallDeadline: stallDeadline, quietClock: quietClock)
         try await engine.load(.fixture(hints: .fixture(container: container)))
         await engine.play()
         return engine
@@ -642,10 +643,19 @@ struct VLCKitSeekSettleTests {
         #expect(after.allSatisfy { $0 == 60 }, "observed beats after the release: \(after)")
     }
 
-    /// The quiet window for tests that assert no release while events keep arriving: the
-    /// events are spaced 5-10 ms apart, and a loaded CI runner stretches those sleeps past the
-    /// production 30 ms.
-    private let burstWindow = CITimeScale.seconds(0.25)
+    /// Emits `count` buffering events half a quiet window apart on `clock`, waiting each step for
+    /// the quiet task to sleep out the rest of the window. Past the first event that sleep comes
+    /// only after the task woke and chose not to release. The first step advances before the task
+    /// has run at all; it still parks on time because the task measures what is left of the
+    /// window when it sleeps, not when the event arrived.
+    private func bufferingBurst(_ count: Int, on spy: SpyVLCPlayer, clock: TestClock) async throws {
+        let half = VLCKitEngine.seekQuietWindow / 2
+        for _ in 0..<count {
+            spy.emitState(.buffering)
+            clock.advance(by: half)
+            try await clock.waitForSleep(dueIn: half)
+        }
+    }
 
     /// The dot trails the resumed picture because VLC 3 publishes time only on its ~250ms input
     /// tick. The refill after a seek is a burst of `.buffering` events that stops when the data
@@ -655,16 +665,15 @@ struct VLCKitSeekSettleTests {
         let spy = SpyVLCPlayer()
         spy.timeWritesMoveTheClock = true
         spy.demuxBytesPerPoll = 1
-        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv, seekQuietWindow: burstWindow)
+        let clock = TestClock()
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv, quietClock: clock)
         let log = PositionBeatLog(engine)
 
         await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
-        for _ in 0..<3 {
-            spy.emitState(.buffering)
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await bufferingBurst(3, on: spy, clock: clock)
         #expect(!log.beats.contains { $0.provenance == .observed && $0.seconds == 60 },
                 "released while the burst was still running")
+        clock.advance(by: VLCKitEngine.seekQuietWindow / 2)
 
         // The echo is exact (60s), which the hold never takes for a landing, so only the quiet
         // window can produce this beat.
@@ -714,16 +723,15 @@ struct VLCKitSeekSettleTests {
         let spy = SpyVLCPlayer()
         spy.timeWritesMoveTheClock = true
         spy.demuxBytesPerPoll = 1
-        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv, seekQuietWindow: burstWindow)
+        let clock = TestClock()
+        let engine = try await playingEngine(spy, atMs: 10_000, container: .mkv, quietClock: clock)
         let log = PositionBeatLog(engine)
 
         await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
-        for _ in 0..<20 {
-            spy.emitState(.buffering)
-            try await Task.sleep(for: .milliseconds(10))
-            #expect(!log.beats.contains { $0.provenance == .observed && $0.seconds == 60 },
-                    "released while buffering events were still arriving")
-        }
+        try await bufferingBurst(20, on: spy, clock: clock)
+        #expect(!log.beats.contains { $0.provenance == .observed && $0.seconds == 60 },
+                "released while buffering events were still arriving")
+        clock.advance(by: VLCKitEngine.seekQuietWindow / 2)
 
         try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 60 } },
                                     "the hold never released once the burst stopped",

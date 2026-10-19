@@ -202,10 +202,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// load (`seekLandsOnTarget(_:)`).
     private var containerSeeksAccurately = false
     private var quietReleaseTask: Task<Void, Never>?
-    /// When the latest `.buffering` event of the in-flight seek arrived; the quiet task releases
-    /// once `seekQuietWindow` has passed with no newer one. Read only by a live quiet task, and
-    /// written before one is created, so a cancelled task's leftover is never read.
-    private var lastBufferingAt: ContinuousClock.Instant?
+    /// When the latest `.buffering` event of the in-flight seek arrived, on `quietElapsed`; the
+    /// quiet task releases once `seekQuietWindow` has passed with no newer one. Read only by a
+    /// live quiet task, and written before one is created, so a cancelled task's leftover is
+    /// never read.
+    private var lastBufferingAt: Duration?
     /// Target (ms) of a seek that was issued while the engine was PAUSED, or nil.
     /// VLCKit 3.x applies a paused seek's demux/video position but does not flush the ~1-2s
     /// of decoded audio already queued in the aout (the same reservoir `silence()` documents;
@@ -282,9 +283,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     private let stallDeadline: Duration
 
     /// How long `.buffering` events must stay silent after a seek before the hold releases at
-    /// the target (see `armQuietRelease`). 30 ms in production; injectable through the test seam
-    /// init because a suite cannot space its events reliably inside 30 ms on a loaded CI runner.
-    private let seekQuietWindow: Duration
+    /// the target (see `armQuietRelease`).
+    nonisolated static let seekQuietWindow: Duration = .milliseconds(30)
+
+    /// Times the quiet window. Injectable through the test seam init: on the wall clock, one
+    /// scheduler stall between two events of a burst is a quiet window, and a loaded CI runner
+    /// stalls longer than any window a suite can afford.
+    private let quietClock: any Clock<Duration>
+    private let quietElapsed: @Sendable () -> Duration
 
     /// Frozen-clock + frozen-demux stall counter, fed once per poll ABOVE the seek hold — a seek
     /// in flight does not suspend a network death, and the hold's `continue` used to hide those
@@ -438,9 +444,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// vending a real (idle, media-less) `VLCMediaPlayer` so the drawable-host contract still
     /// holds. Internal — the app has no reason to substitute a player.
     convenience init(control: any VLCPlayerControlling, loadDeadline: Duration = .seconds(30),
-                     stallDeadline: Duration = .seconds(45), seekQuietWindow: Duration = .milliseconds(30)) {
+                     stallDeadline: Duration = .seconds(45), quietClock: any Clock<Duration> = ContinuousClock()) {
         self.init(mediaPlayer: Self.makePlayer(libraryOptions: nil), control: control,
-                  loadDeadline: loadDeadline, stallDeadline: stallDeadline, seekQuietWindow: seekQuietWindow)
+                  loadDeadline: loadDeadline, stallDeadline: stallDeadline, quietClock: quietClock)
     }
 
     /// **The only place a `VLCMediaPlayer` is ever constructed.** Installing
@@ -490,7 +496,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// `control` is the command seam — the same object in production, a spy in tests.
     private init(mediaPlayer: VLCMediaPlayer, control: any VLCPlayerControlling,
                  loadDeadline: Duration = .seconds(30), stallDeadline: Duration = .seconds(45),
-                 seekQuietWindow: Duration = .milliseconds(30)) {
+                 quietClock: any Clock<Duration> = ContinuousClock()) {
         let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
@@ -498,7 +504,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         self.player = control
         self.loadWatchdog = LoadWatchdog(timeout: loadDeadline)
         self.stallDeadline = stallDeadline
-        self.seekQuietWindow = seekQuietWindow
+        self.quietClock = quietClock
+        self.quietElapsed = quietClock.stopwatch()
         super.init()
         player.delegate = self
     }
@@ -969,13 +976,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// the task re-sleeps while a newer event has pushed the deadline out.
     private func armQuietRelease() {
         guard containerSeeksAccurately, let target = seekHold?.target else { return }
-        lastBufferingAt = .now
+        lastBufferingAt = quietElapsed()
         guard quietReleaseTask == nil else { return }
-        quietReleaseTask = Task { [weak self] in
-            while let deadline = self?.quietDeadline {
-                try? await Task.sleep(until: deadline, clock: .continuous)
+        quietReleaseTask = Task { [weak self, quietClock] in
+            while let wait = self?.quietTimeLeft {
+                try? await quietClock.sleep(for: wait)
                 guard !Task.isCancelled, let self else { return }
-                if let moved = self.quietDeadline, moved > deadline { continue }
+                if let left = self.quietTimeLeft, left > .zero { continue }
                 self.quietReleaseTask = nil
                 guard self.seekHold?.target == target,
                       self.pendingStartMs == nil, self.rateFlushAnchorMs == nil,
@@ -988,8 +995,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         }
     }
 
-    private var quietDeadline: ContinuousClock.Instant? {
-        lastBufferingAt.map { $0 + seekQuietWindow }
+    private var quietTimeLeft: Duration? {
+        lastBufferingAt.map { $0 + Self.seekQuietWindow - quietElapsed() }
     }
 
     private func clearSeekHold() {
