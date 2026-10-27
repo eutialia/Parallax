@@ -7,21 +7,24 @@ import ParallaxCore
 /// A decode that starts mid-GOP has no reference frame, and libavcodec (VLC's decoder for wmv3)
 /// substitutes one painted YUV 128: neutral mid-grey, about RGB 130 after range expansion. The
 /// P-frames that follow only add their residuals to it, so the snapshot is a grey field with sparse
-/// blocks of detail. Measured on libavcodec mid-GOP decodes at 32 px: 80–100% of pixels sit within
-/// 16 of neutral grey, against 0–1% for lit, dark and black frames.
+/// blocks of detail.
 ///
-/// The test is "mostly neutral mid-grey", not "low contrast": a black leader and a night scene are
-/// as flat as the filler, and both are legitimate thumbnails.
+/// The test is "mostly the filler's one grey level", not "low contrast" or "mid-grey": a black
+/// leader and a night scene are as flat as the filler, and a black-and-white shot in fog is as
+/// grey. Measured at 32 px on mid-GOP decodes by libavcodec's wmv2, msmpeg4v3, mpeg4, mpeg2 and
+/// h264 decoders, HEIC-encoded as the thumbnailers do, 60–91% of pixels sit within 2 of RGB 130.
+/// Desaturated photographs pushed into fog reach 32% at most, though up to 90% of them sit within
+/// 16 of neutral grey.
 nonisolated enum FrameQuality {
-    /// False for undecodable bytes or a frame that is mostly neutral mid-grey.
+    /// False for undecodable bytes or a frame that is mostly the decoder's grey filler.
     static func isUsable(_ data: Data) -> Bool {
-        guard let fraction = neutralGreyFraction(data) else { return false }
+        guard let fraction = fillerGreyFraction(data) else { return false }
         return fraction < 0.5
     }
 
-    /// The share of pixels within 16 of RGB (128, 128, 128) on every channel, measured on a
+    /// The share of pixels within 2 of RGB (130, 130, 130) on every channel, measured on a
     /// 32 px downscale; nil when `data` doesn't decode.
-    private static func neutralGreyFraction(_ data: Data) -> Double? {
+    private static func fillerGreyFraction(_ data: Data) -> Double? {
         guard let image = ImageTranscode.downscaledImage(from: data, maxPixelSize: 32),
               let space = CGColorSpace(name: CGColorSpace.sRGB)
         else { return nil }
@@ -37,9 +40,9 @@ nonisolated enum FrameQuality {
             return true
         }
         guard drawn else { return nil }
-        let neutral = stride(from: 0, to: pixels.count, by: 4).count { i in
-            pixels[i..<i + 3].allSatisfy { abs(Int($0) - 128) <= 16 }
+        let filler = stride(from: 0, to: pixels.count, by: 4).count { i in
+            pixels[i..<i + 3].allSatisfy { abs(Int($0) - 130) <= 2 }
         }
-        return Double(neutral) / Double(width * height)
+        return Double(filler) / Double(width * height)
     }
 }
