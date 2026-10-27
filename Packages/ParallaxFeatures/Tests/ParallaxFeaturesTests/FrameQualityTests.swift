@@ -4,11 +4,12 @@ import Testing
 
 @Suite("Frame quality")
 struct FrameQualityTests {
-    @Test("a grey mosaic is rejected; lit, dark and black frames are kept", arguments: [
+    @Test("a grey mosaic is rejected; lit, dark, black and black-and-white frames are kept", arguments: [
         ("mosaic", TestFrames.mosaic, false),
         ("scene", TestFrames.scene, true),
         ("dark", TestFrames.dark, true),
         ("black", TestFrames.black, true),
+        ("fog", TestFrames.fog, true),
     ])
     func usability(name: String, frame: Data, usable: Bool) {
         #expect(FrameQuality.isUsable(frame) == usable)
