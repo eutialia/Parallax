@@ -184,7 +184,7 @@ struct SMBArtworkScenarios {
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
             SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: Int64(TestFrames.mosaic.count), modifiedAt: nil),
         ], share: "Media")
         world.nas.setContents(TestFrames.mosaic)
         let root = await world.openSMBFolder(ref, share: "Media")
