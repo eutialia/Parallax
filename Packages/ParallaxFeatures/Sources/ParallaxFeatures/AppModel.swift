@@ -138,14 +138,13 @@ public final class AppModel {
     }
 
     public func makeSMBBrowse(_ path: SMBBrowsePath) -> SMBBrowseViewModel {
-        let level = SMBBrowseViewModel(
+        SMBBrowseViewModel(
             path: path,
             makeLister: services.makeSMBLister,
             artworkProvider: services.mediaArtworkProvider,
-            playback: playback
+            playback: playback,
+            onOpen: { [weak self] in self?.trackSMBLevel($0) }
         )
-        trackSMBLevel(level)
-        return level
     }
 
     public func makeSMBPasswordRecovery(

@@ -44,7 +44,6 @@ enum SMBBrowseSortVocabulary {
 struct SMBBrowseSortButton: View {
     let field: SMBBrowseSort.Field
     let direction: SMBBrowseSort.Direction
-    let isEnabled: Bool
     let onSelectField: (SMBBrowseSort.Field) -> Void
     let onSelectDirection: (SMBBrowseSort.Direction) -> Void
 
@@ -54,7 +53,7 @@ struct SMBBrowseSortButton: View {
             activeGlyph: nil,
             isActive: false,
             menu: menu(),
-            isEnabled: isEnabled,
+            isEnabled: true,
             accessibilityLabel: "Sort",
             accessibilityValue: SMBBrowseSortVocabulary.label(for: field)
         )
