@@ -22,11 +22,16 @@ seek latency, stalls, and audio-dropout signatures.
 ```
 ./run.py --scenario scenarios/smoke.json                     # build + run
 ./run.py --scenario scenarios/dropout.json --no-build         # reuse last build
-./run.py --scenario scenarios/deepseek.json --sim "iPhone 17 Pro"
+./run.py --scenario scenarios/deepseek.json --sim "iPhone 18 Pro"
 ./run.py --scenario scenarios/smoke.json --file custom-file.mkv
 ./run.py --analyze results/dropout-20260731-201500            # re-run analyzer only
 ./run.py --selftest                                            # analyzer unit checks
 ```
+
+A build-and-run re-executes itself under `scripts/heavy.sh`, so it queues
+behind any other build, test or simulator job. `--analyze` and `--selftest`
+skip the lock. A simulator the run boots is shut down when it ends, pass or
+fail; one that was already booted is left running.
 
 Builds land in an isolated DerivedData at
 `~/Library/Caches/ParallaxPlaybackLab/DerivedData` (never Xcode's shared
