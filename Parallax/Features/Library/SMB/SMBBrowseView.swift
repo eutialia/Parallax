@@ -25,8 +25,8 @@ extension View {
 /// this same view); media plays through the app's `PlaybackPresenter`, the same entry point the
 /// library grid's SMB tiles use (`playback.playSMB(_:ref:)`).
 ///
-/// Connections belong to the shared pool, not to a level: `.task` builds the level's
-/// `SMBBrowseViewModel`, whose `open()` builds a lister and lists `path.path`. Every level of every
+/// Connections belong to the shared pool, not to a level: the level's `SMBBrowseViewModel` opens
+/// from `.task`, and its `open()` builds a lister and lists `path.path`. Every level of every
 /// share borrows the same warm connections, so a drill-in costs no handshake and leaving a level
 /// tears nothing down — the pool ages idle connections out on its own, and only ever while nobody is
 /// using them. It deliberately KEEPS one warm connection per share indefinitely (not a leak: that
@@ -35,19 +35,35 @@ struct SMBBrowseView: View {
     let path: SMBBrowsePath
 
     @Environment(AppModel.self) private var app
+
+    var body: some View {
+        SMBBrowseLevelView(app: app, path: path)
+    }
+}
+
+private struct SMBBrowseLevelView: View {
+    let app: AppModel
+    let path: SMBBrowsePath
+
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
-    @State private var model: SMBBrowseViewModel?
+    @State private var model: SMBBrowseViewModel
     /// Drives the pushed password-recovery form. One level at a time can be in a failure state, so
     /// only one level's binding is ever live.
     @State private var isEnteringPassword = false
 
+    init(app: AppModel, path: SMBBrowsePath) {
+        self.app = app
+        self.path = path
+        _model = State(initialValue: app.makeSMBBrowse(path))
+    }
+
     var body: some View {
         Group {
-            switch model?.setup {
+            switch model.setup {
             case .open:
-                if let model { content(model: model) }
+                content
             case .failed(let message, let isCredentialLoss):
                 StatusStateView(
                     title: "Can't Open Share",
@@ -55,7 +71,7 @@ struct SMBBrowseView: View {
                     message: message,
                     action: isCredentialLoss ? passwordRecoveryAction : nil
                 )
-            case .opening, nil:
+            case .opening:
                 loadingSkeleton
             }
         }
@@ -79,17 +95,16 @@ struct SMBBrowseView: View {
         // `smbBrowseDestination()` below, applied at `libraryEntryDestination(for:)`'s `.smb` case.
         #if !os(tvOS)
         // iPhone/iPad carry the sort control in the nav bar's trailing edge. (tvOS instead rides it
-        // in-content above the grid — toolbar items can't join the tvOS focus engine; see `sortHeader`.)
-        // Mounted unconditionally so it doesn't blink in after the push settles; inert until the
-        // per-level view model exists.
+        // in-content above the grid — toolbar items can't join the tvOS focus engine; see
+        // `SMBBrowseSortHeader`.) Mounted unconditionally so it doesn't blink in after the push
+        // settles.
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 SMBBrowseSortButton(
-                    field: model?.sortField ?? SMBBrowseSort.default.field,
-                    direction: model?.sortDirection ?? SMBBrowseSort.default.direction,
-                    isEnabled: model != nil,
-                    onSelectField: { model?.sortField = $0 },
-                    onSelectDirection: { model?.sortDirection = $0 }
+                    field: model.sortField,
+                    direction: model.sortDirection,
+                    onSelectField: { model.sortField = $0 },
+                    onSelectDirection: { model.sortDirection = $0 }
                 )
             }
         }
@@ -102,19 +117,15 @@ struct SMBBrowseView: View {
         .navigationDestination(isPresented: $isEnteringPassword) {
             SMBPasswordRecoveryView(app: app, id: path.ref.id, data: path.ref.data) {
                 isEnteringPassword = false
-                Task { await model?.reopenAfterPasswordRecovery() }
+                Task { await model.reopenAfterPasswordRecovery() }
             }
             .tvHidesTabSidebar()
         }
         // Lifecycle: on back-navigation `appear()` finds the level already open and keeps the cached
         // listing — fast and stale-tolerant. It runs for as long as the level is on screen, so
         // SwiftUI cancelling it on a push or pop withdraws the level's thumbnail work.
-        .task {
-            let level = model ?? app.makeSMBBrowse(path)
-            model = level
-            await level.appear()
-        }
-        .onDisappear { model?.isOnScreen = false }
+        .task { await model.appear() }
+        .onDisappear { model.isOnScreen = false }
     }
 
     /// The recovery affordance both password-shaped failure states offer: re-enter the saved
@@ -140,7 +151,7 @@ struct SMBBrowseView: View {
     }
 
     @ViewBuilder
-    private func content(model: SMBBrowseViewModel) -> some View {
+    private var content: some View {
         if model.isLoading, model.folders.isEmpty, model.media.isEmpty {
             loadingSkeleton
         } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
@@ -185,7 +196,7 @@ struct SMBBrowseView: View {
                     // trap this scoping avoids; mirrors `LibraryGridView.gridScrollContent`, whose
                     // header controls sit outside its own `MediaGrid`-scoped modifier).
                     #if os(tvOS)
-                    sortHeader(model: model)
+                    SMBBrowseSortHeader(field: $model.sortField, direction: $model.sortDirection)
                     #endif
                     SMBBrowseGrid(
                         folders: model.folders,
@@ -200,7 +211,7 @@ struct SMBBrowseView: View {
                     )
                     // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
                     // with the library grid so the two never drift). Scoped to the grid, not the
-                    // whole scroll subtree — see the comment on `sortHeader` above.
+                    // whole scroll subtree — see the comment on the sort chip above.
                     .staleWhileRevalidate(
                         isRefreshing: model.isRefreshing,
                         reduceMotion: reduceMotion
@@ -225,18 +236,6 @@ struct SMBBrowseView: View {
         .scrollDisabled(true)
         .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
     }
-
-    // MARK: - tvOS sort header
-
-    #if os(tvOS)
-    /// The shipping sort row (`SMBBrowseSortHeader` — spacing, focus section and chip all live
-    /// there, shared with the parity preview's loaded half). This wrapper exists only to open the
-    /// `@Bindable` lens onto the view model, and only on tvOS, so iOS carries no unused binding.
-    private func sortHeader(model: SMBBrowseViewModel) -> some View {
-        @Bindable var model = model
-        return SMBBrowseSortHeader(field: $model.sortField, direction: $model.sortDirection)
-    }
-    #endif
 }
 
 /// The folders-then-media wall for one browse level. Standalone (plain inputs, no environment or network)

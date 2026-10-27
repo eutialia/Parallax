@@ -134,7 +134,9 @@ extension AppModel {
 
     func trackSMBLevel(_ level: SMBBrowseViewModel) {
         smbLevels.removeAll { $0.level == nil }
-        smbLevels.append(WeakLevel(level: level))
+        if !smbLevels.contains(where: { $0.level === level }) {
+            smbLevels.append(WeakLevel(level: level))
+        }
         recoverableScreens.track(level, isStalled: { $0.isStalled }, recover: { await $0.recover() })
     }
 }

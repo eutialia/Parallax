@@ -127,6 +127,8 @@ public final class SMBBrowseViewModel {
     private let makeLister: (SMBServerRef) async throws -> any SMBLister
     private let artworkProvider: MediaArtworkProvider
     private let playback: PlaybackPresenter
+    /// Tells the app this level is live, so foreground refresh and offline recovery can reach it.
+    private let onOpen: (SMBBrowseViewModel) -> Void
     private var source: SMBFileSource?
     private var loadTask: Task<Void, Never>?
     /// The level's one open, kept after it settles so later calls do nothing. `openGeneration`
@@ -160,12 +162,14 @@ public final class SMBBrowseViewModel {
         path: SMBBrowsePath,
         makeLister: @escaping (SMBServerRef) async throws -> any SMBLister,
         artworkProvider: MediaArtworkProvider,
-        playback: PlaybackPresenter
+        playback: PlaybackPresenter,
+        onOpen: @escaping (SMBBrowseViewModel) -> Void
     ) {
         self.path = path
         self.makeLister = makeLister
         self.artworkProvider = artworkProvider
         self.playback = playback
+        self.onOpen = onOpen
     }
 
     /// What the view's `.task` runs each time the level appears: marks it as the one on screen, opens
@@ -205,6 +209,7 @@ public final class SMBBrowseViewModel {
     /// changes nothing and is forgotten, so the level stays reopenable; cancelling the caller
     /// cancels the open.
     public func open() async {
+        onOpen(self)
         let task = openTask ?? startOpen()
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
