@@ -74,7 +74,12 @@ public actor PlaybackInfoService {
 
         let mediaSourceID = source.id ?? item.rawValue
         let playSessionID = response.playSessionID ?? ""
-        let container = source.container.flatMap(Container.init(rawValue:))
+        // Jellyfin keeps ffprobe's comma lists: "mov,mp4,m4a,3gp,3g2,mj2", "mkv,webm".
+        let container = source.container?
+            .split(separator: ",")
+            .lazy
+            .compactMap { Container(rawValue: String($0)) }
+            .first
         let videoCodec = Self.firstCodec(in: source, type: .video).flatMap(VideoCodec.init(identifier:))
         let audioCodec = Self.firstCodec(in: source, type: .audio).flatMap(AudioCodec.init(identifier:))
         let runtime = source.runTimeTicks.map { Self.cmTime(fromTicks: $0) }
