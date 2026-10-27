@@ -119,6 +119,25 @@ struct PlaybackInfoServiceResolveTests {
         #expect(fake.transcodePaths.isEmpty)
     }
 
+    /// Jellyfin stores ffprobe's format name, which is a comma list for mp4/mov and for an mkv
+    /// whose streams all fit WebM (`ProbeResultNormalizer.NormalizeFormat`).
+    @Test("A comma-list container resolves to its first known container",
+          arguments: [
+              ("mov,mp4,m4a,3gp,3g2,mj2", Container.mov),
+              ("mkv,webm", .mkv),
+          ])
+    func commaListContainer(serverContainer: String, expected: Container) async throws {
+        var source = directPlaySource()
+        source.container = serverContainer
+        let (service, _) = makeService(source: source)
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.container == expected)
+    }
+
     @Test("Server transcodingURL forces .transcode regardless of profile")
     func transcodeBranch() async throws {
         let (service, fake) = makeService(source: transcodeSource())
