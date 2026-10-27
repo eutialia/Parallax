@@ -8,7 +8,7 @@ signatures.
 
 Usage:
     ./run.py --scenario scenarios/dropout.json
-    ./run.py --scenario scenarios/smoke.json --file custom.mkv --sim "iPhone 17 Pro"
+    ./run.py --scenario scenarios/smoke.json --file custom.mkv --sim "iPhone 18 Pro"
     ./run.py --scenario scenarios/deepseek.json --no-build
     ./run.py --analyze results/dropout-20260731-201500
     ./run.py --selftest
@@ -20,6 +20,7 @@ import argparse
 import collections
 import datetime
 import json
+import os
 import re
 import shutil
 import signal
@@ -30,11 +31,12 @@ import time
 from pathlib import Path
 
 SUBSYSTEM = "com.lhdev.parallax"
-DEFAULT_SIM = "iPhone 17 Pro"
+DEFAULT_SIM = "iPhone 18 Pro"
 DEFAULT_CONFIG = "lab-config.local.json"
 DERIVED_DATA = Path.home() / "Library/Caches/ParallaxPlaybackLab/DerivedData"
 LOG_TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f%z"
 SEEK_CMDS = ("seek", "skip", "scrub")
+HEAVY_LOCK_ENV = "PARALLAX_LAB_HOLDS_HEAVY_LOCK"
 
 
 # --------------------------------------------------------------------------
@@ -148,17 +150,19 @@ def find_device_by_name(name: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def ensure_simulator_booted(sim_name: str) -> str:
+def ensure_simulator_booted(sim_name: str) -> tuple[str, bool]:
+    """Returns the device and whether this run booted it, so only that one is shut down."""
     udid = booted_device_udid()
     if udid:
-        return udid
+        return udid, False
     udid, state = find_device_by_name(sim_name)
     if udid is None:
         sys.exit(f"no simulator named {sim_name!r} found (see: xcrun simctl list devices)")
-    if state != "Booted":
+    booted_here = state != "Booted"
+    if booted_here:
         subprocess.run(["xcrun", "simctl", "boot", udid], check=True)
     subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True)
-    return udid
+    return udid, booted_here
 
 
 def get_app_container(udid: str, bundle_id: str, attempts: int = 8, delay: float = 1.5) -> str:
@@ -617,20 +621,7 @@ def make_results_dir(script_dir: Path, scenario_name: str) -> Path:
     return d
 
 
-def cmd_run(args) -> int:
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent.parent
-
-    scenario_path = resolve_path(script_dir, args.scenario)
-    config_path = resolve_path(script_dir, args.config)
-    config = load_json(config_path)
-    scenario = load_json(scenario_path)
-    merged = merge_scenario(config, scenario, args.file)
-
-    results_dir = make_results_dir(script_dir, scenario_path.stem)
-    (results_dir / "scenario.json").write_text(json.dumps(redact_scenario(merged), indent=2) + "\n")
-
-    tmp_dir = Path(tempfile.mkdtemp(prefix="playback-lab-"))
+def run_on_simulator(args, repo_root: Path, merged: dict, tmp_dir: Path, results_dir: Path) -> str:
     tmp_scenario_path = tmp_dir / "scenario.json"
     tmp_scenario_path.write_text(json.dumps(merged, indent=2))
 
@@ -641,10 +632,18 @@ def cmd_run(args) -> int:
         sys.exit(f"app bundle not found at {app_path} — run once without --no-build first")
     bundle_id = read_bundle_id(app_path)
 
-    udid = ensure_simulator_booted(args.sim)
-    print(f"[run] installing on {udid}…", flush=True)
-    subprocess.run(["xcrun", "simctl", "install", udid, str(app_path)], check=True)
+    udid, booted_here = ensure_simulator_booted(args.sim)
+    try:
+        print(f"[run] installing on {udid}…", flush=True)
+        subprocess.run(["xcrun", "simctl", "install", udid, str(app_path)], check=True)
+        return drive_scenario(args, udid, bundle_id, tmp_scenario_path, merged, results_dir)
+    finally:
+        if booted_here:
+            print(f"[run] shutting down {udid}, which this run booted", flush=True)
+            subprocess.run(["xcrun", "simctl", "shutdown", udid], capture_output=True)
 
+
+def drive_scenario(args, udid: str, bundle_id: str, tmp_scenario_path: Path, merged: dict, results_dir: Path) -> str:
     log_path = results_dir / "vlc-log.ndjson"
     log_proc, log_file = start_log_capture(udid, log_path)
 
@@ -680,6 +679,26 @@ def cmd_run(args) -> int:
         # fast failure loses everything it buffered.
         time.sleep(4)
         stop_log_capture(log_proc, log_file)
+    return terminal
+
+
+def cmd_run(args) -> int:
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent.parent
+
+    scenario_path = resolve_path(script_dir, args.scenario)
+    config_path = resolve_path(script_dir, args.config)
+    config = load_json(config_path)
+    scenario = load_json(scenario_path)
+    merged = merge_scenario(config, scenario, args.file)
+
+    results_dir = make_results_dir(script_dir, scenario_path.stem)
+    (results_dir / "scenario.json").write_text(json.dumps(redact_scenario(merged), indent=2) + "\n")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="playback-lab-"))
+    try:
+        terminal = run_on_simulator(args, repo_root, merged, tmp_dir, results_dir)
+    finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     analysis = analyze_results(results_dir)
@@ -724,6 +743,10 @@ def main() -> int:
         return cmd_analyze(args.analyze)
     if not args.scenario:
         parser.error("--scenario is required (or use --analyze/--selftest)")
+    if os.environ.get(HEAVY_LOCK_ENV) != "1":
+        heavy = Path(__file__).resolve().parents[1] / "heavy.sh"
+        os.execve(heavy, [str(heavy), sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+                  {**os.environ, HEAVY_LOCK_ENV: "1"})
     return cmd_run(args)
 
 
