@@ -52,11 +52,13 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     private var _stopCalls = 0
     private var _stopCalledOnMainThread: Bool?
     private var _stopsHeld = false
-    /// Parks a gated `stop()` until a test lets it through, so the engine's wind-down window
-    /// is a state a test can stand inside and probe rather than a race to win.
-    private let stopGate = DispatchSemaphore(value: 0)
+    /// One gate per parked `stop()`, oldest first, so the engine's wind-down window is a state a
+    /// test can stand inside and probe, and releasing one stop can never hand the turn to another.
+    private var _parkedStops: [DispatchSemaphore] = []
 
     public var stopCalls: Int { lock.withLock { _stopCalls } }
+    /// How many `stop()` calls are parked right now.
+    public var parkedStops: Int { lock.withLock { _parkedStops.count } }
     /// Whether the FIRST `stop()` ran on the main thread. Nil until one lands. 3.x's `stop()`
     /// blocks until the input is wound down, so a `true` here is a frozen dismissal on SMB.
     public var stopCalledOnMainThread: Bool? { lock.withLock { _stopCalledOnMainThread } }
@@ -163,17 +165,29 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     /// Park every subsequent `stop()` until `releaseHeldStop()`/`stopHolding()`.
     public func holdStops() { lock.withLock { _stopsHeld = true } }
 
-    /// Lets exactly one parked `stop()` finish.
-    public func releaseHeldStop() { stopGate.signal() }
+    /// Lets the longest-parked `stop()` finish. A no-op when none is parked.
+    public func releaseHeldStop() {
+        lock.withLock { _parkedStops.isEmpty ? nil : _parkedStops.removeFirst() }?.signal()
+    }
 
     /// Stops parking, and releases whatever is already parked.
     public func stopHolding() {
-        lock.withLock { _stopsHeld = false }
-        stopGate.signal()
+        let parked = lock.withLock {
+            _stopsHeld = false
+            defer { _parkedStops = [] }
+            return _parkedStops
+        }
+        parked.forEach { $0.signal() }
     }
 
     public func stop() {
-        if lock.withLock({ _stopsHeld }) { stopGate.wait() }
+        let gate: DispatchSemaphore? = lock.withLock {
+            guard _stopsHeld else { return nil }
+            let gate = DispatchSemaphore(value: 0)
+            _parkedStops.append(gate)
+            return gate
+        }
+        gate?.wait()
         lock.withLock {
             if _stopCalledOnMainThread == nil { _stopCalledOnMainThread = Thread.isMainThread }
             _stopCalls += 1

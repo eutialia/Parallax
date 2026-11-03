@@ -474,7 +474,6 @@ struct VLCKitTeardownTests {
         #expect(spy.stopCalls == 0)
 
         spy.stopHolding()
-        spy.releaseHeldStop()            // a teardown that skipped the join parks a second stop
         await teardown.value
         #expect(spy.drawable == nil)
         #expect(spy.stopCalls == 2)
@@ -502,21 +501,28 @@ struct VLCKitTeardownTests {
     /// assigned DURING the suspension (a dismissal fence firing while teardown waits on
     /// `endAudio()`'s stop) was dropped un-awaited — and the caller walked into the
     /// drawable/delegate/stop sequence with it still running.
-    @Test("a stop assigned while the join is suspended is not dropped")
+    @Test("a stop assigned while the join is suspended is not dropped", .scaledTimeLimit())
     func awaitPendingStopKeepsALaterStop() async throws {
         let spy = SpyVLCPlayer()
         spy.holdStops()
         let engine = VLCKitEngine(control: spy)
 
-        engine.scheduleDetachedStop()                        // stop A, parked in the gate
-        let joiner = Task { await engine.awaitPendingStop() }
-        try await Task.sleep(for: .milliseconds(50))         // let the join reach its await
-        engine.scheduleDetachedStop()                        // stop B, assigned mid-suspension
-        spy.releaseHeldStop()                                // A completes; B stays parked
+        // Main-actor jobs run in the order they were queued, so once a job queued now has run,
+        // every main-actor continuation queued before it has run too.
+        func drainMainActor() async { await Task { @MainActor in }.value }
 
-        try await pollUntil({ spy.stopCalls == 1 })
+        engine.scheduleDetachedStop()                        // stop A
+        let stopA = try #require(engine.pendingStopTask)
+        // Yield rather than sleep: a parked stop holds a cooperative thread a sleeper may need.
+        while spy.parkedStops == 0 { await Task.yield() }    // A is first in the gate's line
+        let joiner = Task { await engine.awaitPendingStop() }
+        await drainMainActor()                               // the join is suspended on A
+        engine.scheduleDetachedStop()                        // stop B, assigned mid-suspension
+        spy.releaseHeldStop()                                // A completes; B stays held
+
+        await stopA.value
+        await drainMainActor()                               // the join has resumed from A
         // The bug nils the reference the moment A returns; the fix keeps joining B.
-        try await pollUntil({ engine.pendingStopTask == nil }, timeout: .milliseconds(500))
         #expect(engine.pendingStopTask != nil)
 
         spy.stopHolding()
