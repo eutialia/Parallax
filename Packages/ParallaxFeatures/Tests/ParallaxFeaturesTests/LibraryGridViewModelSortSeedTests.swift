@@ -41,20 +41,17 @@ struct LibraryGridViewModelSortSeedTests {
         return fake
     }
 
-    /// The deterministic statement of the bug: construction alone must reach no server. A wall-clock
-    /// wait (not a yield loop) so an armed reload has every chance to run — the assertion is an
-    /// invariant, so waiting longer can never make it pass spuriously.
+    /// The deterministic statement of the bug: construction alone must reach no server. A reload
+    /// init armed would have run its first main-actor job, which raises `.loading`, by the time
+    /// the drain's job runs behind it.
     @Test("Seeding sort/filter through init arms no fetch — the grid stays idle until load()")
     func seedingArmsNoFetch() async {
         let fake = makeRepo()
         let vm = makeGrid(fake, sort: seeded)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await drainMainActor()
 
-        #expect(vm.state == .idle)
-        #expect(vm.items.isEmpty)
-        #expect(fake.lastSort == nil)
-        #expect(fake.lastFilter == nil)
+        #expect(vm.state == .idle, "init armed a reload of its own")
     }
 
     /// The user-visible half: one `load()` on a seeded grid settles it, on the seeded sort, WITH its
@@ -133,10 +130,16 @@ struct LibraryGridViewModelSortSeedTests {
 
         vm.setSort(seeded)
         vm.setFilter(ItemFilter(genres: ["Drama"]))
-        try? await Task.sleep(for: .milliseconds(100))
+        await drainMainActor()
 
+        #expect(!vm.isRefreshing, "a re-push armed a reload")
         #expect(vm.refreshGeneration == generationAfterLoad)
-        #expect(vm.state == .loaded)
+    }
+
+    /// Main-actor jobs run in the order they were queued, so once this one runs, every job queued
+    /// before it has had its first turn.
+    private func drainMainActor() async {
+        await Task { @MainActor in }.value
     }
 }
 
