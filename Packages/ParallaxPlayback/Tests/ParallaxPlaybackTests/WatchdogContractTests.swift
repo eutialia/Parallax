@@ -8,11 +8,10 @@ import ParallaxPlaybackTestSupport
 /// were byte-for-byte duplicates. One contract, run against both.
 ///
 /// TIMING NOTE: both are thin wrappers over `Task.sleep`, which has no injection point
-/// short of threading a `Clock` through — and a hand-rolled test clock trades this
-/// suite's (bounded, poll-based) waits for its own scheduling races. So the timers run
-/// on real time with a deliberately small 50ms deadline: the "did fire" assertions poll
-/// instead of sleeping a fixed span, and only the two "must NOT fire" assertions need a
-/// real margin.
+/// short of threading a `Clock` through that no production caller needs. So the timers run
+/// on real time with a deliberately small 50ms deadline: the "did fire" assertions poll, and
+/// the "must NOT fire" assertions wait for a later-deadline control timer instead of a margin
+/// (`waitPastDeadline`).
 enum WatchdogKind: String, CaseIterable, CustomTestStringConvertible {
     case load
     case stall
@@ -54,12 +53,12 @@ struct WatchdogContractTests {
     /// The whole point: the first sign of life (a real beat, `.ready`, or teardown)
     /// must make the pending failure unreachable.
     @Test("disarm cancels the pending deadline for good", arguments: WatchdogKind.allCases)
-    func disarmCancels(kind: WatchdogKind) async {
+    func disarmCancels(kind: WatchdogKind) async throws {
         var fired = false
         let wd = kind.make(deadline: deadline) { fired = true }
         wd.arm()
         wd.disarm()
-        try? await Task.sleep(for: .milliseconds(400))   // 8× the deadline
+        try await waitPastDeadline(of: kind)
         #expect(fired == false)
     }
 
@@ -73,7 +72,7 @@ struct WatchdogContractTests {
         wd.arm()
         wd.arm()
         try await pollUntil { count > 0 }
-        try? await Task.sleep(for: .milliseconds(150))   // let a stray first timer misfire
+        try await waitPastDeadline(of: kind)   // a stray first timer would have misfired by now
         #expect(count == 1)
     }
 
@@ -86,18 +85,29 @@ struct WatchdogContractTests {
         wd.arm()
         try await pollUntil { count > 0 }
         wd.disarm()
-        try? await Task.sleep(for: .milliseconds(150))
+        try await waitPastDeadline(of: kind)
         #expect(count == 1)
     }
 
     /// Disarming a watchdog that was never armed happens on every teardown of a session
     /// that failed before `.loading`.
     @Test("disarm before arm is a no-op", arguments: WatchdogKind.allCases)
-    func disarmBeforeArmIsInert(kind: WatchdogKind) async {
+    func disarmBeforeArmIsInert(kind: WatchdogKind) async throws {
         var fired = false
         let wd = kind.make(deadline: deadline) { fired = true }
         wd.disarm()
-        try? await Task.sleep(for: .milliseconds(150))
+        try await waitPastDeadline(of: kind)
         #expect(fired == false)
+    }
+
+    /// Arms a control watchdog of the same kind with a later deadline and waits for it to fire.
+    /// Timers come due in deadline order, so once it has, a timer under test that was going to
+    /// fire has fired, and a "did not fire" assertion is an observation rather than a margin
+    /// that a starved host can spend before the timer ever runs.
+    private func waitPastDeadline(of kind: WatchdogKind) async throws {
+        var controlFired = false
+        let control = kind.make(deadline: deadline * 3) { controlFired = true }
+        control.arm()
+        try await requireEventually({ controlFired }, "the control watchdog never fired")
     }
 }
