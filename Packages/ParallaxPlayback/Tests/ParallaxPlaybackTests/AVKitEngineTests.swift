@@ -352,9 +352,11 @@ struct AVKitSeekSettleTests {
         let log = PositionBeatLog(engine)
 
         let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }   // segment 2 is 26–39 s
+        // The paused player can ask for the segment on its own before the seek task runs, so
+        // the request alone doesn't say the seek has started; its armed deadline does.
+        try await requireEventually({ engine.isSeekFetchArmed }, "the fetch armed no stall deadline")
         try await requireEventually({ server.pathsRequested.contains("/seg2.mp4") },
                                     "the seek never asked for its segment")
-        #expect(engine.isSeekFetchArmed, "the fetch armed no stall deadline")
         gate.open()
         await seek.value
 
