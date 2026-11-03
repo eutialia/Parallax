@@ -386,7 +386,12 @@ struct AVKitSeekSettleTests {
                                            stallDeadline: .milliseconds(500))
         await engine.pause()
 
-        let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }   // segment 2 is 26–39 s
+        final class Flag { var isSet = false }
+        let seekReturned = Flag()
+        Task {
+            await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600))   // segment 2 is 26–39 s
+            seekReturned.isSet = true
+        }
 
         let failure = await engine.firstBeat(within: CITimeScale.seconds(5)) {
             if case .failed = $0.state { true } else { false }
@@ -398,15 +403,10 @@ struct AVKitSeekSettleTests {
         #expect(error == .networkStalled)
         // The scrub commit that issued the seek is still suspended in it. Teardown has to hand
         // it back, or the commit outlives the session it was made in.
+        // Polled, not joined: a seek teardown left pending never returns, and the gate opens
+        // only once this test does.
         await engine.teardown()
-        let returned = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await seek.value; return true }
-            group.addTask { try? await Ceiling.expire(CITimeScale.seconds(5)); return false }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
-        #expect(returned, "teardown left the dead seek pending")
+        try await requireEventually({ seekReturned.isSet }, "teardown left the dead seek pending")
     }
 
     /// The item can end while a seek still waits on its segment. A stall deadline left running
@@ -431,6 +431,8 @@ struct AVKitSeekSettleTests {
 
         engine.handleEnded(from: session)
         #expect(!engine.isSeekFetchArmed, "the item ended and its seek's stall deadline kept running")
+        // The dead-segment test owns teardown with the segment withheld; here the seek just ends.
+        gate.open()
         await engine.teardown()
         await seek.value
     }
