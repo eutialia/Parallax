@@ -21,6 +21,7 @@ extension AppEnvironment {
             cachesDirectory: .cachesDirectory,
             urlSessionConfiguration: .default,
             clock: clock,
+            now: { Date() },
             reachability: NWPathReachabilityMonitor(),
             capabilityProbe: LiveCapabilityProbe(),
             lanBroadcaster: LANServerDiscovery.broadcast,

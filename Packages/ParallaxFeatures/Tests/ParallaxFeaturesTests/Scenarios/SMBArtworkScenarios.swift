@@ -187,7 +187,7 @@ struct SMBArtworkScenarios {
     func cachedGreyThumbnailIsRegenerated() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
         let ran = try await Self.addFile("Ran.wmv", to: world, ref: ref)
-        let seeding = SMBThumbnailCache(directory: world.thumbnailCacheDirectory)
+        let seeding = world.thumbnailCache()
         _ = await seeding.store(TestFrames.mosaic, duration: .seconds(42), for: try Self.key(of: heat, ref: ref))
         _ = await seeding.store(TestFrames.scene, duration: .seconds(42), for: try Self.key(of: ran, ref: ref))
 
@@ -216,14 +216,14 @@ struct SMBArtworkScenarios {
         _ = await world.app.services.mediaArtworkProvider.artwork(for: heat, ref: ref, sidecar: poster)
         #expect(world.thumbnailer.positions == [])
 
-        let relaunched = SMBThumbnailCache(directory: world.thumbnailCacheDirectory)
+        let relaunched = world.thumbnailCache()
         #expect(await relaunched.existing(for: try Self.key(of: heat, ref: ref)) != nil)
     }
 
     @Test("a seeded grey poster is served on first read without a frame grab")
     func seededGreyPosterIsServed() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
-        let seeding = SMBThumbnailCache(directory: world.thumbnailCacheDirectory)
+        let seeding = world.thumbnailCache()
         _ = await seeding.store(TestFrames.mosaic, duration: nil, for: try Self.key(of: heat, ref: ref), origin: .artwork)
 
         let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)

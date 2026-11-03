@@ -54,6 +54,7 @@ nonisolated struct CachedThumbnail: Sendable, Equatable {
 actor SMBThumbnailCache {
     private let directory: URL
     private let fileManager: FileManager
+    private let now: @Sendable () -> Date
 
     /// Total cache-size ceiling. At ~30–120 KB per HEIC this holds several thousand thumbnails —
     /// generous for a NAS library. Once exceeded, `sweep()` evicts least-recently-accessed first.
@@ -93,16 +94,19 @@ actor SMBThumbnailCache {
     /// - Parameters:
     ///   - directory: where thumbnails live (`<Caches>/SMBThumbnails/` in the app).
     ///   - fileManager: injectable for tests.
+    ///   - now: wall time for the `.fail` marker's stamp and its expiry (`AppEnvironment.now`).
     ///   - sizeCapBytes / trimTargetBytes / sweepInterval: eviction tuning; small values in tests
     ///     exercise the sweep without writing thousands of files.
     init(
         directory: URL,
+        now: @escaping @Sendable () -> Date,
         fileManager: FileManager = .default,
         sizeCapBytes: Int64 = 150 * 1024 * 1024,
         trimTargetBytes: Int64 = 120 * 1024 * 1024,
         sweepInterval: Int = 32
     ) {
         self.fileManager = fileManager
+        self.now = now
         self.sizeCapBytes = sizeCapBytes
         self.trimTargetBytes = trimTargetBytes
         self.sweepInterval = max(1, sweepInterval)
@@ -236,7 +240,7 @@ actor SMBThumbnailCache {
     func recordFailure(for key: SMBThumbnailKey) -> (attempts: Int, lastAttempt: Date) {
         let base = baseName(for: key)
         let attempts = (failureState(for: key)?.attempts ?? 0) + 1
-        let stamp = Date()
+        let stamp = now()
         let epoch = Int64(stamp.timeIntervalSince1970.rounded())
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -356,14 +360,14 @@ actor SMBThumbnailCache {
 
         var files: [(url: URL, size: Int64, accessed: Date)] = []
         var total: Int64 = 0
-        let now = Date()
+        let sweptAt = now()
         for entry in entries {
             // Images (heic + legacy png) are the eviction units; `.dur`/`.fail` sidecars are tiny and
             // ride their image out (below), so they're neither counted toward the cap nor evicted on
             // their own — except an EXPIRED `.fail`, dropped here so never-stored keys' markers
             // can't accumulate forever.
             if entry.pathExtension == "fail" {
-                if let stamp = failMarkerStamp(at: entry), now.timeIntervalSince(stamp) > Self.failMarkerTTL {
+                if let stamp = failMarkerStamp(at: entry), sweptAt.timeIntervalSince(stamp) > Self.failMarkerTTL {
                     try? fileManager.removeItem(at: entry)
                 }
                 continue
