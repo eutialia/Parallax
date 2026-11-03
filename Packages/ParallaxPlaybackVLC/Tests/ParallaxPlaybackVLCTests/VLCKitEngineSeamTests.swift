@@ -1063,3 +1063,51 @@ struct VLCKitLoadReadinessTests {
         await engine.teardown()
     }
 }
+
+@Suite("VLCKitEngine — the first live beat")
+@MainActor
+struct VLCKitFirstBeatTests {
+
+    /// The open lag: the player leaves its loading cover on the engine's first
+    /// `.playing` beat, and the poll looks only every 500 ms counted from `play()`, so the sound
+    /// ran for up to a poll before the UI appeared. On device every VLC open took a multiple of
+    /// 500 ms to reach `.playing`. The first beat has to ship when libvlc's clock starts.
+    @Test("the first playing beat ships when libvlc's clock starts, not on the next poll")
+    func firstBeatShipsWhenTheClockStarts() async throws {
+        let spy = SpyVLCPlayer()
+        let engine = VLCKitEngine(control: spy)
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture())
+        await engine.play()
+
+        spy.advanceClock(toMs: 40)
+        spy.stubbedTime = VLCTime(int: 9_000)   // silent: only a poll can read this
+
+        try await requireEventually({ !log.beats.isEmpty }, "no beat arrived")
+        #expect(log.beats.first?.seconds == 0.04,
+                "the first beat waited for a poll instead of the clock's start")
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A resume open writes the offset before libvlc has a clock (lab: the write lands at
+    /// clock -1, not playing), and the first time-changed event is the playback at the offset.
+    @Test("a resume open's first playing beat ships on the clock's first event at the offset")
+    func resumeFirstBeatShipsOnTheClocksStart() async throws {
+        let spy = SpyVLCPlayer()
+        let engine = VLCKitEngine(control: spy)
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture(startTime: CMTime(seconds: 90, preferredTimescale: 1_000)))
+        await engine.play()
+        try await requireEventually({ spy.seekWritesMs == [90_000] }, "the resume seek was never written")
+
+        spy.advanceClock(toMs: 90_042)
+        spy.stubbedTime = VLCTime(int: 95_000)
+
+        try await requireEventually({ !log.beats.isEmpty }, "no beat arrived")
+        #expect(log.beats.first?.seconds == 90.042,
+                "the resume's first beat waited for a poll instead of the clock's start")
+        log.stop()
+        await engine.teardown()
+    }
+}
