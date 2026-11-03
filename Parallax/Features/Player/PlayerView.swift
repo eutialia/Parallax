@@ -440,6 +440,7 @@ struct PlayerView: View {
                 Button("Try again", systemImage: "arrow.clockwise") { Task { await vm.retry() } }
                     .buttonStyle(.glassProminent)
                     .tint(.white)
+                    .foregroundStyle(Color.playerInk)
                 #if !os(tvOS)
                 // tvOS has no pasteboard; elsewhere the raw block is one tap from a
                 // bug report.
@@ -477,6 +478,7 @@ struct PlayerView: View {
                 }
                 .buttonStyle(.glassProminent)
                 .tint(.white)
+                .foregroundStyle(Color.playerInk)
                 Button("Keep current track") { vm.dismissTrackSwitchFailure() }
                     .buttonStyle(.glass)
             }

@@ -10,7 +10,9 @@ import SwiftUI
 ///
 /// Buttons are supplied by the owner (they differ per flavor and platform) and
 /// should use the native Liquid Glass styles: `.glassProminent` + white tint for
-/// the primary action, `.glass` for the rest.
+/// the primary action, `.glass` for the rest. The prominent style draws its label
+/// white whatever the tint, so the primary label is painted `playerInk` or it
+/// vanishes into the white pill.
 ///
 /// App target only: pure SwiftUI, no platform conditionals.
 struct PlayerErrorScrim<Buttons: View>: View {
@@ -111,6 +113,7 @@ struct PlayerErrorScrim<Buttons: View>: View {
             Button("Try again", systemImage: "arrow.clockwise") {}
                 .buttonStyle(.glassProminent)
                 .tint(.white)
+                .foregroundStyle(Color.playerInk)
             Button("Copy details") {}
                 .buttonStyle(.glass)
             Button("Close") {}
@@ -132,6 +135,7 @@ struct PlayerErrorScrim<Buttons: View>: View {
             Button("Try again", systemImage: "arrow.clockwise") {}
                 .buttonStyle(.glassProminent)
                 .tint(.white)
+                .foregroundStyle(Color.playerInk)
             Button("Keep current track") {}
                 .buttonStyle(.glass)
         }
