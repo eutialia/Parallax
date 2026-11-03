@@ -85,8 +85,12 @@ final class EngineLedger {
     /// broken fixture rather than a case worth branching on.
     var live: FakePlaybackEngine { engines.last! }
 
+    /// Set, every engine built from then on fails its `load` with it.
+    var loadError: (any Error)?
+
     func make(_ id: PlaybackEngineID) -> FakePlaybackEngine {
         let engine = FakePlaybackEngine(id: id, capabilities: id == .avKit ? .avKit : .vlcKit)
+        engine.loadError = loadError
         engines.append(engine)
         return engine
     }
