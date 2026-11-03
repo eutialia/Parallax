@@ -1830,6 +1830,10 @@ public final class PlayerViewModel {
     /// Tears the session down, once. A second call joins the teardown in flight instead of
     /// returning before it is done. The teardown runs outside the caller's cancellation: the
     /// host calls this from a cancelled task, and nothing here may be cut short.
+    /// Called once this session's engines are drained and its audio session is released, which
+    /// is when the presenter may open the next pick (`PlaybackPresenter.deviceHeld(by:)`).
+    @ObservationIgnored public var onDeviceReleased: (@MainActor () -> Void)?
+
     public func stop() async {
         let teardown = stopping ?? Task { await self.tearDownSession() }
         stopping = teardown
@@ -1870,10 +1874,10 @@ public final class PlayerViewModel {
         // Drains every engine teardown this session started, including one a track switch
         // left running, so nothing that re-reads `engine` can poke one that is winding down.
         await tearDownEngine()
-        // Before anything that waits on the network: the next pick activates the same audio
-        // session once the presenter's teardown grace is up, and a deactivation landing after
-        // that would silence it.
+        // Before anything that waits on the network: the presenter holds the next pick until
+        // here, and that pick activates the same audio session.
         await audioSession.deactivate()
+        onDeviceReleased?()
         await tearDownSMBBridge()
         await reporter.stopEncodingIfNeeded()
         await reporter.reportStoppedIfNeeded(at: lastPosition)

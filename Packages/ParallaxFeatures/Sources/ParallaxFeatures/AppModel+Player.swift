@@ -20,6 +20,8 @@ extension AppModel {
         subtitleSurface: @escaping @MainActor () -> SubtitleSurface,
         install: (PlayerViewModel) -> Void
     ) async {
+        playback.deviceHeld(by: request.id)
+        defer { playback.deviceReleased(by: request.id) }
         let vm = switch request.target {
         case .smb(let item, let ref):
             makeSMBPlayer(item: item, ref: ref, subtitleSurface: subtitleSurface)
@@ -31,6 +33,7 @@ extension AppModel {
         // dismissing itself, a server switch, the debug lab) still fence and end audio instead of
         // playing on through the slide-out. Weak: the presenter outlives every session.
         playback.setExitHandler(for: request.id) { [weak vm] in vm?.beginExit() }
+        vm.onDeviceReleased = { [weak playback] in playback?.deviceReleased(by: request.id) }
         install(vm)
         switch request.target {
         case .smb(let item, let ref):
