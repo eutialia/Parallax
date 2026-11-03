@@ -71,10 +71,10 @@ nonisolated struct SeekHold: Equatable, Sendable {
     /// is what the tolerance and the stale-beat budget used to do wrong.
     ///
     /// `.observed` releases, because it is the engine's clock with no seek of its own
-    /// outstanding — even when it landed nowhere near the request. AVKit's landing is only
-    /// segment-accurate, and a VLC hold that gave up republishes whatever the clock really
-    /// reads; pinning the bar at an unreachable target over video that is demonstrably playing
-    /// elsewhere is the worse lie. `.projected` and `.stale` both hold: neither is evidence the
+    /// outstanding — even when it landed nowhere near the request. AVKit's load-time resume
+    /// lands on its segment's first frame, and a VLC hold that gave up republishes whatever the
+    /// clock really reads; pinning the bar at an unreachable target over video that is
+    /// demonstrably playing elsewhere is the worse lie. `.projected` and `.stale` both hold: neither is evidence the
     /// seek resolved, and that is the only question this type answers.
     ///
     /// The watchdog is the only other exit and it does not come through here — see `watchdog`.
