@@ -107,4 +107,37 @@ extension HLSLoopbackServer {
             return ("application/vnd.apple.mpegurl", Data(playlist.utf8))
         }
     }
+
+    /// Serves the files of `directory` by name: playlists as HLS, everything else as MP4. A path
+    /// in `withheld` waits for `gate` to open, the way a transcode job still producing a segment
+    /// does. The wait holds the server's one queue, so later requests queue behind it.
+    static func serving(directory: URL, withholding withheld: Set<String>, until gate: ResponseGate) throws -> HLSLoopbackServer {
+        try HLSLoopbackServer { path in
+            let file = directory.appending(path: String(path.drop { $0 == "/" }))
+            guard let body = try? Data(contentsOf: file) else { return nil }
+            if withheld.contains(path) { gate.wait() }
+            let type = file.pathExtension == "m3u8" ? "application/vnd.apple.mpegurl" : "video/mp4"
+            return (type, body)
+        }
+    }
+}
+
+/// Holds back the responses `HLSLoopbackServer.serving(directory:withholding:until:)` withholds,
+/// until the test opens it. Opening is permanent.
+final class ResponseGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isOpen = false
+
+    func open() {
+        condition.withLock {
+            isOpen = true
+            condition.broadcast()
+        }
+    }
+
+    fileprivate func wait() {
+        condition.withLock {
+            while !isOpen { condition.wait() }
+        }
+    }
 }
