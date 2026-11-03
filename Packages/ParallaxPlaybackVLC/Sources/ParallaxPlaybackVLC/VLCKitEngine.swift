@@ -134,6 +134,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// a reload replaced yields into the void instead of onto the live session's stream.
     private func yield(_ state: PlaybackState, from session: PlaybackSessionID) {
         guard session == self.session else { return }
+        if case .playing = state { firstPlayingOwed = false }
         continuation.yield(PlaybackBeat(session: session, state: state))
     }
 
@@ -189,6 +190,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// by seeking — NOT the `:start-time` media option, which truncates the input so the
     /// scrubber can't span the full media or rewind before the resume point.
     private var pendingStartMs: Int32?
+
+    /// The app takes its loading cover down on the session's first `.playing` beat, so that
+    /// beat ships on libvlc's time-changed event instead of trailing the sound by up to a poll.
+    private var firstPlayingOwed = false
 
     /// The in-flight user seek, or nil. Right after `setTime`, VLCKit's clock keeps
     /// interpolating from a now-stale reference and `player.time` briefly reads far past
@@ -537,6 +542,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                                      // a same-item reload (see PlayerViewModel.loadAndPlay).
         audioEnded = false        // a fresh stream reopens the session the exit latch closed
         pendingStartMs = Self.startMs(from: asset.startTime)
+        firstPlayingOwed = true
         publish(positionMs: -1)   // new media → nothing to draw until the first published position
         clearSeekHold()
         pausedSeekTargetMs = nil  // the new stream's aout starts empty; nothing to flush
@@ -1199,6 +1205,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pausedSeekTargetMs = nil
         reanchorFlushMs = nil
         rateFlushAnchorMs = nil
+        firstPlayingOwed = false
         publish(positionMs: -1)
         player.drawable = nil
         player.delegate = nil
@@ -2269,19 +2276,25 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
         }
     }
 
-    /// libvlc republished its clock. While a seek hold stands, this is where the landing ships:
-    /// the poll only looks every `pollIntervalMs`, and the app parks the progress dot until the
-    /// first `.observed` beat, so waiting for the next tick leaves it at the pre-drag spot after
-    /// audio and video have moved. Only the release lives here; counting, extrapolation and
+    /// libvlc republished its clock. The poll only looks every `pollIntervalMs`, so two beats
+    /// ship here instead of on the next tick: a seek hold's landing (the app parks the progress
+    /// dot until the first `.observed` beat, which would sit at the pre-drag spot after audio
+    /// and video have moved) and the session's first `.playing` beat (the app's loading cover
+    /// would stay up over a soundtrack that is already playing). Counting, extrapolation and
     /// stall handling stay on the poll.
     public nonisolated func mediaPlayerTimeChanged(_ aNotification: Notification) {
         MainActor.assumeIsolated {
-            guard seekHold != nil, pendingStartMs == nil, rateFlushAnchorMs == nil,
+            guard pendingStartMs == nil, rateFlushAnchorMs == nil,
                   Self.shouldRunLiveTick(desiredPlaying: desiredPlaying, isPlaying: player.isPlaying)
             else { return }
             let nowMs = clockMs
-            guard seekHold?.landed(nowMs: nowMs, rate: desiredRate) == true else { return }
-            clearSeekHold()
+            if seekHold != nil {
+                guard seekHold?.landed(nowMs: nowMs, rate: desiredRate) == true else { return }
+                clearSeekHold()
+            } else {
+                guard firstPlayingOwed else { return }
+                publishInventoryIfChanged()   // the poll's order: menus and length before the reveal
+            }
             emitPosition(isPlaying: true, positionMs: nowMs)
         }
     }
