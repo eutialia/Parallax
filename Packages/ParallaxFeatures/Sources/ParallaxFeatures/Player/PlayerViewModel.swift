@@ -710,6 +710,9 @@ public final class PlayerViewModel {
     private var stopping: Task<Void, Never>?
     /// The replay in flight (`retry()`, an episode handoff), which `close()` cancels and joins.
     private var replaying: Task<Void, Never>?
+    /// The current teardown has drained the engines and deactivated audio. `resetForReplay`
+    /// lowers it for the fresh session.
+    private var teardownReleasedAudio = false
     /// The exit fence: the in-flight start path bails at its next checkpoint instead of
     /// resurrecting playback after dismissal or across a replay's teardown.
     private var isExiting: Bool { isClosed || stopping != nil }
@@ -1823,20 +1826,24 @@ public final class PlayerViewModel {
     /// Ends the player for good, as the host does once the player's task ends however it
     /// closed: the exit hand-off first (a host that went away without a dismissal still cuts
     /// audio and holds the frame), then the teardown, then whatever replay it cut short.
-    /// `releasingDevice` runs once the audio session is idle, which is before the teardown's
-    /// network reports. Every `deactivate()` here follows an engine drain, so idle audio also
-    /// means no engine is left to stop (VLC's teardown deactivates the session too).
+    /// `releasingDevice` runs before the teardown's network reports, once nothing of this player
+    /// can reach the audio session again: the replay it cut short has returned, since a failed
+    /// start ends its audio only after its own network call; the teardown has drained the engines
+    /// (VLC's teardown deactivates the session too) and deactivated audio; and no call is in flight.
     func close(releasingDevice: @escaping @MainActor () -> Void) async {
         beginExit()
+        let replay = replaying
+        replay?.cancel()
         let released = Task {
-            for await idle in Observations({ self.audioSession.isIdle }) where idle {
+            await replay?.value
+            let settled = Observations { self.teardownReleasedAudio && self.audioSession.isIdle }
+            for await isSettled in settled where isSettled {
                 break
             }
             releasingDevice()
         }
-        replaying?.cancel()
         await stop()
-        await replaying?.value
+        await replay?.value
         await released.value
     }
 
@@ -1886,6 +1893,7 @@ public final class PlayerViewModel {
         // Before anything that waits on the network: the presenter holds the next pick until
         // here, and that pick activates the same audio session.
         await audioSession.deactivate()
+        teardownReleasedAudio = true
         await tearDownSMBBridge()
         await reporter.stopEncodingIfNeeded()
         await reporter.reportStoppedIfNeeded(at: lastPosition)
@@ -1983,6 +1991,7 @@ public final class PlayerViewModel {
         await stop()
         guard !isClosed else { return false }
         stopping = nil
+        teardownReleasedAudio = false
         // Release any held frame THROUGH the action, not by clearing the flag alone: on
         // an in-place retry the host UIView survives, and a flag-only reset would strand
         // the pinned snapshot over the replayed video (the beat-side unfreeze guards on
