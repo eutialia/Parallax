@@ -335,7 +335,8 @@ struct AVKitSeekSettleTests {
     /// producing the target's segment. With AVPlayer's default tolerance the seek resolved at
     /// once on that segment's first frame: a scrub to 14:04 landed at 13:51. Paused,
     /// because that is how a scrub commits. The segment is withheld until the seek has asked
-    /// for it, so the seek always starts with its segment still on the way.
+    /// for it, so the seek always starts with its segment still on the way. The fetch arms a
+    /// stall deadline, and a seek that lands has to disarm it.
     @Test("a paused seek lands on its target while its long segment is still on the way")
     func pausedSeekLandsInsideALongSegment() async throws {
         let gate = ResponseGate()
@@ -353,6 +354,7 @@ struct AVKitSeekSettleTests {
         let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }   // segment 2 is 26–39 s
         try await requireEventually({ server.pathsRequested.contains("/seg2.mp4") },
                                     "the seek never asked for its segment")
+        #expect(engine.isSeekFetchArmed, "the fetch armed no stall deadline")
         gate.open()
         await seek.value
 
@@ -360,6 +362,7 @@ struct AVKitSeekSettleTests {
                                     "the seek never resolved")
         let landing = try #require(log.beats.last { $0.provenance == .observed })
         #expect(abs(landing.seconds - 33) < 0.1, "landed at \(landing.seconds)s")
+        #expect(!engine.isSeekFetchArmed, "a seek that landed left its stall deadline running")
         log.stop()
         await engine.teardown()
     }
@@ -404,6 +407,32 @@ struct AVKitSeekSettleTests {
             return first
         }
         #expect(returned, "teardown left the dead seek pending")
+    }
+
+    /// The item can end while a seek still waits on its segment. A stall deadline left running
+    /// past that would fail the session a second time and replace what it really reported.
+    @Test("a terminal state ends a waiting seek's stall deadline")
+    func terminalStateDisarmsAWaitingSeeksDeadline() async throws {
+        let gate = ResponseGate()
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: ["/seg2.mp4"], until: gate
+        )
+        defer {
+            gate.open()
+            server.stop()
+        }
+        let engine = AVKitEngine()
+        let session = try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
+        #expect(await engine.firstBeat(where: \.isReadyOrFailed).map { if case .ready = $0.state { true } else { false } } == true)
+        await engine.pause()
+
+        let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }
+        try await requireEventually({ engine.isSeekFetchArmed }, "the fetch armed no stall deadline")
+
+        engine.handleEnded(from: session)
+        #expect(!engine.isSeekFetchArmed, "the item ended and its seek's stall deadline kept running")
+        await engine.teardown()
+        await seek.value
     }
 
     /// Overlapping seeks: the NEWEST one owns every subsequent beat, and — the half this
