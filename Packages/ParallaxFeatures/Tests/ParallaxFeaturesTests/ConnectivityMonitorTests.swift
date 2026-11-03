@@ -31,39 +31,37 @@ struct ConnectivityMonitorTests {
     }
 
     @Test("republishes each reachability transition into isOnline")
-    func republishesTransitions() async throws {
+    func republishesTransitions() async {
         let mock = MockReachabilityMonitoring()
         let monitor = ConnectivityMonitor(monitor: mock)
         let task = Task { await monitor.observe() }
 
         mock.send(false)
-        try await pollUntil { monitor.isOnline == false }
-        #expect(monitor.isOnline == false)
+        await waitUntil("isOnline never went false") { monitor.isOnline == false }
 
         mock.send(true)
-        try await pollUntil { monitor.isOnline == true }
-        #expect(monitor.isOnline == true)
+        await waitUntil("isOnline never went true") { monitor.isOnline == true }
 
         task.cancel()
         mock.finish()
     }
 
     @Test("counts each offline-to-online edge, and nothing else")
-    func countsReconnects() async throws {
+    func countsReconnects() async {
         let mock = MockReachabilityMonitoring()
         let monitor = ConnectivityMonitor(monitor: mock)
         let task = Task { await monitor.observe() }
 
         mock.send(true)
         mock.send(false)
-        try await pollUntil { monitor.isOnline == false }
+        await waitUntil("isOnline never went false") { monitor.isOnline == false }
         #expect(monitor.reconnects == 0)
 
         mock.send(true, isConstrained: true)
-        try await pollUntil { monitor.isOnline == true }
+        await waitUntil("isOnline never went true") { monitor.isOnline == true }
         mock.send(true, isConstrained: false)
         mock.send(false)
-        try await pollUntil { monitor.isOnline == false }
+        await waitUntil("isOnline never went false") { monitor.isOnline == false }
         #expect(monitor.reconnects == 1)
 
         task.cancel()
@@ -82,7 +80,7 @@ struct ConnectivityMonitorTests {
     }
 
     @Test("forwards the constrained signal to the profile builder only while satisfied")
-    func forwardsConstraintGatedOnSatisfied() async throws {
+    func forwardsConstraintGatedOnSatisfied() async {
         let mock = MockReachabilityMonitoring()
         let monitor = ConnectivityMonitor(monitor: mock)
         let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe())
@@ -95,29 +93,19 @@ struct ConnectivityMonitorTests {
 
         // Satisfied + constrained clamps the profile bitrate.
         mock.send(true, isConstrained: true)
-        #expect(await eventually { await builder.build().maxBitrate == clamped })
+        await waitUntil("Low Data Mode never clamped the bitrate") { await builder.build().maxBitrate == clamped }
 
         // A connectivity blip (unsatisfied, constrained bit meaningless) must NOT lift the
         // clamp. The isOnline flip is the barrier proving the loop processed the element.
         mock.send(false, isConstrained: false)
-        try await pollUntil { monitor.isOnline == false }
+        await waitUntil("the blip never reached the monitor") { monitor.isOnline == false }
         #expect(await builder.build().maxBitrate == clamped)
 
         // Re-satisfaction with Low Data Mode off un-clamps.
         mock.send(true, isConstrained: false)
-        #expect(await eventually { await builder.build().maxBitrate == unclamped })
+        await waitUntil("leaving Low Data Mode never un-clamped the bitrate") { await builder.build().maxBitrate == unclamped }
 
         task.cancel()
         mock.finish()
     }
-}
-
-/// Polls an async predicate (the sync `waitUntil` can't await actor state like the builder's).
-@MainActor
-private func eventually(_ predicate: () async -> Bool) async -> Bool {
-    for _ in 0..<200 {
-        if await predicate() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return await predicate()
 }

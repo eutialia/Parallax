@@ -245,30 +245,15 @@ final class StubUserDataWriter: UserDataWriting, @unchecked Sendable {
     func setPlayed(itemID: ItemID, isPlayed: Bool) async throws -> UserItemData { try playedResult.get() }
 }
 
-/// Bounded yield loop for a test waiting on an async subscription (a `UserDataActions.changes()`
-/// broadcast): hands control to the subscriber's `for await` Task until it has processed the value,
-/// without a wall-clock sleep. Safe because everything under test runs on the MainActor.
-@MainActor
-func waitUntil(_ condition: @MainActor () -> Bool) async {
-    for _ in 0..<1000 where !condition() {
-        await Task.yield()
-    }
-}
-
-/// Waits until an `async` condition holds (state on a non-MainActor actor), sleeping between polls.
-/// Records an Issue when the anti-hang ceiling expires — the ceiling is a hang detector, never part
-/// of the assertion, and it rides CITimeScale so an oversubscribed runner can't trip it.
+/// Waits for `condition` and records an issue at the caller's line if it never holds, so a later
+/// `#expect` can't fail for the wrong reason. Polls under `Ceiling`: the limit is a hang detector,
+/// never part of the claim, so it rides `CITimeScale` and a starved runner can't trip it. Runs on
+/// the caller's actor, so a main-actor condition stays isolated and actor state can be awaited.
 func waitUntil(
-    _ comment: Comment,
-    isolation: isolated (any Actor)? = #isolation,
+    _ comment: Comment = "the awaited condition never held",
+    sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: () async -> Bool
 ) async {
-    let clock = ContinuousClock()
-    let start = clock.now
-    let ceiling: Duration = CITimeScale.seconds(10)
-    while start.duration(to: clock.now) < ceiling {
-        if await condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    Issue.record(comment)
+    let held = (try? await Ceiling.poll(CITimeScale.seconds(10)) { await condition() }) ?? false
+    if !held { Issue.record(comment, sourceLocation: sourceLocation) }
 }
