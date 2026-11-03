@@ -53,11 +53,14 @@ struct UserDataActionsTests {
     @MainActor
     private final class ChangeLog {
         fileprivate var received: [UserDataActions.Change] = []
+        private let service: UserDataActions
         private var task: Task<Void, Never>?
+
+        private init(_ service: UserDataActions) { self.service = service }
 
         /// Subscribes immediately, so this must be built BEFORE the toggle under test.
         static func watching(_ service: UserDataActions) -> ChangeLog {
-            let log = ChangeLog()
+            let log = ChangeLog(service)
             log.task = service.subscribe { [weak log] change in
                 guard let log else { return }
                 log.received.append(change)
@@ -65,15 +68,19 @@ struct UserDataActionsTests {
             return log
         }
 
-        /// Everything the broadcast queued, once the subscriber's `for await` has drained it. The
-        /// broadcast yields synchronously inside `perform`, so by the time a toggle has returned any
-        /// event it produced is already buffered — yielding is enough, no wall-clock sleep.
+        /// Everything the broadcast delivered before a marker toggle issued now. The broadcast is
+        /// FIFO and yields inside `perform`, so once the marker lands every earlier event has too,
+        /// and "exactly one" is an observation rather than a guess about how long to yield.
         func settled() async throws -> [UserDataActions.Change] {
-            try await pollUntil { self.received.isEmpty == false }
-            // Keep yielding past the first element so a SECOND queued event lands before we count.
-            for _ in 0..<100 { await Task.yield() }
+            let marker = ItemID(rawValue: "settle-marker")
+            _ = await service.toggleFavorite(
+                itemID: marker, source: testJellyfinSource, currentlyFavorite: false,
+                via: StubUserDataWriter(favorite: .success(UserDataActionsTests.data(favorite: true)))
+            )
+            try await requireEventually({ self.received.contains { $0.itemID == marker } }, "the marker toggle never arrived")
             task?.cancel()
-            return received
+            try #require(received.last?.itemID == marker, "a change arrived after the marker")
+            return Array(received.dropLast())
         }
     }
 
