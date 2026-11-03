@@ -26,11 +26,13 @@ public final class StallWatchdog {
     private let onExpiry: @MainActor (PlaybackSessionID) -> Void
 
     /// 45s default — the single source both engines share (each constructs `StallWatchdog { … }` with
-    /// the default). Longer than `LoadWatchdog`'s 30s first-frame budget: a mid-stream stall gets more
+    /// it). Longer than `LoadWatchdog`'s 30s first-frame budget: a mid-stream stall gets more
     /// patience because a transient LAN/NAS hiccup or a Jellyfin transcode catching up can legitimately
     /// pause frames for tens of seconds before recovering on its own, and a false failure mid-movie is
     /// more disruptive than one at load. Wants a slow-network device pass.
-    public init(deadline: Duration = .seconds(45), onExpiry: @escaping @MainActor (PlaybackSessionID) -> Void) {
+    public static let defaultDeadline: Duration = .seconds(45)
+
+    public init(deadline: Duration = defaultDeadline, onExpiry: @escaping @MainActor (PlaybackSessionID) -> Void) {
         self.deadline = deadline
         self.onExpiry = onExpiry
     }
