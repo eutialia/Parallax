@@ -66,12 +66,10 @@ public final class PlaybackPresenter {
     public var isPlayerPresent: Bool { request != nil || isTearingDown }
 
     /// True while a dismissed player's removal transition is still on screen.
-    /// On iOS the outgoing PlayerView stays mounted (engine tearing down, audio
-    /// session deactivating) for the whole slide-out, and the live UI underneath
-    /// is already tappable — so without this latch a play() in that window would
-    /// mount a SECOND player whose audio the first one's async deactivate() then
-    /// kills. The cover used to absorb those taps for free; the overlay must not
-    /// accept them either.
+    /// On iOS the outgoing PlayerView stays mounted for the whole slide-out, and the
+    /// live UI underneath is already tappable — so without this latch a play() in that
+    /// window would slide a second player in over the outgoing one. The audio session
+    /// is `deviceHolds`' business, not this latch's.
     private var isTearingDown = false
 
     /// A play that arrived during the teardown grace or while a closed session still holds the
@@ -84,10 +82,10 @@ public final class PlaybackPresenter {
     /// player activates that same audio session, so a pick opens only once this is empty: an
     /// engine teardown has no fixed length (VLC's can take seconds), and a deactivation landing
     /// after the next activation silences the new player.
-    private var sessionsHoldingDevice: Set<Request.ID> = []
+    private var deviceHolds: Set<DeviceHold> = []
 
     /// Latch hold: the host's dismiss spring (0.45s) plus headroom, so the next player never
-    /// slides in over the outgoing one. The device itself is `sessionsHoldingDevice`'s.
+    /// slides in over the outgoing one. The device itself is `deviceHolds`'s.
     /// Injectable (tests pass .zero) — `.zero` disables the latch. Pure state
     /// here: the present/dismiss ANIMATION is `PlayerPresentationHost`'s
     /// business — this class never knows how the player moves.
@@ -118,16 +116,22 @@ public final class PlaybackPresenter {
         present(.init(target: .smb(item, ref)))
     }
 
-    /// The session of `id` holds the engines and the audio session from here until
-    /// `deviceReleased(by:)`.
-    public func deviceHeld(by id: Request.ID) {
-        sessionsHoldingDevice.insert(id)
+    /// One player session's claim on the engines and the audio session.
+    struct DeviceHold: Hashable {
+        private let id = UUID()
     }
 
-    /// The session of `id` has drained its engines and released audio. Repeat calls are no-ops,
-    /// so a session can release early and again when it returns.
-    public func deviceReleased(by id: Request.ID) {
-        guard sessionsHoldingDevice.remove(id) != nil else { return }
+    /// A session holds the engines and the audio session from here until `releaseDevice(_:)`.
+    func holdDevice() -> DeviceHold {
+        let hold = DeviceHold()
+        deviceHolds.insert(hold)
+        return hold
+    }
+
+    /// The session has drained its engines and released audio. Repeat calls are no-ops, so a
+    /// session can release early and again when it returns.
+    func releaseDevice(_ hold: DeviceHold) {
+        guard deviceHolds.remove(hold) != nil else { return }
         presentPendingIfSettled()
     }
 
@@ -151,7 +155,7 @@ public final class PlaybackPresenter {
     }
 
     private func presentPendingIfSettled() {
-        guard !isTearingDown, sessionsHoldingDevice.isEmpty, let pending = pendingRequest else { return }
+        guard !isTearingDown, deviceHolds.isEmpty, let pending = pendingRequest else { return }
         pendingRequest = nil
         present(pending)
     }
@@ -165,7 +169,7 @@ public final class PlaybackPresenter {
         // During the slide-out, or while a closed session still drains: mounting a second
         // player now would have its audio killed by the first one's deactivate(). Hold the
         // pick and present it once both are over.
-        guard !isTearingDown, sessionsHoldingDevice.isEmpty else {
+        guard !isTearingDown, deviceHolds.isEmpty else {
             pendingRequest = new
             return
         }
