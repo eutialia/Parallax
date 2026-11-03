@@ -110,7 +110,9 @@ struct LibraryGridViewModelSortSeedTests {
         #expect(vm.state == .loading)
 
         let joined = Task { @MainActor in await vm.load() }
-        await waitUntil { vm.isLoadingGenres }         // the join armed the genre fetch
+        // The join armed the genre fetch, which lands while the refetch is still parked.
+        await waitUntil { vm.availableGenres == ["Action"] }
+        #expect(vm.state == .loading)
         gated.release()
         await joined.value
 
