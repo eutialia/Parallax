@@ -671,7 +671,7 @@ public final class PlayerViewModel {
     private let reporter: SessionReporter
     private let resolve: ResolveCall
     private let engineFactory: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
-    private let audioSession: any AudioSessionControlling
+    private let audioSession: AudioSessionLease
     /// Fetches an item's full detail (`ItemDetail`) from its id — used by the
     /// direct-play entry `start(itemID:)`. Defaulted so existing `start(item:)`
     /// call sites/tests that already hold the detail don't have to provide it.
@@ -926,7 +926,7 @@ public final class PlayerViewModel {
         self.stall = StallDebounce(clock: clock)
         self.resolve = resolve
         self.engineFactory = engineFactory
-        self.audioSession = audioSession
+        self.audioSession = AudioSessionLease(audioSession)
         self.nowPlaying = nowPlaying
         self.fetchDetail = fetchDetail
         self.sidecar = SidecarSubtitles(subtitleFetch: subtitleFetch)
@@ -1820,20 +1820,26 @@ public final class PlayerViewModel {
     /// Ends the player for good, as the host does once the player's task ends however it
     /// closed: the exit hand-off first (a host that went away without a dismissal still cuts
     /// audio and holds the frame), then the teardown, then whatever replay it cut short.
-    func close() async {
+    /// `releasingDevice` runs once the audio session is idle, which is before the teardown's
+    /// network reports. Every `deactivate()` here follows an engine drain, so idle audio also
+    /// means no engine is left to stop (VLC's teardown deactivates the session too).
+    func close(releasingDevice: @escaping @MainActor () -> Void) async {
         beginExit()
+        let released = Task {
+            for await idle in Observations({ self.audioSession.isIdle }) where idle {
+                break
+            }
+            releasingDevice()
+        }
         replaying?.cancel()
         await stop()
         await replaying?.value
+        await released.value
     }
 
     /// Tears the session down, once. A second call joins the teardown in flight instead of
     /// returning before it is done. The teardown runs outside the caller's cancellation: the
     /// host calls this from a cancelled task, and nothing here may be cut short.
-    /// Called once this session's engines are drained and its audio session is released, which
-    /// is when the presenter may open the next pick (`PlaybackPresenter.deviceHeld(by:)`).
-    @ObservationIgnored public var onDeviceReleased: (@MainActor () -> Void)?
-
     public func stop() async {
         let teardown = stopping ?? Task { await self.tearDownSession() }
         stopping = teardown
@@ -1877,7 +1883,6 @@ public final class PlayerViewModel {
         // Before anything that waits on the network: the presenter holds the next pick until
         // here, and that pick activates the same audio session.
         await audioSession.deactivate()
-        onDeviceReleased?()
         await tearDownSMBBridge()
         await reporter.stopEncodingIfNeeded()
         await reporter.reportStoppedIfNeeded(at: lastPosition)
