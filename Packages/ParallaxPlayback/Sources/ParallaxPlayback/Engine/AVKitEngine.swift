@@ -306,9 +306,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // 3s segment timeout (-12889 "no response for media file") in a
         // kill/restart livelock: black screen, no audio, transport stuck in
         // waiting(minimize stalls) with the buffer parked at the resume offset
-        // (device-diagnosed 2026-06-11). Default tolerance — segment-level
-        // accuracy is right for resume, and frame-exact targets can't even
-        // start on a mid-GOP stream-copied segment.
+        // (device-diagnosed 2026-06-11). Default tolerance, so the resume lands
+        // on its segment's first frame: the livelock was diagnosed on this
+        // seek, and it has not been re-measured at `seek(to:)`'s zero tolerance.
         if let start = pendingStartTime {
             pendingStartTime = nil
             // Counted exactly like `seek(to:)` (see `inFlightSeeks`): until this lands,
@@ -437,9 +437,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// **Seek-settle contract (see `PlaybackEngine.seek(to:)`).** AVKit's `.observed` is the
     /// WEAK form: "no `seek(to:)` call is outstanding", i.e. AVPlayer returned
     /// `finished == true` from the latest one. That is the strongest completion signal this
-    /// engine has — there is no clock-convergence test like VLC's, and AVPlayer's default
-    /// (efficient) tolerance means the landing can sit a segment away from the request. So an
-    /// `.observed` beat here promises the seek RESOLVED, not that `position` equals the target.
+    /// engine has — there is no clock-convergence test like VLC's. So an `.observed` beat here
+    /// promises the seek RESOLVED; that it resolved AT the target is the zero tolerance below.
     ///
     /// The window this opens splits by beat kind. The pre-seek echo below carries the TARGET,
     /// so it is `.projected` — display-safe, and the only forward guess this engine makes.
@@ -476,12 +475,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             yield(.buffering(position: time, duration: item.duration,
                              buffered: nil, provenance: .projected), from: session)
         }
-        // Default (efficient) tolerance, not zero. Frame-exact seeking on an HLS
-        // transcode is pathologically slow and can stall — it made scrubbing a 4K
-        // stream feel stuck. Segment-level accuracy is right for both scrubbing and
-        // the resume seek: Jellyfin's transcode is a full-timeline playlist, so
-        // resume is an ordinary seek — the stream URL carries no start offset.
-        let finished = await player.seek(to: time)
+        // Zero tolerance. With the default, a seek whose segment is still on the way resolves
+        // at once on that segment's first frame, and a Jellyfin remux of a long-GOP source cuts
+        // 13 s segments: a scrub to 14:04 landed at 13:51. A scrub commits one seek, on
+        // release, so the exact decode runs once.
+        let finished = await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         // The finish rule, and all three arms matter:
         //  • `finished == false` — AVPlayer cancelled this seek for a newer one. Close only
         //    this slot; the newer call's window is what the beats belong to. A stale `.paused`

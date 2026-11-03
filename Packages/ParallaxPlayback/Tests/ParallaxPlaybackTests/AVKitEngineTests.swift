@@ -309,7 +309,7 @@ struct AVKitSeekSettleTests {
         try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds > 1.5 } },
                                     "the seek never resolved at the target")
         let observed = try #require(log.beats.last { $0.provenance == .observed })
-        #expect(abs(observed.seconds - 2) < 0.5, "landed at \(observed.seconds)s")
+        #expect(abs(observed.seconds - 2) < 0.1, "landed at \(observed.seconds)s")
         // …and the beats INSIDE the window are labelled, which is the half the old assertion
         // only appeared to cover: it asked whether the first beat past 1.5s was non-observed,
         // which contradicts the wait above (that beat may BE the landing) and passed on a

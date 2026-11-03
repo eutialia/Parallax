@@ -996,8 +996,8 @@ struct PlayerViewModelTests {
     }
 
     /// The engine is AUTHORITATIVE about an observed beat, even one that landed nowhere near
-    /// the request: AVKit seeks at default (segment) tolerance and only knows that `AVPlayer`
-    /// returned `finished`, and a VLC hold that gave up republishes whatever the clock really
+    /// the request: AVKit's load-time resume lands on its segment's first frame, an AVKit seek
+    /// only knows that `AVPlayer` returned `finished`, and a VLC hold that gave up republishes whatever the clock really
     /// reads. Pinning the bar at an unreachable target over video that is demonstrably playing
     /// elsewhere is the worse lie — which is exactly what the old 3s drift tolerance did until
     /// it had also burned a stale-beat budget.
