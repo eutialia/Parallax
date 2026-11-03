@@ -309,6 +309,41 @@ struct PlayerScenarios {
         #expect(world.audioSession.calls == [.activate, .deactivate, .activate])
     }
 
+    @Test("after the player rolls into the next episode, the next pick still waits for its engine teardown")
+    func nextPickWaitsAfterAnEpisodeAdvance() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
+            .series("Severance", in: "Shows", episodes: [2])
+            .library("Films").movie("Ran", in: "Films", minutes: 162)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Severance S1E1")), in: session)
+        let player = try await world.openPlayer()
+        try await world.until { player.nextEpisode?.name == "Severance S1E2" }
+        try await world.streamPlays(at: .seconds(49 * 60), of: .seconds(50 * 60))
+        world.streamEnds()
+        try await world.until { world.engines.count == 2 }
+        try await world.streamPlays(at: .seconds(60), of: .seconds(50 * 60))
+        let closed = world.engine
+        closed.hold(.teardown)
+        let audioBeforeClose = world.audioSession.calls
+
+        let closing = world.dismissPlayer()
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        await waitUntil("the closed engine's teardown never parked") { closed.hasParked(.teardown) }
+        try await world.clock.waitForSleep(dueIn: .milliseconds(600))
+        world.clock.advance(by: .milliseconds(600))
+        try await world.until { !world.app.playback.isPlayerPresent || world.app.playback.request != nil }
+
+        #expect(world.app.playback.request == nil, "the next player opened over a teardown still in flight")
+
+        closed.release(.teardown)
+        try await world.until { world.app.playback.request != nil }
+        try await world.openPlayer()
+        await closing.value
+
+        #expect(world.audioSession.calls == audioBeforeClose + [.deactivate, .activate])
+    }
+
     @Test("closing the player re-reads Home's progress only once the server has the stop report")
     func homeRefreshesAfterTheStopReportLands() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
