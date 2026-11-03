@@ -40,8 +40,8 @@ nonisolated public enum PlayerEffect: Equatable, Sendable {
     /// untouched, which is why the glyph keeps drawing the truth through a scrub.
     case holdStillFrame
     /// Let the picture go again, wherever the intent has ended up. EVERY exit from a swipe
-    /// scrub emits it, including the cancels — a hold nothing releases is a frozen picture
-    /// under a playing glyph.
+    /// scrub ends the hold, or it is a frozen picture under a playing glyph: a cancel emits
+    /// this, and a confirm's `.seek` ends the hold inside the commit.
     case releaseHold
     /// The bar's promise moved: the view model previews `progress`, opening the concrete/virtual
     /// split on the first one. The reducer's only channel for a target.
@@ -107,7 +107,9 @@ nonisolated public func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ 
 
     case .swipeScrub(let chrome):
         let home: PlayerHUDState = chrome ? .fullHUD : .floor
-        let confirm: [PlayerEffect] = [.seek(progress: shown), .releaseHold]
+        // No trailing `.releaseHold`: the commit ends the hold itself unless a newer swipe took it
+        // while the seek waited, and a release after it would end that swipe's hold.
+        let confirm: [PlayerEffect] = [.seek(progress: shown)]
         switch event {
         case .swipeHorizontal(let d):
             return (state, [preview(shown + d)])
@@ -120,7 +122,7 @@ nonisolated public func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ 
         case .menu:
             return (home, [.cancelPreview, .releaseHold])
         case .playPause:
-            return (home, [.seek(progress: shown), .releaseHold, .togglePlayPause])
+            return (home, [.seek(progress: shown), .togglePlayPause])
         }
 
     case .clickSeek:

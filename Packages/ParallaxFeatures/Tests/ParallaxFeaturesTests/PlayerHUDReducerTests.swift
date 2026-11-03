@@ -54,20 +54,20 @@ private let transitionTable: [Transition] = [
     // swipeScrub on the floor: commits carry the model's shown progress; Back cancels.
     .init(state: .swipeScrub(chrome: false), event: .swipeHorizontal(deltaProgress: -0.1), ctx: baseCtx,
           expected: .swipeScrub(chrome: false), effects: [.preview(progress: 0.5 - 0.1)]),
-    .init(state: .swipeScrub(chrome: false), event: .select, ctx: baseCtx, expected: .floor, effects: [.seek(progress: 0.5), .releaseHold]),
-    .init(state: .swipeScrub(chrome: false), event: .idle, ctx: baseCtx, expected: .floor, effects: [.seek(progress: 0.5), .releaseHold]),
-    .init(state: .swipeScrub(chrome: false), event: .click(.up), ctx: baseCtx, expected: .fullHUD, effects: [.seek(progress: 0.5), .releaseHold]),
+    .init(state: .swipeScrub(chrome: false), event: .select, ctx: baseCtx, expected: .floor, effects: [.seek(progress: 0.5)]),
+    .init(state: .swipeScrub(chrome: false), event: .idle, ctx: baseCtx, expected: .floor, effects: [.seek(progress: 0.5)]),
+    .init(state: .swipeScrub(chrome: false), event: .click(.up), ctx: baseCtx, expected: .fullHUD, effects: [.seek(progress: 0.5)]),
     .init(state: .swipeScrub(chrome: false), event: .menu, ctx: baseCtx, expected: .floor, effects: [.cancelPreview, .releaseHold]),
     .init(state: .swipeScrub(chrome: false), event: .playPause, ctx: baseCtx,
-          expected: .floor, effects: [.seek(progress: 0.5), .releaseHold, .togglePlayPause]),
+          expected: .floor, effects: [.seek(progress: 0.5), .togglePlayPause]),
     // swipeScrub in the chrome: same cells, home is the full HUD.
     .init(state: .swipeScrub(chrome: true), event: .swipeHorizontal(deltaProgress: 0.1), ctx: baseCtx,
           expected: .swipeScrub(chrome: true), effects: [.preview(progress: 0.5 + 0.1)]),
-    .init(state: .swipeScrub(chrome: true), event: .select, ctx: baseCtx, expected: .fullHUD, effects: [.seek(progress: 0.5), .releaseHold]),
-    .init(state: .swipeScrub(chrome: true), event: .idle, ctx: baseCtx, expected: .fullHUD, effects: [.seek(progress: 0.5), .releaseHold]),
+    .init(state: .swipeScrub(chrome: true), event: .select, ctx: baseCtx, expected: .fullHUD, effects: [.seek(progress: 0.5)]),
+    .init(state: .swipeScrub(chrome: true), event: .idle, ctx: baseCtx, expected: .fullHUD, effects: [.seek(progress: 0.5)]),
     .init(state: .swipeScrub(chrome: true), event: .menu, ctx: baseCtx, expected: .fullHUD, effects: [.cancelPreview, .releaseHold]),
     .init(state: .swipeScrub(chrome: true), event: .playPause, ctx: baseCtx,
-          expected: .fullHUD, effects: [.seek(progress: 0.5), .releaseHold, .togglePlayPause]),
+          expected: .fullHUD, effects: [.seek(progress: 0.5), .togglePlayPause]),
     // fullHUD: the focused scrubber's L/R and pans arrive here; the chrome never drops for them.
     .init(state: .fullHUD, event: .click(.left), ctx: baseCtx, expected: .fullHUD, effects: [.preview(progress: 0.5 - clickStep)]),
     .init(state: .fullHUD, event: .click(.right), ctx: baseCtx, expected: .fullHUD, effects: [.preview(progress: 0.5 + clickStep)]),
@@ -187,13 +187,15 @@ struct PlayerHUDReducerTests {
     }
 
     /// The rule the `.menu` cancel used to break, stated as a rule: a hold nothing releases is a
-    /// frozen picture under a glyph that reads intent, and nothing self-heals it.
+    /// frozen picture under a glyph that reads intent, and nothing self-heals it. A confirm's
+    /// `.seek` releases it inside the commit; a cancel needs `.releaseHold`.
     @Test("every exit from a swipe scrub releases the hold", arguments: [false, true])
     func everySwipeExitReleasesTheHold(chrome: Bool) {
         let exits: [RemoteEvent] = [.select, .idle, .menu, .playPause, .swipeVertical, .click(.up), .click(.left)]
         for event in exits {
             let (next, effects) = reduce(.swipeScrub(chrome: chrome), event, baseCtx)
-            #expect(effects.contains(.releaseHold), "\(event) left the picture frozen")
+            let commits = effects.contains { if case .seek = $0 { true } else { false } }
+            #expect(commits != effects.contains(.releaseHold), "\(event) left the picture frozen, or released it twice")
             if case .swipeScrub = next { Issue.record("\(event) did not leave the scrub") }
         }
     }

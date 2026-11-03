@@ -848,12 +848,15 @@ struct PlayerView: View {
             vm.endScrubHold()
         case .seek(let p):
             let dur = CMTimeGetSeconds(vm.currentDuration)
-            guard dur > 0 else { return }
+            guard dur > 0 else {
+                vm.endScrubHold()   // no commit is coming to end the hold
+                return
+            }
             let target = CMTime(seconds: p * dur, preferredTimescale: 600)
             // The commit ends the scrub's still-frame hold and reconciles the engine to the
             // user's INTENT, which the hold deliberately left alone — so a scrub that began
             // paused re-pauses the re-anchor's force-resume, and one that began playing
-            // resumes. The batch's trailing `.releaseHold` is then a no-op.
+            // resumes.
             await vm.commitSeek(to: target)
         case .togglePlayPause:
             // Optimistic flip inside the vm — the paused overlay reacts on the press, not a

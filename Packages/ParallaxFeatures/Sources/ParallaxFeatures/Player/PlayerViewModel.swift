@@ -588,6 +588,9 @@ public final class PlayerViewModel {
     /// so `desiredPlaying` stays exactly where it was and the glyph keeps drawing the truth.
     /// Written only by `beginScrubHold`/`endScrubHold`.
     private(set) var isHoldingStillFrame = false
+    /// Counts `beginScrubHold` calls, including one that finds the hold already up: the newest
+    /// gesture owns the hold, and a commit made under an older one leaves it alone.
+    private var scrubHoldOwner: UInt64 = 0
 
     /// What the engine should be doing right now: the user's intent, minus any hold. The one
     /// derived quantity behind every transport command, which makes the invariant stateable —
@@ -598,14 +601,14 @@ public final class PlayerViewModel {
     /// Freeze the picture under a scrub preview: the iOS drag's finger-down, the tvOS reducer
     /// entering `.swipeScrub`.
     public func beginScrubHold() {
+        scrubHoldOwner += 1
         guard !isHoldingStillFrame else { return }
         isHoldingStillFrame = true
         commandTransport(engineShouldPlay)
     }
 
-    /// The gesture is over — commit or cancel, both end here. Idempotent, so the tvOS batch's
-    /// trailing `.releaseHold` after a `.seek` (which ends the hold itself) is a no-op rather
-    /// than a second command.
+    /// The gesture ended without a commit: a cancel, or nothing to seek. A commit ends the hold
+    /// itself (`commitSeek`). Idempotent.
     public func endScrubHold() {
         guard isHoldingStillFrame else { return }
         isHoldingStillFrame = false
@@ -2461,6 +2464,7 @@ public final class PlayerViewModel {
         // on from the PRE-scrub position while the in-app bar sits on the target.
         nowPlaying.update(position: target, duration: currentDuration,
                           isPlaying: desiredPlaying, title: itemTitle)
+        let holdOwner = scrubHoldOwner
         let mergedIntoReload = await seek(to: target)
         // The head of the trail. Everything downstream (the session transition, that session's
         // first live beat) is only readable against the commit that asked for it: where the
@@ -2475,12 +2479,16 @@ public final class PlayerViewModel {
         // commit is suspended inside the seek above, whose fenced return (`false`) is
         // indistinguishable from an ordinary in-stream seek.
         guard !isExiting else { return }
+        // A drag that began while this seek waited owns the hold now, and its own end (a commit
+        // or `endScrubHold`) reconciles the transport. Ending the hold here resumed playback
+        // under its finger.
+        guard scrubHoldOwner == holdOwner else { return }
         // The commit is what the hold was holding for, so this is where it ends. The reconcile
-        // is unconditional, though: it asks the question every shape of commit was
+        // runs whether or not a hold was up: it asks the question every shape of commit was
         // approximating — where should the engine be right now — and it is the one that is
         // ORDERED against the seek, which the reload's own tail (`loadAndPlay`) cannot be for
         // an in-stream seek that never reloaded. This is `endScrubHold` without its guard, so
-        // the command goes out exactly once whether or not a hold was up.
+        // the command goes out exactly once.
         isHoldingStillFrame = false
         commandTransport(engineShouldPlay)
     }
