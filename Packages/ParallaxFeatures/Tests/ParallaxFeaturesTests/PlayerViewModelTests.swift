@@ -3452,6 +3452,52 @@ struct PlayerViewModelTests {
         #expect(engine.isPlayingNow == vm.desiredPlaying)
     }
 
+    /// How the second drag in `aCommitUnderANewDragLeavesTheHoldToIt` lets go.
+    enum DragEnd: CaseIterable {
+        case commit
+        case cancel
+    }
+
+    /// A scrub commit waits inside `engine.seek` for as long as the target's segment takes. A
+    /// drag that begins in that window finds the still-frame hold already up, so it pauses
+    /// nothing, and the first commit's tail ended that hold and resumed playback under the new
+    /// finger. The newer drag owns the hold, and however it ends, the transport comes back.
+    @Test("a commit that lands under the next drag leaves the picture frozen until that drag ends",
+          arguments: DragEnd.allCases)
+    func aCommitUnderANewDragLeavesTheHoldToIt(end: DragEnd) async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(10, duration: resolved.runtime!))
+        try await engine.settle()
+
+        vm.beginScrubHold()
+        vm.beginPreview(at: CMTime(seconds: 100, preferredTimescale: 600))
+        engine.hold(.seek)
+        let first = Task { @MainActor in
+            await vm.commitSeek(to: CMTime(seconds: 100, preferredTimescale: 600))
+        }
+        await waitUntil { engine.hasParked(.seek) }
+
+        vm.beginScrubHold()
+        vm.beginPreview(at: CMTime(seconds: 200, preferredTimescale: 600))
+        engine.release(.seek)
+        await first.value
+        await vm.awaitTransportQuiescence()
+        #expect(engine.isPlayingNow == false, "the first commit resumed playback under the second drag")
+
+        switch end {
+        case .commit:
+            await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
+        case .cancel:
+            vm.cancelPreview()
+            vm.endScrubHold()
+        }
+        await vm.awaitTransportQuiescence()
+        #expect(engine.isPlayingNow, "the second drag ended and the picture stayed frozen")
+    }
+
     /// The trailing effect of the tvOS commit batch, on its own: ending the hold must put the
     /// engine where the LIVE intent says rather than replay the state the swipe started with.
     /// A unit test of that one call, and it says so — the ordered `[.seek, .releaseHold]` batch
