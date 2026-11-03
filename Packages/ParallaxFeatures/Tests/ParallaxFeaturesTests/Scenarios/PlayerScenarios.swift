@@ -344,6 +344,43 @@ struct PlayerScenarios {
         #expect(world.audioSession.calls == audioBeforeClose + [.deactivate, .activate])
     }
 
+    @Test("closing the player while the next episode is still starting holds the next pick until that start has ended its audio")
+    func nextPickWaitsForAnEpisodeStartCutShort() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
+            .series("Severance", in: "Shows", episodes: [2])
+            .library("Films").movie("Ran", in: "Films", minutes: 162)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Severance S1E1")), in: session)
+        let player = try await world.openPlayer()
+        try await world.until { player.nextEpisode?.name == "Severance S1E2" }
+        try await world.streamPlays(at: .seconds(49 * 60), of: .seconds(50 * 60))
+        world.audioSession.activation.arm()
+        world.streamEnds()
+        await waitUntil("the next episode's activation never parked") { world.audioSession.activation.hasParked }
+
+        let closing = world.dismissPlayer()
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        try await world.clock.waitForSleep(dueIn: .milliseconds(600))
+        world.clock.advance(by: .milliseconds(600))
+        await waitUntil("the closing teardown never ended the audio") {
+            world.audioSession.calls == [.activate, .deactivate, .deactivate]
+        }
+        try await world.until { !world.app.playback.isPlayerPresent || world.app.playback.request != nil }
+
+        #expect(world.app.playback.request == nil, "the next player opened while the cut-short start could still end its audio")
+
+        world.audioSession.activation.open()
+        try await world.until { world.app.playback.request != nil }
+        try await world.openPlayer()
+        await closing.value
+
+        // `closing` has joined the cut-short start, so every call the closed player makes is in.
+        let calls = world.audioSession.calls
+        #expect(calls.last == .activate && calls.dropLast().last == .deactivate,
+                "the closed player reached the audio session after the next one activated it: \(calls)")
+    }
+
     @Test("closing the player re-reads Home's progress only once the server has the stop report")
     func homeRefreshesAfterTheStopReportLands() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")

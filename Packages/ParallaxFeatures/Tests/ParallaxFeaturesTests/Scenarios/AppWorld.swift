@@ -636,7 +636,13 @@ final class RecordingAudioSession: AudioSessionControlling {
 
     var calls: [Call] { log.withLock { $0 } }
 
-    func activate() async throws { log.withLock { $0.append(.activate) } }
+    /// Armed, parks every `activate()` until opened; the call is logged once it lands.
+    let activation = ResolveGate()
+
+    func activate() async throws {
+        await activation.wait()
+        log.withLock { $0.append(.activate) }
+    }
     func deactivate() async { log.withLock { $0.append(.deactivate) } }
 }
 
