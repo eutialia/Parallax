@@ -189,6 +189,7 @@ enum SMBTestFixtures {
         sizeCapBytes: Int64? = nil,
         trimTargetBytes: Int64? = nil,
         sweepInterval: Int? = nil,
+        now: @escaping @Sendable () -> Date = { Date() },
         isolation: isolated (any Actor)? = #isolation,
         _ body: (SMBThumbnailCache, URL) async throws -> Result
     ) async throws -> Result {
@@ -203,12 +204,13 @@ enum SMBTestFixtures {
         if let sizeCapBytes, let trimTargetBytes, let sweepInterval {
             cache = SMBThumbnailCache(
                 directory: directory,
+                now: now,
                 sizeCapBytes: sizeCapBytes,
                 trimTargetBytes: trimTargetBytes,
                 sweepInterval: sweepInterval
             )
         } else {
-            cache = SMBThumbnailCache(directory: directory)
+            cache = SMBThumbnailCache(directory: directory, now: now)
         }
         return try await body(cache, directory)
     }

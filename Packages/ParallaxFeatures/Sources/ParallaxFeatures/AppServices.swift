@@ -176,6 +176,7 @@ public struct AppServices {
             connections: connections,
             cacheDirectory: environment.cachesDirectory.appending(path: "SMBThumbnails", directoryHint: .isDirectory),
             clock: environment.clock,
+            now: environment.now,
             deviceProfileBuilder: profileBuilder
         )
     }

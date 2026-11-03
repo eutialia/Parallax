@@ -45,9 +45,16 @@ final class AppWorld {
     private let servers: [FakeJellyfinServer]
     private let suiteName: String
     private let storageDirectory: URL
-    var thumbnailCacheDirectory: URL {
+    private var thumbnailCacheDirectory: URL {
         storageDirectory.appending(path: "Caches/SMBThumbnails", directoryHint: .isDirectory)
     }
+    /// A second handle on the app's thumbnail cache, stamping with the world's wall time as the
+    /// app's own does.
+    func thumbnailCache() -> SMBThumbnailCache {
+        SMBThumbnailCache(directory: thumbnailCacheDirectory, now: environment.now)
+    }
+    /// Where the world's wall time (`AppEnvironment.now`) starts; the test clock moves it on.
+    nonisolated static let wallClockOrigin = Date(timeIntervalSince1970: 1_800_000_000)
     private var lifetime: Task<Void, Never>
     /// The open player, as the player view holds it.
     private(set) var player: PlayerViewModel?
@@ -73,6 +80,7 @@ final class AppWorld {
         let suiteName = "AppWorld-\(UUID().uuidString)"
         let storageDirectory = URL.temporaryDirectory.appending(path: suiteName, directoryHint: .isDirectory)
         let clock = TestClock()
+        let origin = clock.now
         let lan = try ScriptedLAN(lanServers)
         let keychain = FakeKeychain()
         let nas = FakeSMBWorld(clock: clock)
@@ -91,6 +99,8 @@ final class AppWorld {
             urlSessionConfiguration: StubHTTPTransport.configuration,
             subtitleFetchTimeout: subtitleFetchTimeout,
             clock: clock,
+            // The test clock's run, read as wall time: one time line across a relaunch.
+            now: { Self.wallClockOrigin.addingTimeInterval(origin.duration(to: clock.now).fractionalSeconds) },
             reachability: reachability,
             capabilityProbe: display,
             lanBroadcaster: { _ in lan.broadcast() },

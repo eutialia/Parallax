@@ -278,6 +278,28 @@ struct SMBThumbnailCacheTests {
         }
     }
 
+    /// The marker's week runs on the cache's `now`, the wall time that stamped it.
+    @Test("a failure marker is swept once it is more than a week old, and kept until then")
+    func expiredFailureMarkerIsSwept() async throws {
+        let now = ManualWallTime(Date(timeIntervalSince1970: 1_800_000_000))
+        try await SMBTestFixtures.withThumbnailCache(
+            sizeCapBytes: .max, trimTargetBytes: .max, sweepInterval: 1, now: { now.date }
+        ) { cache, _ in
+            let failed = SMBTestFixtures.thumbnailKey(path: "Broken.mkv", size: 1, modifiedAt: nil)
+            await cache.recordFailure(for: failed)
+
+            now.advance(by: 7 * 24 * 3600)
+            _ = try #require(await cache.store(Self.pngData, duration: nil,
+                for: SMBTestFixtures.thumbnailKey(path: "A.mkv", size: 1, modifiedAt: nil)))
+            #expect(await cache.failureState(for: failed) != nil, "a marker exactly a week old was swept")
+
+            now.advance(by: 1)
+            _ = try #require(await cache.store(Self.pngData, duration: nil,
+                for: SMBTestFixtures.thumbnailKey(path: "B.mkv", size: 1, modifiedAt: nil)))
+            #expect(await cache.failureState(for: failed) == nil, "a marker past its week survived the sweep")
+        }
+    }
+
     @Test("clear() wipes failure markers too")
     func clearWipesFailureMarkers() async throws {
         try await SMBTestFixtures.withThumbnailCache { cache, _ in
@@ -302,4 +324,13 @@ struct SMBThumbnailCacheTests {
             $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
         }
     }
+}
+
+/// A wall clock the test moves by hand.
+private final class ManualWallTime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+    init(_ start: Date) { current = start }
+    var date: Date { lock.withLock { current } }
+    func advance(by seconds: TimeInterval) { lock.withLock { current += seconds } }
 }

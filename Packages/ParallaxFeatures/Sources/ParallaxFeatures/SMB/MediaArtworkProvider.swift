@@ -141,6 +141,8 @@ public actor MediaArtworkProvider {
     private let elapsed: @Sendable () -> Duration
     /// The probe's deadline sleeps on it.
     private let clock: any Clock<Duration>
+    /// Wall time: the persisted `.fail` marker is a date that has to survive a relaunch.
+    private let now: @Sendable () -> Date
     /// Its `avPlayer` support feeds `SMBPlaybackResolver.route`, the same decision playback makes.
     private let deviceProfileBuilder: DeviceProfileBuilder
     private static let failureBackoff: Duration = .seconds(180)
@@ -170,16 +172,18 @@ public actor MediaArtworkProvider {
         connections: SMBConnections,
         cacheDirectory: URL,
         clock: any Clock<Duration>,
+        now: @escaping @Sendable () -> Date,
         deviceProfileBuilder: DeviceProfileBuilder
     ) {
         self.clock = clock
+        self.now = now
         self.deviceProfileBuilder = deviceProfileBuilder
         self.elapsed = clock.stopwatch()
         self.thumbnailer = thumbnailer
         self.avThumbnailer = avThumbnailer
         self.serverStore = serverStore
         self.connections = connections
-        self.cache = SMBThumbnailCache(directory: cacheDirectory)
+        self.cache = SMBThumbnailCache(directory: cacheDirectory, now: now)
     }
 
     /// The artwork for a browsed SMB `Item`, coalescing onto (or starting) a shared generation on a
@@ -903,8 +907,7 @@ public actor MediaArtworkProvider {
             return false
         }
         if let disk = await cache.failureState(for: key) {
-            // Wall time, not `clock`: the marker is a persisted date that has to survive a relaunch.
-            let elapsedSeconds = max(0, Date().timeIntervalSince(disk.lastAttempt))
+            let elapsedSeconds = max(0, now().timeIntervalSince(disk.lastAttempt))
             return isBackedOff(attempts: disk.attempts, elapsed: .seconds(elapsedSeconds))
         }
         return false

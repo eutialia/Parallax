@@ -23,6 +23,9 @@ public struct AppEnvironment {
     public let subtitleFetchTimeout: Duration
     public static let defaultSubtitleFetchTimeout: Duration = .seconds(5)
     public let clock: any Clock<Duration>
+    /// Wall time, for stamps that outlive the process (a thumbnail's persisted failure marker).
+    /// Anything that only measures an interval uses `clock`.
+    public let now: @Sendable () -> Date
     public let reachability: any ReachabilityMonitoring
     public let capabilityProbe: any CapabilityProbe
     /// One UDP broadcast pass of Jellyfin's LAN discovery probe, returning the raw replies.
@@ -66,6 +69,7 @@ public struct AppEnvironment {
         urlSessionConfiguration: URLSessionConfiguration,
         subtitleFetchTimeout: Duration = defaultSubtitleFetchTimeout,
         clock: any Clock<Duration>,
+        now: @escaping @Sendable () -> Date,
         reachability: any ReachabilityMonitoring,
         capabilityProbe: any CapabilityProbe,
         lanBroadcaster: @escaping @Sendable (TimeInterval) -> [Data],
@@ -91,6 +95,7 @@ public struct AppEnvironment {
         self.urlSessionConfiguration = urlSessionConfiguration
         self.subtitleFetchTimeout = subtitleFetchTimeout
         self.clock = clock
+        self.now = now
         self.reachability = reachability
         self.capabilityProbe = capabilityProbe
         self.lanBroadcaster = lanBroadcaster
