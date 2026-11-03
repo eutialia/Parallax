@@ -25,8 +25,7 @@ public final class StallWatchdog {
     private let deadline: Duration
     private let onExpiry: @MainActor (PlaybackSessionID) -> Void
 
-    /// 45s default — the single source both engines share (each constructs `StallWatchdog { … }` with
-    /// it). Longer than `LoadWatchdog`'s 30s first-frame budget: a mid-stream stall gets more
+    /// 45s default. Longer than `LoadWatchdog`'s 30s first-frame budget: a mid-stream stall gets more
     /// patience because a transient LAN/NAS hiccup or a Jellyfin transcode catching up can legitimately
     /// pause frames for tens of seconds before recovering on its own, and a false failure mid-movie is
     /// more disruptive than one at load. Wants a slow-network device pass.
@@ -47,6 +46,9 @@ public final class StallWatchdog {
             onExpiry(session)
         }
     }
+
+    /// Between `arm(for:)` and `disarm()`. An expiry does not clear it.
+    var isArmed: Bool { task != nil }
 
     /// Cancel the pending deadline (a transport beat cleared the stall, or teardown). Idempotent.
     public func disarm() {

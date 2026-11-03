@@ -72,7 +72,27 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private lazy var stallWatchdog = StallWatchdog(deadline: stallDeadline) { [weak self] session in
         self?.handleStallTimeout(from: session)
     }
+    /// Bounds an out-of-buffer `seek(to:)`. A paused player fetches the target's segment without
+    /// entering `.waitingToPlayAtSpecifiedRate`, so `stallWatchdog` never arms, and the seek stays
+    /// pending for as long as the segment does not arrive: on a dead link, for good. Armed with
+    /// the fetch's `.buffering` echo, disarmed when the newest seek returns and with
+    /// `stallWatchdog` at every terminal state (`disarmStallDeadlines`). Its own instance
+    /// because the paused beats that land while the seek waits disarm `stallWatchdog`.
+    private lazy var seekFetchWatchdog = StallWatchdog(deadline: stallDeadline) { [weak self] session in
+        self?.handleStallTimeout(from: session)
+    }
     private let stallDeadline: Duration
+
+    /// Whether an out-of-buffer seek's deadline is pending. Internal so a test can see the
+    /// landing disarm it without waiting the deadline out.
+    var isSeekFetchArmed: Bool { seekFetchWatchdog.isArmed }
+
+    /// Both stall deadlines end with the item: a failure, the end, a reload or a teardown. A
+    /// deadline left running would fail the session again later and replace its real error.
+    private func disarmStallDeadlines() {
+        stallWatchdog.disarm()
+        seekFetchWatchdog.disarm()
+    }
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
     /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
     /// AVPlayerItem (and its open network connection) alive after dismissal.
@@ -383,6 +403,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     @discardableResult
     func handleStallTimeout(from session: PlaybackSessionID) -> PlaybackDebugInfo? {
         guard session == self.session, let item = currentItem else { return nil }
+        disarmStallDeadlines()   // one stall failure; the other deadline must not report a second
         let snapshot = logWatchdogExpiry("stall", of: item)
         yield(.failed(.networkStalled), from: session)
         return snapshot
@@ -474,6 +495,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // paused frame (no stall beat, no scrim). Emit the fetch explicitly.
         if let item = currentItem, item.status == .readyToPlay,
            Self.bufferedEnd(of: item, at: time) == nil {
+            seekFetchWatchdog.arm(for: session)
             yield(.buffering(position: time, duration: item.duration,
                              buffered: nil, provenance: .projected), from: session)
         }
@@ -482,6 +504,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // 13 s segments: a scrub to 14:04 landed at 13:51. A scrub commits one seek, on
         // release, so the exact decode runs once.
         let finished = await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        if serial == latestSeekSerial { seekFetchWatchdog.disarm() }   // landed or not, nothing waits on the fetch now
         // The finish rule, and all three arms matter:
         //  • `finished == false` — AVPlayer cancelled this seek for a newer one. Close only
         //    this slot; the newer call's window is what the beats belong to. A stale `.paused`
@@ -662,7 +685,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // completions land on a slot that is no longer theirs.
         supersedeOutstandingSeeks()
         loadWatchdog.disarm()   // teardown or reload — cancel the deadline (play() re-arms on reload)
-        stallWatchdog.disarm()  // and any pending mid-stream stall — a reload/teardown supersedes it
+        disarmStallDeadlines()  // and any pending stall — a reload/teardown supersedes it
         inventoryTask?.cancel()
         inventoryTask = nil
         subtitleDeselectTask?.cancel()
@@ -857,7 +880,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             let snapshot = logItemFailure(item, from: session)
             guard session == self.session else { return snapshot }   // a dead item disarms nothing
             loadWatchdog.disarm()   // the item surfaced its own failure; don't also time out
-            stallWatchdog.disarm()
+            disarmStallDeadlines()
             yield(.failed(.assetNotPlayable), from: session)
             return snapshot
         case .unknown:
@@ -925,7 +948,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     func handleEnded(from session: PlaybackSessionID) {
         guard session == self.session else { return }
         loadWatchdog.disarm()
-        stallWatchdog.disarm()
+        disarmStallDeadlines()
         yield(.ended, from: session)
     }
 
