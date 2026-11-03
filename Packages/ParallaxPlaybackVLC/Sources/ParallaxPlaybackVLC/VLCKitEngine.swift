@@ -2281,10 +2281,11 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
     /// dot until the first `.observed` beat, which would sit at the pre-drag spot after audio
     /// and video have moved) and the session's first `.playing` beat (the app's loading cover
     /// would stay up over a soundtrack that is already playing). Counting, extrapolation and
-    /// stall handling stay on the poll.
+    /// stall handling stay on the poll, and so does liveness: a load or stall timeout stops the
+    /// poll and reports the failure, and a clock that moves after that speaks for no session.
     public nonisolated func mediaPlayerTimeChanged(_ aNotification: Notification) {
         MainActor.assumeIsolated {
-            guard pendingStartMs == nil, rateFlushAnchorMs == nil,
+            guard progressTask != nil, pendingStartMs == nil, rateFlushAnchorMs == nil,
                   Self.shouldRunLiveTick(desiredPlaying: desiredPlaying, isPlaying: player.isPlaying)
             else { return }
             let nowMs = clockMs
