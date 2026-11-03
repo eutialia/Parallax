@@ -69,9 +69,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// disarmed by any transport beat / terminal state / detach; expiry yields
     /// `.failed(.networkStalled)`. `lazy` so the
     /// `onExpiry` closure can capture `self`. See `StallWatchdog`.
-    private lazy var stallWatchdog = StallWatchdog { [weak self] session in
+    private lazy var stallWatchdog = StallWatchdog(deadline: stallDeadline) { [weak self] session in
         self?.handleStallTimeout(from: session)
     }
+    private let stallDeadline: Duration
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
     /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
     /// AVPlayerItem (and its open network connection) alive after dismissal.
@@ -147,8 +148,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var defaultAudioStreamIndex: Int?
     private var defaultSubtitleStreamIndex: Int?
 
-    public init(tuning: StartupTuning = .systemDefault) {
+    public init(tuning: StartupTuning = .systemDefault, stallDeadline: Duration = StallWatchdog.defaultDeadline) {
         self.tuning = tuning
+        self.stallDeadline = stallDeadline
         let (stream, continuation) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = continuation

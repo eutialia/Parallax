@@ -262,8 +262,10 @@ struct AVKitSeekSettleTests {
     /// and its task has finished on return, so from the log's construction onward there is
     /// exactly one consumer. The ordering matters too — the log must be built AFTER this
     /// returns, which is what every caller does, or the two would split the beats.
-    private func readyEngine(_ url: URL? = nil) async throws -> AVKitEngine {
-        let engine = AVKitEngine()
+    private func readyEngine(
+        _ url: URL? = nil, stallDeadline: Duration = StallWatchdog.defaultDeadline
+    ) async throws -> AVKitEngine {
+        let engine = AVKitEngine(stallDeadline: stallDeadline)
         try await engine.load(.fixture(url: url ?? AVKitFixtures.subtitled))
         switch await engine.firstBeat(where: \.isReadyOrFailed)?.state {
         case .ready?: return engine
@@ -360,6 +362,48 @@ struct AVKitSeekSettleTests {
         #expect(abs(landing.seconds - 33) < 0.1, "landed at \(landing.seconds)s")
         log.stop()
         await engine.teardown()
+    }
+
+    /// A paused seek fetches without entering `.waitingToPlayAtSpecifiedRate`, the only state
+    /// that arms the stall watchdog, and `player.seek` waits for the target's segment at any
+    /// tolerance: on a dead link it stays pending (measured past 30 s). So a scrub into a segment
+    /// that never comes waited on the buffering scrim for good. It has to end the way any other
+    /// stall does.
+    @Test("a paused seek whose segment never arrives fails as a stall")
+    func pausedSeekIntoADeadSegmentFailsAsAStall() async throws {
+        let gate = ResponseGate()
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: ["/seg2.mp4"], until: gate
+        )
+        defer {
+            gate.open()
+            server.stop()
+        }
+        let engine = try await readyEngine(try await server.baseURL().appending(path: "main.m3u8"),
+                                           stallDeadline: .milliseconds(500))
+        await engine.pause()
+
+        let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }   // segment 2 is 26–39 s
+
+        let failure = await engine.firstBeat(within: CITimeScale.seconds(5)) {
+            if case .failed = $0.state { true } else { false }
+        }
+        guard case .failed(let error)? = failure?.state else {
+            Issue.record("the seek waited on its dead segment without failing")
+            return
+        }
+        #expect(error == .networkStalled)
+        // The scrub commit that issued the seek is still suspended in it. Teardown has to hand
+        // it back, or the commit outlives the session it was made in.
+        await engine.teardown()
+        let returned = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await seek.value; return true }
+            group.addTask { try? await Ceiling.expire(CITimeScale.seconds(5)); return false }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        #expect(returned, "teardown left the dead seek pending")
     }
 
     /// Overlapping seeks: the NEWEST one owns every subsequent beat, and — the half this
