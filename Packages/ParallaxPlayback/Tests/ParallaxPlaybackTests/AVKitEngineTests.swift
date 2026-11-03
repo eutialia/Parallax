@@ -29,6 +29,17 @@ enum AVKitFixtures {
             )
         }
     }
+
+    /// An HLS stream cut like a Jellyfin remux of a long-GOP source: the video is copied, so
+    /// segments split only at keyframes, here 13 s apart (`-hls_time 6` asks for less). 40 s.
+    static var longGOPStream: URL {
+        get throws {
+            try #require(
+                Bundle.module.url(forResource: "long-gop-hls", withExtension: nil, subdirectory: "Fixtures"),
+                "long-gop-hls fixture missing from the test bundle"
+            )
+        }
+    }
 }
 
 extension AVKitEngine {
@@ -251,9 +262,9 @@ struct AVKitSeekSettleTests {
     /// and its task has finished on return, so from the log's construction onward there is
     /// exactly one consumer. The ordering matters too — the log must be built AFTER this
     /// returns, which is what every caller does, or the two would split the beats.
-    private func readyEngine() async throws -> AVKitEngine {
+    private func readyEngine(_ url: URL? = nil) async throws -> AVKitEngine {
         let engine = AVKitEngine()
-        try await engine.load(.fixture(url: AVKitFixtures.subtitled))
+        try await engine.load(.fixture(url: url ?? AVKitFixtures.subtitled))
         switch await engine.firstBeat(where: \.isReadyOrFailed)?.state {
         case .ready?: return engine
         case .failed(let error)?: throw error
@@ -284,8 +295,7 @@ struct AVKitSeekSettleTests {
 
     /// The other side: `AVPlayer` returned `finished == true` and no newer seek is outstanding,
     /// so the post-seek beat carries an observed clock. Weaker than VLC's convergence test —
-    /// this asserts the seek RESOLVED, and the landing is only segment-accurate (default
-    /// tolerance), which is exactly what the contract promises for this engine.
+    /// this asserts the seek RESOLVED; where it lands is `pausedSeekLandsInsideALongSegment`'s.
     @Test("the post-seek beat is observed and lands at the target")
     func postSeekBeatIsObserved() async throws {
         let engine = try await readyEngine()
@@ -313,6 +323,41 @@ struct AVKitSeekSettleTests {
         let landing = try #require(log.beats.firstIndex { $0.provenance == .observed && $0.seconds > 1.5 })
         #expect(log.beats[..<landing].filter { $0.seconds > 1.5 }.allSatisfy { $0.provenance == .stale },
                 "a beat inside the seek window claimed an observed clock: \(log.beats)")
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A seek lands on its target, not on the first frame of the segment that holds it. A
+    /// Jellyfin remux copies the source's video, so a segment runs from keyframe to keyframe,
+    /// 13 s on a long-GOP source, and after an out-of-buffer seek the restarted job is still
+    /// producing the target's segment. With AVPlayer's default tolerance the seek resolved at
+    /// once on that segment's first frame: a scrub to 14:04 landed at 13:51. Paused,
+    /// because that is how a scrub commits. The segment is withheld until the seek has asked
+    /// for it, so the seek always starts with its segment still on the way.
+    @Test("a paused seek lands on its target while its long segment is still on the way")
+    func pausedSeekLandsInsideALongSegment() async throws {
+        let gate = ResponseGate()
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: ["/seg2.mp4"], until: gate
+        )
+        defer {
+            gate.open()
+            server.stop()
+        }
+        let engine = try await readyEngine(try await server.baseURL().appending(path: "main.m3u8"))
+        await engine.pause()
+        let log = PositionBeatLog(engine)
+
+        let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }   // segment 2 is 26–39 s
+        try await requireEventually({ server.pathsRequested.contains("/seg2.mp4") },
+                                    "the seek never asked for its segment")
+        gate.open()
+        await seek.value
+
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds >= 26 } },
+                                    "the seek never resolved")
+        let landing = try #require(log.beats.last { $0.provenance == .observed })
+        #expect(abs(landing.seconds - 33) < 0.1, "landed at \(landing.seconds)s")
         log.stop()
         await engine.teardown()
     }
