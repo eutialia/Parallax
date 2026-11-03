@@ -505,6 +505,7 @@ struct VLCKitTeardownTests {
     func awaitPendingStopKeepsALaterStop() async throws {
         let spy = SpyVLCPlayer()
         spy.holdStops()
+        defer { spy.stopHolding() }                          // a failed run leaves no stop parked
         let engine = VLCKitEngine(control: spy)
 
         // Main-actor jobs run in the order they were queued, so once a job queued now has run,
@@ -514,8 +515,12 @@ struct VLCKitTeardownTests {
         engine.scheduleDetachedStop()                        // stop A
         let stopA = try #require(engine.pendingStopTask)
         // Yield rather than sleep: a parked stop holds a cooperative thread a sleeper may need.
-        while spy.parkedStops == 0 { await Task.yield() }    // A is first in the gate's line
-        let joiner = Task { await engine.awaitPendingStop() }
+        while spy.parkedStops == 0 {                         // A is first in the gate's line
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+        // What the join returns into: B's stop has finished only if the join waited for it.
+        let joiner = Task { await engine.awaitPendingStop(); return spy.stopCalls }
         await drainMainActor()                               // the join is suspended on A
         engine.scheduleDetachedStop()                        // stop B, assigned mid-suspension
         spy.releaseHeldStop()                                // A completes; B stays held
@@ -526,8 +531,7 @@ struct VLCKitTeardownTests {
         #expect(engine.pendingStopTask != nil)
 
         spy.stopHolding()
-        await joiner.value
-        #expect(spy.stopCalls == 2)
+        #expect(await joiner.value == 2, "the join returned before stop B finished")
         #expect(engine.pendingStopTask == nil)
         await engine.teardown()
     }
