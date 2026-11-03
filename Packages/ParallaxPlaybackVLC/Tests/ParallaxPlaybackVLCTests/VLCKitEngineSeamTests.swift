@@ -1090,6 +1090,30 @@ struct VLCKitFirstBeatTests {
         await engine.teardown()
     }
 
+    /// A timed-out load has stopped its poll and reported the failure, and the app keeps the
+    /// engine until the user retries or leaves. A clock that starts late must not ship the owed
+    /// first beat over the error.
+    @Test("a clock that starts after the load timed out ships no playing beat")
+    func noFirstBeatAfterALoadTimeout() async throws {
+        let spy = SpyVLCPlayer()
+        spy.stubbedState = .opening
+        let engine = VLCKitEngine(control: spy, loadDeadline: .seconds(1))
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture())
+        await engine.play()
+        try await requireEventually({ log.failure == .loadTimedOut }, "the load never timed out",
+                                    timeout: CITimeScale.seconds(20))
+        let beatsAtFailure = log.beats.count
+
+        spy.advanceClock(toMs: 40)
+        await engine.pause()   // its beat queues behind anything the clock event shipped
+        try await requireEventually({ log.beats.count > beatsAtFailure }, "the pause beat never arrived")
+
+        #expect(log.beats.count == beatsAtFailure + 1, "the late clock shipped a playing beat over the timeout")
+        log.stop()
+        await engine.teardown()
+    }
+
     /// A resume open writes the offset before libvlc has a clock (lab: the write lands at
     /// clock -1, not playing), and the first time-changed event is the playback at the offset.
     @Test("a resume open's first playing beat ships on the clock's first event at the offset")
