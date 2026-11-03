@@ -110,6 +110,28 @@ struct SMBArtworkScenarios {
         #expect(world.thumbnailer.positions == [0.05, 0.15, 0.25])
     }
 
+    /// The backoff outlives the process on the `.fail` marker, so a relaunched provider reads it
+    /// from disk; the scenario's clock has to drive that read like the in-memory one.
+    @Test("a file that only decoded to grey is grabbed again once its backoff runs out, across a relaunch, and the good frame is cached")
+    func backoffRunsOutAcrossARelaunch() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        world.thumbnailer.script = [TestFrames.mosaic, TestFrames.mosaic, TestFrames.mosaic]
+        let failed = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+
+        await world.relaunch()
+        let relaunched = world.app.services.mediaArtworkProvider
+        let withinBackoff = await relaunched.artwork(for: heat, ref: ref, sidecar: nil)
+        world.clock.advance(by: .seconds(180))
+        let afterBackoff = await relaunched.artwork(for: heat, ref: ref, sidecar: nil)
+        let revisit = await relaunched.artwork(for: heat, ref: ref, sidecar: nil)
+
+        #expect(Self.frame(of: failed) == "none")
+        #expect(Self.frame(of: withinBackoff) == "none")
+        #expect(Self.frame(of: afterBackoff) == "scene")
+        #expect(Self.frame(of: revisit) == "scene")
+        #expect(world.thumbnailer.positions == [0.05, 0.15, 0.25, 0.05])
+    }
+
     @Test("a grey mosaic captured during playback is not cached, so the tile still gets a real frame")
     func mosaicBackfillIsDropped() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
