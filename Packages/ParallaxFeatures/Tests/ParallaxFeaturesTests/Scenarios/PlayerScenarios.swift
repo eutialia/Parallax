@@ -275,6 +275,40 @@ struct PlayerScenarios {
         ])
     }
 
+    /// The next pick used to open on a fixed 600 ms grace, and a VLC teardown can run for
+    /// seconds; the old session's audio deactivation then landed on the new player's audio.
+    @Test("a pick made while the closed player's engine is still tearing down opens once that teardown ends")
+    func nextPickWaitsForTheClosedEngine() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Heat", in: "Films", minutes: 170).movie("Ran", in: "Films", minutes: 162)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: session)
+        try await world.openPlayer()
+        try await world.streamPlays(at: .seconds(600), of: .seconds(170 * 60))
+        let closed = world.engine
+        closed.hold(.teardown)
+
+        let closing = world.dismissPlayer()
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        await waitUntil("the closed engine's teardown never parked") { closed.hasParked(.teardown) }
+        try await world.clock.waitForSleep(dueIn: .milliseconds(600))
+        world.clock.advance(by: .milliseconds(600))
+        try await world.until { !world.app.playback.isPlayerPresent || world.app.playback.request != nil }
+
+        #expect(world.app.playback.request == nil, "the next player opened over a teardown still in flight")
+        #expect(world.audioSession.calls == [.activate])
+
+        closed.release(.teardown)
+        try await world.until { world.app.playback.request != nil }
+        #expect(world.audioSession.calls == [.activate, .deactivate])
+        try await world.openPlayer()
+        await closing.value
+
+        #expect(world.engines.count == 2)
+        #expect(world.audioSession.calls == [.activate, .deactivate, .activate])
+    }
+
     @Test("closing the player re-reads Home's progress only once the server has the stop report")
     func homeRefreshesAfterTheStopReportLands() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
