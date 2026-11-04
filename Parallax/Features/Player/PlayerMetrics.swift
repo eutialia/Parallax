@@ -147,6 +147,11 @@ struct PlayerMetrics: Equatable {
     var transportSkip: CGFloat { deviceClass == .phone ? Self.phoneTransportSkip : 96 * u }
     var transportPlay: CGFloat { deviceClass == .phone ? Self.phoneTransportPlay : 140 * u }
     var transportGap: CGFloat { deviceClass == .phone ? Self.phoneTransportGap : 76 * u }
+    /// The full transport row, episode buttons included: the play disc and the loading ring
+    /// both clear a fold by this one box so they keep swapping in place.
+    var transportFootprint: CGSize {
+        CGSize(width: transportPlay + 2 * (transportSkip + transportGap), height: transportPlay)
+    }
     /// tvOS paused-status glyph (PlayerPausedOverlay) — keep equal to the iPad
     /// play disc's glyph (`transportPlay × 0.46`) so the two platforms' center
     /// pause marks are the same drawing at the same scale.

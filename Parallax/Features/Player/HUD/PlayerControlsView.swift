@@ -92,8 +92,9 @@ struct PlayerControlsView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if !os(tvOS)
-    /// iPhone orientation, for the rotate button (see `rotateButton`): on iPhone a
-    /// `.compact` vertical size class means landscape, `.regular` means portrait.
+    /// The rotate button's screen (see `rotateButton`): it exists off regular × regular, and
+    /// there a `.compact` vertical size class means landscape, `.regular` means portrait.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
 
@@ -180,18 +181,13 @@ struct PlayerControlsView: View {
     /// drifted an extra status-bar height). The gate is `statusBarExpectedVisible`,
     /// NOT `inset > 0`: the upward-only ratchet rejected the legitimate 0 of iPhone
     /// landscape, leaving a stale ~59pt portrait inset pushing the bar down for the
-    /// whole landscape session (see `TopInsetLatch`).
-    @State private var hudTopInset: CGFloat = 0
-    /// The PHYSICAL window's larger dimension — the iPad metrics base. The layout
-    /// reader is safe-area-bounded and its HEIGHT tracks the status bar, so deriving
-    /// u from it re-sized the whole HUD mid-fade whenever the bar hid (scrub entry,
-    /// chrome hide): the top bar sank, the scrub bar shrank — portrait only, because
-    /// landscape's max dimension is the width, which the status bar never touches.
-    @State private var hudPhysicalMax: CGFloat = 0
-    /// Physical-bounds orientation, from the same full-bleed probe — feeds
-    /// `TopInsetLatch` rule 3 (the safe-bounded reader's w>h flips spuriously
-    /// when the status bar toggles in a near-square Stage Manager window).
-    @State private var hudPhysicalIsLandscape = false
+    /// whole landscape session. The sides latch by the same gate: on the iPhone Duo's inner
+    /// display in landscape the status bar sits in the trailing column, and its collapse slid
+    /// the whole HUD under the column mid-fade (see `HUDInsetLatch`).
+    @State private var hudInsets = EdgeInsets()
+    /// The PHYSICAL window size, from a full-bleed probe: the status bar never changes it.
+    /// Feeds `HUDInsetLatch` rule 3 and the iPad metrics base.
+    @State private var hudPhysicalSize = CGSize.zero
     #endif
 
     // debugHUD needs no build-config fork: the binding is unconditional (only the
@@ -246,10 +242,16 @@ struct PlayerControlsView: View {
     private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
     #if !os(tvOS)
+    /// The iPad metrics base. The layout reader is safe-area-bounded and its HEIGHT tracks
+    /// the status bar, so deriving u from it re-sized the whole HUD mid-fade whenever the bar
+    /// hid (scrub entry, chrome hide): the top bar sank, the scrub bar shrank — portrait only,
+    /// because landscape's max dimension is the width, which the status bar never touches.
+    private var hudPhysicalMax: CGFloat { max(hudPhysicalSize.width, hudPhysicalSize.height) }
+
     /// The in-view mirror of `PlayerView`'s status-bar rule (`!chromeVisible ||
     /// scrubHUDActive` hides it): while this is true, the safe-area reader reports
     /// the status bar's REAL inset — including a legitimate 0 in iPhone landscape —
-    /// and `TopInsetLatch` may adopt it. While false, the bar is hidden by us and
+    /// and `HUDInsetLatch` may adopt it. While false, the bar is hidden by us and
     /// its transient 0 must be ignored.
     private var statusBarExpectedVisible: Bool { controlsVisible && !dragScrubbing }
     #endif
@@ -329,6 +331,7 @@ struct PlayerControlsView: View {
             // tap can raise the HUD mid-burst — this yields the bar to it, no double-exposure).
             if let flash = seekFlash, playbackReady, !controlsVisible {
                 seekScrubBar(flash)
+                    .latchedSides(hudInsets)
             }
             #endif
         }
@@ -405,7 +408,7 @@ struct PlayerControlsView: View {
                 // Both branches latch the status-bar inset while the bar is expected
                 // visible — the top bars pin full-bleed and pad by the latched value, so
                 // the safe-area collapse when the status bar hides can't reflow them
-                // mid-fade (see `TopInsetLatch`).
+                // mid-fade (see `HUDInsetLatch`).
                 #if DEBUG
                 if let previewBigWidth {
                     // Preview seam: render the big layout on the iPhone sim (no latch/probe).
@@ -450,10 +453,7 @@ struct PlayerControlsView: View {
         .background {
             GeometryReader { phys in
                 Color.clear
-                    .onChange(of: phys.size, initial: true) { _, s in
-                        hudPhysicalMax = max(s.width, s.height)
-                        hudPhysicalIsLandscape = s.width > s.height
-                    }
+                    .onChange(of: phys.size, initial: true) { _, s in hudPhysicalSize = s }
             }
             .ignoresSafeArea()
         }
@@ -483,23 +483,23 @@ struct PlayerControlsView: View {
                 bigControls(PlayerMetrics(width: hudPhysicalMax > 0
                                 ? hudPhysicalMax
                                 : max(geo.size.width, geo.size.height)),
-                            topInset: hudTopInset,
+                            topInset: hudInsets.top,
                             dragging: pullDragging)
-                    .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                    .modifier(HUDInsetLatch(insets: geo.safeAreaInsets,
                                             statusBarVisible: statusBarExpectedVisible,
-                                            isLandscape: hudPhysicalIsLandscape,
-                                            adoptsLandscapeInset: false,
-                                            latched: $hudTopInset))
+                                            canvas: hudPhysicalSize,
+                                            adoptsLandscapeTop: false,
+                                            latched: $hudInsets))
             }
         } else {
             GeometryReader { geo in
-                phoneControls(topInset: hudTopInset,
+                phoneControls(topInset: hudInsets.top,
                               dragging: pullDragging)
-                    .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                    .modifier(HUDInsetLatch(insets: geo.safeAreaInsets,
                                             statusBarVisible: statusBarExpectedVisible,
-                                            isLandscape: hudPhysicalIsLandscape,
-                                            adoptsLandscapeInset: true,
-                                            latched: $hudTopInset))
+                                            canvas: hudPhysicalSize,
+                                            adoptsLandscapeTop: true,
+                                            latched: $hudInsets))
             }
         }
     }
@@ -701,24 +701,21 @@ struct PlayerControlsView: View {
                 // `supportsEpisodeNavigation`, so removing a just-pressed, focused button
                 // mid-flight can't corrupt the tvOS focus engine (the untracked-press
                 // assert); disabling a still-mounted button is safe.
-                transportCluster(m)
-                    #if os(tvOS)
-                    // Sized to the cluster ITSELF, before the full-bleed centering frame:
-                    // the focus engine picks the nearest focusable along a straight line, so
-                    // a screen-spanning section would distort up/down travel between the
-                    // scrubber, chips, and this cluster. One stable unit also stops the
-                    // engine dropping focus to the scrubber when the glyph re-renders.
-                    .focusSection()
-                    #endif
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    // Full-bleed center like the loading veil's ring (which this cluster
-                    // swaps with): a safe-area-bounded center shifts when the status bar
-                    // hides with the chrome — the buttons crept upward mid-fade.
-                    .ignoresSafeArea()
-                    .opacity(showsCenterTransport ? 1 : 0)
-                    .disabled(!showsCenterTransport)
-                    .allowsHitTesting(showsCenterTransport)
-                    .animation(.playerStateCrossfade, value: showsCenterTransport)
+                FoldClearingCenter(footprint: m.transportFootprint) {
+                    transportCluster(m)
+                        #if os(tvOS)
+                        // Sized to the cluster ITSELF, before the full-bleed centering frame:
+                        // the focus engine picks the nearest focusable along a straight line, so
+                        // a screen-spanning section would distort up/down travel between the
+                        // scrubber, chips, and this cluster. One stable unit also stops the
+                        // engine dropping focus to the scrubber when the glyph re-renders.
+                        .focusSection()
+                        #endif
+                }
+                .opacity(showsCenterTransport ? 1 : 0)
+                .disabled(!showsCenterTransport)
+                .allowsHitTesting(showsCenterTransport)
+                .animation(.playerStateCrossfade, value: showsCenterTransport)
 
                 chipRow(m)
             }
@@ -747,12 +744,7 @@ struct PlayerControlsView: View {
                 // strand), so it pops in/out with `showsCenterTransport` rather than the
                 // big layout's opacity fade.
                 if showsCenterTransport {
-                    transportCluster(m)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                        // Full-bleed center to match the loading veil's ring — keeps the
-                        // cluster pinned while the chrome's status-bar/home-indicator
-                        // toggles reflow safe areas.
-                        .ignoresSafeArea()
+                    FoldClearingCenter(footprint: m.transportFootprint) { transportCluster(m) }
                 }
 
                 chipRow(m)
@@ -810,16 +802,18 @@ struct PlayerControlsView: View {
     }
 
     #if !os(tvOS)
-    /// iPhone-only orientation toggle, docked in the top bar beside the AirPlay/PiP pill.
-    /// The player follows the device (see `OrientationController`), so this exists to force
-    /// the other side when the system rotation lock is on, or the user just wants it — in
-    /// portrait it offers landscape, in landscape it offers portrait. NEVER on iPad (its
-    /// canvas is orientation-agnostic and never managed), guarded by the same `UIDevice`
-    /// idiom check as `isPad`. Icon-only circular glass, sized to row with the split pill.
+    /// Orientation toggle, docked in the top bar beside the AirPlay/PiP pill. The player
+    /// follows the device (see `OrientationController`), so this exists to force the other
+    /// side when the system rotation lock is on, or the user just wants it — in portrait it
+    /// offers landscape, in landscape it offers portrait. Only the phone is orientation-managed;
+    /// within it the button keys on the screen: a regular × regular canvas (the iPhone Duo's open
+    /// inner display) plays fine any way up.
+    /// Icon-only circular glass, sized to row with the split pill.
     @ViewBuilder
     private func rotateButton(_ m: PlayerMetrics) -> some View {
-        if !isPad {
-            // iPhone `.regular` vertical size class == portrait, so it offers landscape.
+        let regularCanvas = horizontalSizeClass == .regular && verticalSizeClass == .regular
+        if !isPad, !regularCanvas {
+            // Off a regular canvas, a `.regular` vertical size class is portrait: offer landscape.
             let toLandscape = verticalSizeClass == .regular
             PlayerRoundButton(
                 systemImage: toLandscape ? "rectangle.landscape.rotate" : "rectangle.portrait.rotate",
@@ -1572,43 +1566,66 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
 }
 
 #if !os(tvOS)
-/// Latches the status-bar inset for the full-bleed top bars. Two rules:
+/// Latches the safe-area insets the HUD lays out by, so hiding the status bar with the chrome
+/// can't reflow it mid-fade. The top inset pads the full-bleed top bars; the sides are dropped
+/// live and re-added latched, so the full-bleed layers (scrim, centre transport) still span the
+/// screen. Three rules:
 /// 1. While the status bar is expected visible, adopt EVERY reported inset —
-///    including 0, which is legitimate in iPhone landscape (the old `inset > 0`
+///    including a top of 0, which is legitimate in iPhone landscape (the old `inset > 0`
 ///    ratchet rejected it and left a stale ~59pt portrait inset pushing the bar
 ///    down until the next portrait rotation). Safe-area changes arrive as ONE
 ///    discrete old→new event per status-bar toggle, so this can reposition at
 ///    most once — never follow the bar's slide animation.
 /// 2. While we hid the bar ourselves (chrome hidden / drag-scrub), keep the last
-///    value: the transient collapse to 0 mid-fade is exactly what the latch
-///    exists to ignore. There is deliberately NO re-read when visibility flips
-///    back on — at that instant the inset still reads the hidden-state 0, and
-///    adopting it dropped the top bar a status-bar height during every scrub
-///    release (the post-review regression).
-/// 3. Rotation TO landscape on iPhone adopts the current inset: a rotation while
-///    the bar is hidden produces no inset event (0 → 0), and iPhone landscape's
-///    truth is always 0, so this is the one case rule 1 can't reach. iPad skips
-///    it — its portrait and landscape insets are equal, so the kept value is
-///    already right and adopting a hidden-state 0 would only add a settle.
-private struct TopInsetLatch: ViewModifier {
-    let inset: CGFloat
+///    value: the transient collapse mid-fade is exactly what the latch exists to
+///    ignore. There is deliberately NO re-read when visibility flips back on — at
+///    that instant the insets still read the hidden state, and adopting them
+///    dropped the top bar a status-bar height during every scrub release (the
+///    post-review regression).
+/// 3. A new canvas while the bar is hidden (a rotation, or the iPhone Duo folding onto the
+///    other display) adopts what rule 2 would keep stale. The sides always adopt: the Dynamic
+///    Island moves to a side in landscape, the Duo's displays reserve different columns, and
+///    iPhone landscape shows no status bar whose return would correct them. The top adopts
+///    only on rotation TO landscape on iPhone, whose landscape truth is always 0 (a hidden
+///    rotation reports 0 → 0, which rule 1 can't see). iPad skips the top: its portrait and
+///    landscape insets are equal, so the kept value is already right and adopting a
+///    hidden-state 0 would only add a settle.
+private struct HUDInsetLatch: ViewModifier {
+    let insets: EdgeInsets
     let statusBarVisible: Bool
     /// From the FULL-BLEED physical probe, not the safe-bounded reader — the
-    /// safe-bounded height tracks the status bar and can flip w>h spuriously
+    /// safe-bounded size tracks the status bar, and its w>h flips spuriously
     /// in near-square Stage Manager windows.
-    let isLandscape: Bool
+    let canvas: CGSize
     /// iPhone only (`!isPad`): see rule 3.
-    let adoptsLandscapeInset: Bool
-    @Binding var latched: CGFloat
+    let adoptsLandscapeTop: Bool
+    @Binding var latched: EdgeInsets
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: inset, initial: true) { _, value in
+            .latchedSides(latched)
+            .onChange(of: insets, initial: true) { _, value in
                 if statusBarVisible { latched = value }
             }
-            .onChange(of: isLandscape) { _, landscape in
-                if landscape && adoptsLandscapeInset { latched = inset }
+            .onChange(of: canvas) { old, new in
+                let toLandscape = new.width > new.height && old.width <= old.height
+                latched = EdgeInsets(
+                    top: toLandscape && adoptsLandscapeTop ? insets.top : latched.top,
+                    leading: insets.leading,
+                    bottom: latched.bottom,
+                    trailing: insets.trailing
+                )
             }
+    }
+}
+
+private extension View {
+    /// Drops the live side insets and re-adds the latched ones, so a layer that must line up
+    /// with the HUD (the double-tap seek bar) lays out in the same rect while the bar is hidden.
+    func latchedSides(_ insets: EdgeInsets) -> some View {
+        safeAreaPadding(.leading, insets.leading)
+            .safeAreaPadding(.trailing, insets.trailing)
+            .ignoresSafeArea(.container, edges: .horizontal)
     }
 }
 #endif
@@ -1676,13 +1693,15 @@ private struct PlayerControlsPreviewHost: View {
 // fully LABELED (the `ViewThatFits` primary) with the rotate control still present.
 #Preview("HUD — phone portrait (icon-only overflow)", traits: .fixedLayout(width: 393, height: 852)) {
     // `.fixedLayout` canvases don't derive a size class from their aspect, so inject the
-    // one the rotate button reads (iPhone portrait == `.regular` → offers landscape).
+    // ones the rotate button reads (iPhone portrait == compact × regular → offers landscape).
     PlayerControlsPreviewHost(bigWidth: nil)
+        .environment(\.horizontalSizeClass, .compact)
         .environment(\.verticalSizeClass, .regular)
 }
 #Preview("HUD — phone landscape (labeled)", traits: .fixedLayout(width: 852, height: 393)) {
     // iPhone landscape == `.compact` → the rotate button offers portrait.
     PlayerControlsPreviewHost(bigWidth: nil)
+        .environment(\.horizontalSizeClass, .compact)
         .environment(\.verticalSizeClass, .compact)
 }
 #endif

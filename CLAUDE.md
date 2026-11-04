@@ -19,7 +19,7 @@ This file holds only what you would get wrong without being told. Workflow lives
 - **Packages import no SwiftUI, UIKit or Combine.** Observation is allowed: `ParallaxFeatures` holds the `@Observable` models the views bind to. A value only UIKit knows (the idiom, a screen size) comes in as a parameter.
 - **Logic leaves the views.** A view's `.task`, `.onChange` or button calls one method on `AppModel` or a feature model; the flow itself lives in `ParallaxFeatures`. Anything that touches the network, disk, keychain, clock or hardware reaches the package only through `AppEnvironment`, so `AppWorld` can fake it.
 - **Navigation shape.** iPad is a `TabView` with `.sidebarAdaptable` and `TabSection`. iPhone is a bottom `TabView`. Drill-downs use `NavigationStack`. Never a `NavigationSplitView` at the root.
-- **Structural layout branches key on `userInterfaceIdiom`, never size class.** Large iPhones report regular width in landscape, and a size-class branch turns them into an iPad.
+- **Tab structure keys on `userInterfaceIdiom`; content layout keys on the screen.** A phone-idiom `TabView` draws a tab bar even on the iPhone Duo's regular × regular inner display, so the sidebar branch stays on idiom. Content forms (`appIdiom`) go regular only when both size classes are regular: large iPhones report regular width in landscape, and a width-only branch turns them into an iPad. Player control sizes stay on idiom so they hold steady across a fold.
 - **Subtitles render what the author wrote.** App styling is an opt-in override, default off. Colors and positions are kept; fonts are the acceptable loss. Noto is the only font source, bundled; never a system-font fallback.
 
 ## Swift skills

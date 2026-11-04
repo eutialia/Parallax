@@ -117,7 +117,7 @@ struct PlayerView: View {
         // hides in lockstep with the chrome.
         #if !os(tvOS)
         // PAIRED PREDICATE: PlayerControlsView.statusBarExpectedVisible is the
-        // exact negation of this expression. Its TopInsetLatch only adopts the
+        // exact negation of this expression. Its HUDInsetLatch only adopts the
         // safe-area inset while the bar is expected visible — change one side
         // and the other must follow, or the top bars latch stale insets.
         .statusBarHidden(!chromeVisible || scrubHUDActive)

@@ -13,8 +13,8 @@ import SwiftUI
 // reads as part of the letterform; keep that distinction when tuning. `HeroEdgeShadow` is not a
 // veil — it's the band boundary's depth cue and stays on every idiom.
 //
-// On iPhone/iPad the treatments ride ABOVE the `backgroundExtensionEffect` (`HeroVeilOverlay`
-// continues them under the iPad sidebar with a clamp-smear); tvOS composites them with the artwork.
+// On iPhone/iPad the treatments ride ABOVE the `backgroundExtensionEffect` (the veil in
+// `HeroBackdropPicture` extends their frame under a side bar); tvOS composites them with the artwork.
 
 /// Frosted bottom fade — the compact (iPhone) legibility. A full-width band-level layer: fills the
 /// band, then frosts + scrims the bottom `coverage` fraction (progressive `.ultraThinMaterial` ramp
@@ -77,8 +77,8 @@ extension View {
 ///
 /// A short darkening ramp hugging the band's bottom edge, tight and soft like a real occlusion
 /// shadow (not a scrim — legibility belongs to the compact fade / the type contours). On
-/// iPhone/iPad it rides `HeroVeilTreatments` ABOVE the extension effect (never mirrored; the
-/// clamp-smear continues it under the iPad sidebar so the mirror darkens in lockstep); tvOS
+/// iPhone/iPad it rides `HeroVeilTreatments` ABOVE the extension effect (never mirrored; its
+/// frame reaches under a side bar so the mirror darkens in lockstep); tvOS
 /// composites it with the artwork. The darkened strip doubles as extra backing for the page
 /// dots seated on the edge. Bottom-aligned by the treatments' `.bottomLeading` ZStack; the
 /// caller sets the height (`edgeShadowHeight`).

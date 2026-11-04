@@ -1,14 +1,13 @@
 #if !os(tvOS)
 import SwiftUI
-import UIKit
 import ParallaxJellyfin
 import ParallaxCore
 
-/// The library's nav-bar sort+genre button. The Photos-style `.medium` direction tiles + the
-/// monochrome bridge live in the shared `SortMenuButton`; this just builds the Jellyfin field set
-/// and the genre submenu (the one piece SMB browse doesn't share) and hands over a `UIMenu`.
-/// Mounting needs no view model (it renders from plain values), which keeps the toolbar item from
-/// only appearing after the push animation settled.
+/// The library's nav-bar sort+genre menu: the direction pair as a Photos-style tile row, the sort
+/// fields, and Genre as a nested submenu. A plain SwiftUI `Menu` with a `Label` so the system can
+/// lay it out like any toolbar item: on the iPhone Duo it joins the side toolbar with Back, and in
+/// an overflow menu it shows its title. Mounting needs no view model (it renders from plain
+/// values), which keeps the toolbar item from only appearing after the push animation settled.
 struct LibrarySortMenuButton: View {
     let sortField: ItemSort.Field
     let sortDirection: ItemSort.Direction
@@ -22,64 +21,35 @@ struct LibrarySortMenuButton: View {
     let onSelectGenre: (String?) -> Void
 
     var body: some View {
-        // Resting: the bare funnel — the glass toolbar platter already provides the shape. A genre
-        // filter flips it to the filled-disc variant: the stock active-filter signal, and the only
-        // in-palette state change a monochrome bar has (a tint swap is invisible when everything is
-        // already label-colored).
-        SortMenuButton(
-            glyph: "line.3.horizontal.decrease",
-            activeGlyph: "line.3.horizontal.decrease.circle.fill",
-            isActive: selectedGenre != nil,
-            menu: menu(),
-            isEnabled: isEnabled,
-            accessibilityLabel: "Sort and genre",
-            accessibilityValue: selectedGenre ?? ""
-        )
-    }
-
-    private func menu() -> UIMenu {
-        let directionRow = SortMenuButton.directionRow(
-            LibrarySortVocabulary.directionOptions(for: sortField).map { option in
-                .init(title: option.title, icon: option.icon, isOn: sortDirection == option.direction) {
-                    onSelectDirection(option.direction)
+        Menu {
+            SortMenuSections(fields: ItemSort.Field.allCases, field: sortField,
+                             fieldLabel: LibrarySortVocabulary.label(for:),
+                             directionOptions: LibrarySortVocabulary.directionOptions(for: sortField),
+                             direction: sortDirection,
+                             onSelectField: onSelectField, onSelectDirection: onSelectDirection)
+            if !availableGenres.isEmpty {
+                Picker(selection: Binding(get: { selectedGenre }, set: onSelectGenre)) {
+                    Text("All Genres").tag(String?.none)
+                    ForEach(availableGenres, id: \.self) { Text($0).tag(Optional($0)) }
+                } label: {
+                    Label(selectedGenre ?? "Genre", systemImage: "theatermasks")
                 }
+                .pickerStyle(.menu)
             }
-        )
-        let fields = SortMenuButton.fieldRows(
-            ItemSort.Field.allCases.map { field in
-                .init(title: LibrarySortVocabulary.label(for: field), isOn: sortField == field) {
-                    onSelectField(field)
-                }
-            }
-        )
-
-        var sections: [UIMenuElement] = [directionRow, fields]
-        if !availableGenres.isEmpty {
-            let allGenres = UIAction(
-                title: "All Genres",
-                state: selectedGenre == nil ? .on : .off
-            ) { _ in onSelectGenre(nil) }
-            let genreActions = availableGenres.map { genre in
-                UIAction(title: genre, state: selectedGenre == genre ? .on : .off) { _ in
-                    onSelectGenre(genre)
-                }
-            }
-            let genreSubmenu = UIMenu(
-                title: selectedGenre ?? "Genre",
-                image: UIImage(systemName: "theatermasks"),
-                children: [allGenres] + genreActions
-            )
-            // Own inline wrapper so the submenu gets a section separator above,
-            // like the SwiftUI `Section` it replaces.
-            sections.append(UIMenu(options: .displayInline, children: [genreSubmenu]))
+        } label: {
+            // Resting: the bare funnel. A genre filter flips it to the filled-disc variant: the
+            // stock active-filter signal, and the only in-palette state change a monochrome bar has.
+            Label("Sort and Genre", systemImage: selectedGenre == nil
+                  ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
         }
-        return UIMenu(children: sections)
+        .disabled(!isEnabled)
+        .accessibilityValue(selectedGenre ?? "")
     }
 }
 
 #if DEBUG
 /// Bar-symmetry ruler for the library screen, in real pushed-state chrome: a
-/// system BACK button leading, the bridged sort button trailing, red rules at
+/// system BACK button leading, the sort menu trailing, red rules at
 /// the grid's content margin on BOTH edges, and a poster stand-in flush to
 /// each rule. What it proves (run `scripts/render-ruler.py --pt-width 398
 /// --scan-row auto --scan-from 0` after rendering DARK): both platters park at

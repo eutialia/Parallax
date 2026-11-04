@@ -45,14 +45,14 @@ struct RootTabView: View {
         }
     }
 
-    /// Sidebar (iPad-regular) vs compact tab structure. Deliberately DEVICE-gated, not pure
-    /// size class: a Pro Max iPhone reports `.regular` width in landscape, and keying the tab
-    /// STRUCTURE on size class there tears down whole `Tab`/`NavigationStack` subtrees on every
-    /// rotation — a landscape playback session silently swapped the tree under the player, so
-    /// dismissing landed on Home with the Library drill-in and scroll position gone. iPhone
-    /// therefore always keeps the compact structure (same principle as
-    /// `PlayerControlsView.isPad`); iPad keeps following its real size class so Split View /
-    /// Stage Manager still adapt.
+    /// Sidebar (iPad-regular) vs compact tab structure — keyed on what TabView actually renders,
+    /// which is decided by idiom: a phone-idiom TabView draws a tab bar even on a regular ×
+    /// regular screen (measured on the iPhone Duo's inner display, where the system puts it on the
+    /// side), so a size-class predicate there would drop Library and Settings for a sidebar that
+    /// never appears. Forcing one with `defaultTabBarPlacement(.sidebar)` renders, but its Hide
+    /// Sidebar button has no Show counterpart on a phone and the hidden state persists. Keying the
+    /// STRUCTURE on size class also tore down whole `Tab`/`NavigationStack` subtrees on every Pro
+    /// Max rotation. iPad keeps following its real size class so Split View / Stage Manager adapt.
     private var isSidebarLayout: Bool {
         UIDevice.current.userInterfaceIdiom == .pad && hSize == .regular
     }
@@ -221,10 +221,8 @@ struct RootTabView: View {
         // The one hand-styled chrome row is `settingsFooter` below: its label color is picked to
         // match the system tab rows on this floor.
         .tabViewSidebarBottomBar { settingsFooter }
-        // Pinned to the same device-gated predicate as the tab structure: a Pro Max in
-        // landscape must not flip downstream `appIdiom` layout branches to iPad forms
-        // while the tab tree stays in its compact shape.
-        .environment(\.appIdiom, isSidebarLayout ? .regular : .compact)
+        .environment(\.showsSidebar, isSidebarLayout)
+        .modifier(ContentIdiom())
     }
 
     // MARK: - Settings entry
@@ -335,4 +333,15 @@ private struct SMBSidebarTabGlyphPreview: View {
     SMBSidebarTabGlyphPreview()
 }
 #endif
+
+/// Publishes `AppIdiom` from the screen's size classes. Its own view, so a vertical size class
+/// change (every iPhone rotation) re-renders this modifier instead of the whole tab host.
+private struct ContentIdiom: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
+
+    func body(content: Content) -> some View {
+        content.environment(\.appIdiom, AppIdiom(horizontal: hSize, vertical: vSize))
+    }
+}
 #endif

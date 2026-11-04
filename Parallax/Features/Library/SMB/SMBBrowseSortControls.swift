@@ -1,8 +1,5 @@
 import SwiftUI
 import ParallaxFileBrowse
-#if !os(tvOS)
-import UIKit
-#endif
 
 /// One vocabulary for the SMB browse sort UI on every platform — the iOS nav-bar button and the
 /// tvOS in-content chip read the same field names and the same human direction pairs, so "Newest"
@@ -39,8 +36,8 @@ enum SMBBrowseSortVocabulary {
 }
 
 #if !os(tvOS)
-/// iPhone/iPad nav-bar SMB sort button: the shared `SortMenuButton` bridge driven by the SMB
-/// vocabulary (sort-only — no genre submenu, unlike the Jellyfin `LibrarySortMenuButton`).
+/// iPhone/iPad nav-bar SMB sort menu: the direction tiles and the SMB field set (sort-only — no
+/// genre submenu, unlike the Jellyfin `LibrarySortMenuButton`).
 struct SMBBrowseSortButton: View {
     let field: SMBBrowseSort.Field
     let direction: SMBBrowseSort.Direction
@@ -48,33 +45,16 @@ struct SMBBrowseSortButton: View {
     let onSelectDirection: (SMBBrowseSort.Direction) -> Void
 
     var body: some View {
-        SortMenuButton(
-            glyph: "arrow.up.arrow.down",
-            activeGlyph: nil,
-            isActive: false,
-            menu: menu(),
-            isEnabled: true,
-            accessibilityLabel: "Sort",
-            accessibilityValue: SMBBrowseSortVocabulary.label(for: field)
-        )
-    }
-
-    private func menu() -> UIMenu {
-        let directionRow = SortMenuButton.directionRow(
-            SMBBrowseSortVocabulary.directionOptions(for: field).map { option in
-                .init(title: option.title, icon: option.icon, isOn: direction == option.direction) {
-                    onSelectDirection(option.direction)
-                }
-            }
-        )
-        let fields = SortMenuButton.fieldRows(
-            SMBBrowseSort.Field.allCases.map { f in
-                .init(title: SMBBrowseSortVocabulary.label(for: f), isOn: field == f) {
-                    onSelectField(f)
-                }
-            }
-        )
-        return UIMenu(children: [directionRow, fields])
+        Menu {
+            SortMenuSections(fields: SMBBrowseSort.Field.allCases, field: field,
+                             fieldLabel: SMBBrowseSortVocabulary.label(for:),
+                             directionOptions: SMBBrowseSortVocabulary.directionOptions(for: field),
+                             direction: direction,
+                             onSelectField: onSelectField, onSelectDirection: onSelectDirection)
+        } label: {
+            Label("Sort", systemImage: "arrow.up.arrow.down")
+        }
+        .accessibilityValue(SMBBrowseSortVocabulary.label(for: field))
     }
 }
 #endif
