@@ -13,7 +13,8 @@ import ParallaxCore
 ///
 /// WHY THE PICTURE LEFT THE SCROLL CONTENT
 ///
-/// On iPad the picture has to reach under the floating sidebar, and the system
+/// The picture has to reach under whatever bar floats beside it (the iPad sidebar, a phone's side
+/// tab bar), and the system
 /// `backgroundExtensionEffect` is what puts it there: it mirrors and blurs whatever content falls
 /// outside the safe area. That mirror is a LIVE lens — transform the content INSIDE the effect and
 /// the mirror re-samples the transformed pixels on the same frame (measured on device-class
@@ -153,6 +154,7 @@ struct HeroBackdrop<Artwork: View>: View {
     @ViewBuilder var artwork: () -> Artwork
 
     @Environment(\.appIdiom) private var idiom
+    @Environment(\.showsSidebar) private var showsSidebar
 
     var body: some View {
         // The reader supplies the band's WIDTH; the height follows from the platform aspect ratio,
@@ -163,11 +165,16 @@ struct HeroBackdrop<Artwork: View>: View {
         GeometryReader { proxy in
             HeroBackdropPicture(
                 scroll: scroll,
+                // The iPad sidebar is wide enough to hide the picture's subject, so the band
+                // mirrors under it (Apple's recipe for a sidebar). A phone's side tab bar is a
+                // narrow floating column: the picture itself runs on under it, as the HIG asks for
+                // a header on iPhone Duo.
+                mirrorOverscan: showsSidebar
+                    ? HeroMetrics.edgeOverscanScale(bandWidth: proxy.size.width) : nil,
                 bandHeight: HeroMetrics.bandHeight(
                     forWidth: proxy.size.width,
                     regularWidth: idiom.usesLandscapeHeroBand
                 ),
-                extendsUnderSidebar: idiom.usesLandscapeHeroBand,
                 // The bare picture, no treatments: the effect must sample ONLY artwork (any
                 // treatment gradient in the sampled raster doubles into the mirror). The
                 // treatments ride ABOVE the effect in `HeroBackdropPicture`.
@@ -201,8 +208,8 @@ struct HeroBackdrop<Artwork: View>: View {
 ///    is the same recessed half-speed travel as before.
 private struct HeroBackdropPicture<Content: View>: View {
     let scroll: HeroScrollState?
+    let mirrorOverscan: CGFloat?
     let bandHeight: CGFloat
-    let extendsUnderSidebar: Bool
     let content: Content
 
     var body: some View {
@@ -215,6 +222,36 @@ private struct HeroBackdropPicture<Content: View>: View {
             )
             // Grow the effect's bounds with the pull — see the pull-down note above.
             .frame(height: bandHeight + max(0, adjustment), alignment: .top)
+            .heroUnderSideBars(mirrorOverscan: mirrorOverscan)
+            // The veil: bottom treatments + contact shadow, ABOVE the effect — never sampled, never
+            // mirrored. On the grown frame, so the bottom-anchored treatments track the pulled
+            // bottom edge, and deliberately NOT under the stretch scale: they are a fixed lens
+            // protecting a title that barely moves, and scaling them would stretch their gradients.
+            // Out under a side bar, so they darken whatever reaches there (the mirror, a phone's
+            // own artwork) in lockstep with the main side; both layers are uniform across the band,
+            // so the wider frame IS their continuation.
+            .overlay {
+                HeroVeilTreatments()
+                    .ignoresSafeArea(.container, edges: .horizontal)
+                    .allowsHitTesting(false)
+            }
+            // The ONLY thing outside the effect, and rigid by construction. The veil overlay rides
+            // it too, staying welded to the band on the way out.
+            .offset(y: min(0, adjustment))
+            // Pin the band to the top of the reader's box; the rest of the screen is the page's.
+            .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private extension View {
+    /// How the picture reaches under a bar floating beside the band. With an overscan (iPad
+    /// sidebar), `backgroundExtensionEffect` mirrors the band's edge strip under it; nothing
+    /// outside may transform the result except a rigid translation (see the file header), and the
+    /// residual `ipad-sidebar-pane-rim` hairline is system region-edge chrome. Without one, the
+    /// picture's own frame runs on under the bar, and the bar floats over real artwork.
+    @ViewBuilder
+    func heroUnderSideBars(mirrorOverscan: CGFloat?) -> some View {
+        if let mirrorOverscan {
             // EDGE OVERSCAN — the resting-white-line fix (lab-bisected on device, 2026-08-10, with
             // a real backdrop: Apple's recipe applied to a bare `Image` is seam-free, the SAME
             // image behind any wrapper mount shows a hairline at the mirror boundary; every layer
@@ -228,63 +265,14 @@ private struct HeroBackdropPicture<Content: View>: View {
             // four edges trim and the image keeps its aspect (the first cut was x-only and
             // stretched the picture ~1.5% horizontally); ~1.5% is invisible, the pinned top and
             // the veil's tracking are clip-edge geometry and stay exact.
-            .scaleEffect(
-                extendsUnderSidebar ? HeroMetrics.edgeOverscanScale(bandHeight: bandHeight) : 1,
-                anchor: .center
-            )
-            .heroBandExtension(regularWidth: extendsUnderSidebar)
-            // Bottom treatments + contact shadow, ABOVE the effect — never sampled, never
-            // mirrored. On the grown frame, so the bottom-anchored treatments track the pulled
-            // bottom edge, and deliberately NOT under the stretch scale: they are a fixed lens
-            // protecting a title that barely moves, and scaling them would stretch their gradients.
-            .overlay {
-                HeroVeilOverlay(extendsUnderSidebar: extendsUnderSidebar)
-            }
-            // The ONLY thing outside the effect, and rigid by construction. The veil overlay rides
-            // it too, staying welded to the band on the way out.
-            .offset(y: min(0, adjustment))
-            // Pin the band to the top of the reader's box; the rest of the screen is the page's.
-            .frame(maxHeight: .infinity, alignment: .top)
-    }
-}
-
-/// The iPhone/iPad treatment layer, mounted OVER the extension effect: the band-rect treatments
-/// (on iPad now just the contact shadow — the wide band carries no veil, see HeroLegibility's
-/// header), plus — on iPad — their continuation under the sidebar, so the mirror still darkens in
-/// lockstep with the main side at the band's bottom edge without any treatment ever being part of
-/// the raster the effect samples.
-///
-/// The continuation is a clamp-smear: the treatments' leading 1pt column, stretched
-/// `veilUnderSidebarReach` wide across the boundary (the negative x factor stretches and places it
-/// leading-ward in one transform). Each row continues its boundary value exactly — C0-continuous at
-/// the seam with zero horizontal slope, so it cannot crease. A smear of ARTWORK reads as streaks
-/// (tried and rejected for the strip); a treatment gradient is a smooth low-frequency field, so its
-/// smear is indistinguishable from the "right" continuation, especially under the sidebar's glass.
-/// The reach is a fixed overshoot: whatever the sidebar's current width, the surplus paints
-/// off-window.
-private struct HeroVeilOverlay: View {
-    let extendsUnderSidebar: Bool
-
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            if extendsUnderSidebar {
-                HeroVeilTreatments()
-                    .clipShape(LeadingSliverRect())
-                    .scaleEffect(x: -HeroMetrics.veilUnderSidebarReach, anchor: .leading)
-            }
-            HeroVeilTreatments()
+            scaleEffect(mirrorOverscan, anchor: .center)
+                .backgroundExtensionEffect()
+        } else {
+            ignoresSafeArea(.container, edges: .horizontal)
         }
-        .allowsHitTesting(false)
     }
 }
 
-/// The veil overlay's 1pt leading column — the smear's source. Open top and bottom so the clip
-/// never trims the treatments' own edges.
-private struct LeadingSliverRect: Shape {
-    func path(in rect: CGRect) -> Path {
-        Path(CGRect(x: rect.minX, y: rect.minY - 10_000, width: 1, height: rect.height + 20_000))
-    }
-}
 #endif
 
 // MARK: - Shared pieces
@@ -296,7 +284,7 @@ private struct LeadingSliverRect: Shape {
 /// differential is unchanged.
 ///
 /// iPhone/iPad deliberately do NOT use this: their picture is `HeroArtworkLayer` ALONE inside the
-/// extension effect, with `HeroVeilOverlay` layered ABOVE the effect — the effect must sample
+/// extension effect, with the veil layered ABOVE the effect — the effect must sample
 /// nothing but artwork (Apple's Landmarks recipe does the same), and even then the sampled
 /// composite needs the edge overscan to keep its own raster edge out of the mirror.
 private struct HeroComposite<Artwork: View>: View {
@@ -335,7 +323,7 @@ private struct HeroArtworkLayer<Artwork: View>: View {
 }
 
 /// The band's bottom treatments, band-rect geometry — shared by the tvOS composite and the
-/// iPhone/iPad `HeroVeilOverlay`.
+/// iPhone/iPad veil in `HeroBackdropPicture`.
 private struct HeroVeilTreatments: View {
     @Environment(\.appIdiom) private var idiom
 
@@ -443,6 +431,8 @@ private extension View {
         return overlay(alignment: .bottom) {
             HeroFloorBleed(hash: hash)
                 .frame(height: bleed)
+                // Out under a side bar too, where the backdrop's extension already reaches.
+                .ignoresSafeArea(.container, edges: .horizontal)
                 .offset(y: bleed)
         }
     }
@@ -476,17 +466,6 @@ extension View {
             }
         }
         #endif
-    }
-
-    /// The iPad sidebar bleed: `backgroundExtensionEffect` mirrors the band's leading strip
-    /// (flipped + blurred) under the floating sidebar. Applied to the BARE, edge-overscanned
-    /// artwork layer — treatments ride above the effect (`HeroVeilOverlay`), and the overscan
-    /// keeps the sampled raster's own edge out of the mirror (the resting-white-line fix). Nothing
-    /// outside this may transform the result except a rigid translation (see the file header). The
-    /// residual `ipad-sidebar-pane-rim` hairline is unrelated system region-edge chrome. tvOS
-    /// lacks the API; iPhone opts out.
-    func heroBandExtension(regularWidth: Bool) -> some View {
-        tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
     }
 }
 
@@ -621,23 +600,15 @@ enum HeroMetrics {
     /// device with a live slider against the worst real backdrop (2026-08-10: 2pt only weakened
     /// the line, 3.5 is the floor). Don't shave it further without re-running that tuning.
     static let edgeOverscanPoints: CGFloat = 3.5
-    /// Overscan of the picture INSIDE the extension effect (iPad only — the effect is what mirrors
-    /// the edge), as a UNIFORM scale: `edgeOverscanPoints` out-paints the band on each side, the
-    /// vertical trim follows at the aspect's proportion (aspect preserved — an x-only scale
-    /// distorted). The effect clips the overhang, leaving the boundary column interior pixels
-    /// instead of somebody's antialiased edge — see the overscan note in `HeroBackdropPicture`.
-    /// Derived from the resting width (bandHeight × aspect): the mid-pull drift of that estimate
-    /// is a fraction of a fraction.
-    static func edgeOverscanScale(bandHeight: CGFloat) -> CGFloat {
-        let restingWidth = bandHeight * bandAspectRatio(regularWidth: true)
-        guard restingWidth > 0 else { return 1 }
-        return 1 + edgeOverscanPoints * 2 / restingWidth
+    /// Overscan of the picture INSIDE the extension effect, as a UNIFORM scale:
+    /// `edgeOverscanPoints` out-paints the band on each side, the vertical trim follows at the
+    /// aspect's proportion (aspect preserved — an x-only scale distorted). The effect clips the
+    /// overhang, leaving the boundary column interior pixels instead of somebody's antialiased
+    /// edge — see the overscan note in `HeroBackdropPicture`.
+    static func edgeOverscanScale(bandWidth: CGFloat) -> CGFloat {
+        guard bandWidth > 0 else { return 1 }
+        return 1 + edgeOverscanPoints * 2 / bandWidth
     }
-    /// How far the veil overlay's clamp-smear runs leading-ward past the band's edge
-    /// (`HeroVeilOverlay`) — a fixed overshoot chosen to out-reach any sidebar width on any iPad;
-    /// the surplus paints off-window. Deliberately NOT measured from the actual inset: the smear is
-    /// horizontally constant, so overshooting costs nothing and needs no geometry plumbing.
-    static let veilUnderSidebarReach: CGFloat = 600
     /// Clearance between the band's bottom edge and the detail page's first text line (the open
     /// ledger). Deliberately wider than a plain section gap: the floor bleed carries the artwork's
     /// color down onto the page here, so text sitting a section-gap away read as pinned to the
@@ -752,6 +723,7 @@ private struct HeroPreviewScreen<Artwork: View, Foreground: View, Page: View>: V
         .heroBackdrop(scroll: scroll, artwork: art)
         .ignoresSafeArea(edges: .top)
         .environment(\.appIdiom, regularWidth ? .regular : .compact)
+        .environment(\.showsSidebar, regularWidth)
     }
 }
 
@@ -804,7 +776,7 @@ private struct HeroPreviewScreen<Artwork: View, Foreground: View, Page: View>: V
 /// `backgroundExtensionEffect` mirrors into — over the bright `WorstCaseArtwork` (toughest case for
 /// the boundary seam). The inset is left CLEAR so the mirror is judged raw. Failure signatures:
 ///  • NOTHING in the inset region — the effect isn't reaching it: the backdrop lost its horizontal
-///    safe area, or `regularWidth` resolved false.
+///    safe area.
 ///  • A hairline at the boundary — the edge overscan stopped clearing the sampled raster's own
 ///    edge out of the mirror (the resting-white-line fix, `edgeOverscanScale`).
 ///  • A pale falloff band along the seam — the mirror is meeting the artwork below full opacity.
@@ -818,6 +790,24 @@ private struct HeroPreviewScreen<Artwork: View, Foreground: View, Page: View>: V
     }
     .safeAreaInset(edge: .leading, spacing: 0) {
         Color.clear.frame(width: 150).ignoresSafeArea()
+    }
+}
+
+/// The iPhone Duo outer display: the compact band beside the system's side tab bar (90pt,
+/// measured). The artwork, its glass fade, and the floor bleed must all continue under the bar.
+#Preview("HeroBand · side tab bar (compact, simulated inset)", traits: .fixedLayout(width: 466, height: 678)) {
+    HeroPreviewScreen(floorBleedHash: "LGF5]+Yk^6#M@-5c,1J5@[or[Q6.", regularWidth: false) {
+        BlurHashPlaceholder(
+            hash: "LGF5]+Yk^6#M@-5c,1J5@[or[Q6.",
+            aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: false)
+        )
+    } foreground: {
+        PreviewHeroForeground(regularWidth: false)
+    } page: {
+        Rectangle().fill(Color.fill).frame(height: 120).padding(.horizontal, Space.s16)
+    }
+    .safeAreaInset(edge: .trailing, spacing: 0) {
+        Color.clear.frame(width: 90).ignoresSafeArea()
     }
 }
 

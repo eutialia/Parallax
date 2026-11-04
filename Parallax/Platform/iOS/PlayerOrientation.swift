@@ -18,6 +18,10 @@ import UIKit
 /// sideways after a landscape session (UIKit saw no reason to rotate), so the exclusive
 /// narrow-then-force hand-off stays. iPad is never orientation-managed — its canvas is fine
 /// any way up — so every call is a no-op there.
+///
+/// Whether a rotation request is honored at all is the scene's windowing mode, not the device:
+/// the iPhone Duo's inner display refuses every geometry request, while its outer display honors
+/// them like any iPhone. UIKit exposes no property that says which.
 @MainActor
 final class OrientationController {
     static let shared = OrientationController()

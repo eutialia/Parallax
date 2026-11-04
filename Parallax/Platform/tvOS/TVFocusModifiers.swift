@@ -288,21 +288,6 @@ extension View {
         #endif
     }
 
-    /// Apply `whenIOS` only on iOS/iPadOS — for APIs tvOS's SDK simply doesn't have, where a
-    /// no-op on tvOS is the correct behaviour rather than a missing feature. Today's caller is
-    /// `heroBandExtension` (`backgroundExtensionEffect`): tvOS has no floating sidebar to extend
-    /// the hero artwork under, so there is nothing to gate ON.
-    @ViewBuilder
-    func tvPlatformGated<Modified: View>(
-        @ViewBuilder whenIOS: (Self) -> Modified
-    ) -> some View {
-        #if os(tvOS)
-        self
-        #else
-        whenIOS(self)
-        #endif
-    }
-
 }
 
 #if os(tvOS)

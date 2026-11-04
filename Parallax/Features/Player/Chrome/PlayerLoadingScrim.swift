@@ -30,10 +30,11 @@ struct PlayerLoadingScrim: View {
             PlayerScrimStyle.dim(
                 mode == .coldStart ? PlayerScrimStyle.coldStartDim : PlayerScrimStyle.liveFrameDim
             )
-            content
-                .opacity(entered ? 1 : 0)
-                .offset(y: entered ? 0 : PlayerScrimStyle.riseOffset)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            FoldClearingCenter(footprint: metrics.transportFootprint) {
+                content
+                    .opacity(entered ? 1 : 0)
+                    .offset(y: entered ? 0 : PlayerScrimStyle.riseOffset)
+            }
         }
         .onAppear {
             withAnimation(reduceMotion ? nil : PlayerScrimStyle.rise) { entered = true }

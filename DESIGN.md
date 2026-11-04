@@ -188,10 +188,11 @@ Controls are **flat**, with one amended exception (2026-08-10): the hero action 
 
 ### Navigation
 - **iPhone:** bottom `TabView`; **iPad/tvOS:** `.sidebarAdaptable` with a dynamic Libraries `TabSection`. Never a fixed-column `NavigationSplitView` root. Drill-downs are `NavigationStack`.
+- **iPhone Duo:** the system moves the tab bar and toolbars to the side (outer display, inner in landscape). Toolbar items are SwiftUI items with a title and a symbol so they move with it; a UIKit custom-view item stays behind at the top.
 - **tvOS:** focus contract centralized in `TVFocusReader` + `TVFocusModifiers` — poster tiles are native `.borderless` with the system `.highlight` effect re-masked to tile corners; chips use a custom lift style. 40pt inter-tile gaps are the focus-safe floor.
 
 ### The Player (signature)
-The sanctioned custom island. Monochrome white-on-ink, pinned dark, every dimension a `PlayerMetrics × u` formula. Shared scrim vocabulary (`PlayerScrimStyle`: ink dim × state factor — cold start 0.74, live frame 0.50, error 0.62), one loading primitive (`PlayerScrimRing`, a unit-tested indeterminate white arc), calm loading vs loud error scrims with frozen geometry so the ring never jumps, double-tap seek flash, and a three-mode progress bar (track 0.20 → buffered 0.36 → played white) that reserves its tallest handle so the centerline never shifts. Custom because native platters fight video — and still bound by platform contracts: focus inversion, Reduce Motion, remote semantics.
+The sanctioned custom island. Monochrome white-on-ink, pinned dark, every dimension a `PlayerMetrics × u` formula. Shared scrim vocabulary (`PlayerScrimStyle`: ink dim × state factor — cold start 0.74, live frame 0.50, error 0.62), one loading primitive (`PlayerScrimRing`, a unit-tested indeterminate white arc), calm loading vs loud error scrims with frozen geometry so the ring never jumps (both it and the centre transport step clear of an active iPhone Duo fold, `FoldClearingCenter`), double-tap seek flash, and a three-mode progress bar (track 0.20 → buffered 0.36 → played white) that reserves its tallest handle so the centerline never shifts. Custom because native platters fight video — and still bound by platform contracts: focus inversion, Reduce Motion, remote semantics.
 
 ## 6. Motion
 

@@ -217,8 +217,8 @@ struct LibraryGridView: View {
 
     #if !os(tvOS)
     /// Nav-bar placement of the library controls (iPhone + iPad): ONE menu carrying the
-    /// Photos-style direction tiles, the sort fields, and Genre as a nested submenu —
-    /// UIKit-bridged for the `.medium` element size (see `LibrarySortMenuButton`).
+    /// Photos-style direction tiles, the sort fields, and Genre as a nested submenu
+    /// (see `LibrarySortMenuButton`).
     /// Renders from plain values so it can mount before the view model exists.
     @ToolbarContentBuilder
     private var libraryControlsToolbar: some ToolbarContent {

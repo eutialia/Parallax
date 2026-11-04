@@ -128,7 +128,7 @@ struct LibraryHeaderControls: View {
             systemImage: "arrow.up.arrow.down",
             accessibilityLabel: "Sort"
         ) {
-            // Same human-language direction labels as the iOS bridged menu (one vocabulary —
+            // Same human-language direction labels as the iOS nav-bar menu (one vocabulary —
             // `LibrarySortVocabulary`), but as an inline picker: the tile row is a touch-menu
             // affordance the tvOS focus engine doesn't render.
             Picker("Order", selection: Binding(get: { sortDirection }, set: onSelectDirection)) {

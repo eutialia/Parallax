@@ -253,7 +253,7 @@ struct HomeHeroCarousel: View {
 }
 
 /// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,
-/// which stacks two of these. The iPad sidebar bleed is owned by `HeroBackdrop`.
+/// which stacks two of these. The under-bar bleed is owned by `HeroBackdrop`.
 private struct HeroArtwork: View {
     /// Source-tagged so each page fetches from ITS server. A hero mixing two servers with one
     /// screen-level session would request page 2's backdrop from page 1's host and token.
@@ -282,7 +282,7 @@ private struct HeroArtwork: View {
 /// Just the artwork crossfade. `Animatable` on `position` is the crux: during a
 /// `withAnimation` `position` change, SwiftUI interpolates `animatableData` and re-evaluates
 /// `body` at each step, so the two images crossfade continuously rather than cutting between
-/// the start and end states. The legibility veil and the iPad sidebar bleed are both owned by
+/// the start and end states. The legibility veil and the under-bar bleed are both owned by
 /// `HeroBackdrop` (one layer out), keeping this a pure crossfade — its per-tick body re-evaluation
 /// rebuilds nothing but the two images.
 private struct CrossfadeArtwork: View, Animatable {
