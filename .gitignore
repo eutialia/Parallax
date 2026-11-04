@@ -28,6 +28,9 @@ Packages/*/.swiftpm/
 # Per-developer signing (see Config/Signing.xcconfig)
 Config/Signing.local.xcconfig
 
+# Per-developer server logins for signing in on simulators (see Config/Credentials.local.json.example)
+Config/Credentials.local.json
+
 # Playback Lab
 scripts/playback-lab/*.local.json
 scripts/playback-lab/results/
