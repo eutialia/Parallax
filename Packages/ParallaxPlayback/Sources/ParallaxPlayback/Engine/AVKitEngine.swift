@@ -214,6 +214,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                              buffered: buffered, provenance: clockProvenance), from: session)
         case .playing:
             stallWatchdog.disarm()   // frames are flowing again — the stall cleared
+            releaseStartupTuning(of: item)
             yield(.playing(position: position, duration: item.duration,
                            buffered: buffered, provenance: clockProvenance), from: session)
         case .paused:
@@ -990,6 +991,16 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     static func applyTuning(_ tuning: StartupTuning, to item: AVPlayerItem) {
         if let seconds = tuning.preferredForwardBufferSeconds {
             item.preferredForwardBufferDuration = seconds
+        }
+    }
+
+    /// Hands the forward buffer back to AVFoundation once the item plays. Held past startup,
+    /// the target caps how far AVPlayer reads ahead for the whole session, and the progress
+    /// bar's buffered layer sits on the playhead. 0 is AVFoundation's own default: it picks
+    /// the duration.
+    private func releaseStartupTuning(of item: AVPlayerItem) {
+        if tuning.preferredForwardBufferSeconds != nil {
+            item.preferredForwardBufferDuration = 0
         }
     }
 
