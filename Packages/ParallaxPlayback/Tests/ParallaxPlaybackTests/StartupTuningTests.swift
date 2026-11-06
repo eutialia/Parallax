@@ -1,5 +1,6 @@
 import AVFoundation
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxPlayback
 
 @Suite("StartupTuning")
@@ -35,5 +36,32 @@ struct StartupTuningTests {
             to: item
         )
         #expect(item.preferredForwardBufferDuration == seconds)
+    }
+}
+
+/// The forward-buffer target is a startup knob: it buys the first frame sooner. Left on for the
+/// session, AVPlayer keeps only that much ahead of the playhead, and the progress bar's buffered
+/// layer shrinks back onto the dot between segments.
+@Suite("StartupTuning — after startup", .serialized, .scaledTimeLimit())
+@MainActor
+struct StartupTuningReleaseTests {
+    @Test("once playback starts, the buffer runs past the startup target")
+    func bufferRunsAheadOnceStarted() async throws {
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: [], until: ResponseGate()
+        )
+        defer { server.stop() }
+        let engine = AVKitEngine(tuning: StartupTuning(preferredForwardBufferSeconds: 3))
+        try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
+        await engine.play()
+
+        // 13 s segments: under a 3 s target the buffer holds at a segment's end until the
+        // playhead nears it, so a 40 s buffer this early means the target let go.
+        let ahead = await engine.firstBeat(within: CITimeScale.seconds(6)) { beat in
+            guard case .playing(let position, _, let buffered?, _) = beat.state else { return false }
+            return CMTimeGetSeconds(buffered) >= 39 && CMTimeGetSeconds(position) < 13
+        }
+        #expect(ahead != nil, "the buffer never ran past the startup target")
+        await engine.teardown()
     }
 }
