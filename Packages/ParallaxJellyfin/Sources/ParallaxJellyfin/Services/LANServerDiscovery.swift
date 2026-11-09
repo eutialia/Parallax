@@ -20,10 +20,15 @@ import ParallaxCore
 @MainActor
 public final class LANServerDiscovery {
     public private(set) var discovered: [DiscoveredServer] = []
-    public private(set) var isDiscovering: Bool = false
+    public var isDiscovering: Bool { run != nil }
+
+    private struct Run {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
 
     private var seenIDs: Set<String> = []
-    private var task: Task<Void, Never>?
+    private var run: Run?
 
     /// Source of one UDP broadcast pass. Injected so tests can drive discovery
     /// deterministically without touching real sockets; defaults to the live
@@ -44,11 +49,10 @@ public final class LANServerDiscovery {
     /// is a no-op; calling after one finishes starts a fresh, additive run
     /// (results dedupe by server id).
     public func start(timeout: TimeInterval = 1.5, retries: Int = 0, retryInterval: Duration = .seconds(2)) {
-        guard task == nil else { return }
+        guard run == nil else { return }
         Log.network.info("LAN discovery started (timeout=\(timeout)s, retries=\(retries))")
-        isDiscovering = true
-        let (broadcaster, clock) = (self.broadcaster, self.clock)
-        task = Task { [weak self] in
+        let (broadcaster, clock, id) = (self.broadcaster, self.clock, UUID())
+        let task = Task { [weak self] in
             var attempt = 0
             while !Task.isCancelled {
                 // `broadcaster` is a blocking, synchronous UDP send/receive loop;
@@ -66,19 +70,19 @@ public final class LANServerDiscovery {
                     break  // cancelled
                 }
             }
-            self?.didFinish()
+            self?.didFinish(id)
         }
+        run = Run(id: id, task: task)
     }
 
     public func stop() {
-        task?.cancel()
-        task = nil
-        isDiscovering = false
+        run?.task.cancel()
+        run = nil
     }
 
     /// The in-flight discovery run. Internal purely as a test seam: suites await this instead of
     /// busy-polling `isDiscovering`, which made the retry coverage timing-dependent.
-    var runningTask: Task<Void, Never>? { task }
+    var runningTask: Task<Void, Never>? { run?.task }
 
     private func ingest(_ responses: [Data]) {
         let before = discovered.count
@@ -91,9 +95,9 @@ public final class LANServerDiscovery {
         Log.network.info("LAN discovery pass: \(responses.count) response(s), \(added) new server(s)")
     }
 
-    private func didFinish() {
-        isDiscovering = false
-        task = nil
+    private func didFinish(_ id: UUID) {
+        guard run?.id == id else { return }
+        run = nil
     }
 
     /// Parses one UDP response payload. Returns nil for malformed JSON or an

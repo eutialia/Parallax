@@ -23,12 +23,17 @@ import ParallaxCore
 @MainActor
 public final class SMBBonjourDiscovery {
     public private(set) var discovered: [SMBDiscoveredServer] = []
-    public private(set) var isDiscovering = false
+    public var isDiscovering: Bool { browsing != nil }
 
     /// Starts one live browse: a stream of the COMPLETE set of service names currently on the
     /// network, re-sent on every change, that stops browsing when its consumer goes away.
     private let browse: @Sendable () -> AsyncStream<[String]>
-    private var browsing: Task<Void, Never>?
+    private var browsing: Browse?
+
+    private struct Browse {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
 
     public init(browse: @escaping @Sendable () -> AsyncStream<[String]>) {
         self.browse = browse
@@ -40,23 +45,26 @@ public final class SMBBonjourDiscovery {
         // snapshot, so a host that later leaves the network drops out on its own.
         discovered = []
         Log.network.info("SMB Bonjour discovery starting")
-        let names = browse()
-        isDiscovering = true
-        browsing = Task { [weak self] in
+        let (names, id) = (browse(), UUID())
+        let task = Task { [weak self] in
             for await snapshot in names {
                 self?.ingest(snapshot)
             }
             // The browser failed or was cancelled; a later `start()` opens a fresh one.
-            self?.browsing = nil
-            self?.isDiscovering = false
+            self?.didEnd(id)
         }
+        browsing = Browse(id: id, task: task)
     }
 
     public func stop() {
-        browsing?.cancel()
+        browsing?.task.cancel()
         browsing = nil
-        isDiscovering = false
         Log.network.info("SMB Bonjour discovery stopped")
+    }
+
+    private func didEnd(_ id: UUID) {
+        guard browsing?.id == id else { return }
+        browsing = nil
     }
 
     // MARK: - Result ingestion
