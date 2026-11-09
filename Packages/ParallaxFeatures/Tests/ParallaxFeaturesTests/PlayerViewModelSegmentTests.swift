@@ -78,6 +78,26 @@ struct PlayerViewModelSegmentTests {
         #expect(vm.activeSegment == nil)
     }
 
+    @Test("a dismissed Skip button shows again once the playhead has left the segment and come back")
+    func dismissedPromptRearmsOnReentry() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let intro = MediaSegment(id: "intro", kind: .intro, start: .seconds(0), end: .seconds(90))
+        let vm = episodeVM(engine: engine, segments: [intro])
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
+        await vm.debugAwaitSegmentsLoad()
+        engine.push(playing(30))
+        try await engine.settle()
+        vm.segmentPromptGate.expirePrompt()
+        #expect(!vm.segmentPromptGate.promptVisible(enabled: true))
+
+        engine.push(playing(120))
+        try await engine.settle()
+        engine.push(playing(30))
+        try await engine.settle()
+
+        #expect(vm.segmentPromptGate.promptVisible(enabled: true))
+    }
+
     // MARK: Outro → Next Episode gating
 
     @Test("an outro surfaces Next Episode only when a next episode exists",
