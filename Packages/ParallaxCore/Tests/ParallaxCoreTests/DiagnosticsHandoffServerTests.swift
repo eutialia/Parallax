@@ -44,6 +44,30 @@ struct DiagnosticsHandoffServerTests {
         #expect(await server.listener == nil)
     }
 
+    @Test("A second start while the first is still binding is refused, so one listener serves")
+    func concurrentStartsBindOneListener() async throws {
+        let server = DiagnosticsHandoffServer(payload: Data("PAYLOAD".utf8), fileName: "log.txt")
+        async let first = Self.startError(of: server)
+        async let second = Self.startError(of: server)
+        let errors = try await [first, second]
+        await server.stop()
+
+        #expect(errors.filter { $0 == nil }.count == 1)
+        #expect(errors.contains(.alreadyStarted))
+    }
+
+    /// nil when `start()` succeeded.
+    private static func startError(
+        of server: DiagnosticsHandoffServer
+    ) async throws -> DiagnosticsHandoffServer.HandoffError? {
+        do {
+            _ = try await server.start()
+            return nil
+        } catch let error as DiagnosticsHandoffServer.HandoffError {
+            return error
+        }
+    }
+
     /// The listener binds every interface; the test reaches it over loopback, which headless CI
     /// runners are allowed to talk to without local-network access.
     private static func loopbackURL(of server: DiagnosticsHandoffServer) async throws -> URL {
