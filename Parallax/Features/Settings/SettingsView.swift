@@ -197,7 +197,7 @@ struct SettingsView: View {
                 onSelectSubtitles: { path.append(.subtitles) },
                 onSelectAbout: { path.append(.about) },
                 onSelectDiagnostics: { path.append(.diagnostics) },
-                storage: { ThumbnailCacheCard() }
+                storage: { ThumbnailCacheCard(app: app) }
             )
         } else {
             ScrollView { ServerListLoadingSkeleton() }

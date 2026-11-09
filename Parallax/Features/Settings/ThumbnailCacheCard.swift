@@ -6,12 +6,12 @@ import ParallaxFeatures
 /// destructive "Clear" text button — matching `iph-root`. tvOS makes the WHOLE row the action ("Clear
 /// Thumbnail Cache", size trailing), since the remote focuses the row, not a tiny inline button.
 struct ThumbnailCacheCard: View {
-    @Environment(AppModel.self) private var app
-
-    /// nil until the first size read completes; reset to 0 right after a clear.
-    @State private var byteCount: Int64?
-    @State private var isClearing = false
+    @State private var model: ThumbnailCacheModel
     @State private var isConfirming = false
+
+    init(app: AppModel) {
+        _model = State(initialValue: app.makeThumbnailCache())
+    }
 
     var body: some View {
         SettingsGroup(
@@ -22,15 +22,15 @@ struct ThumbnailCacheCard: View {
             SettingsListRow(
                 systemImage: "photo.on.rectangle",
                 title: "Clear Thumbnail Cache",
-                value: sizeLabel
+                value: model.sizeLabel
             ) { isConfirming = true }
             #else
             cacheRow
             #endif
         }
-        .task { byteCount = await app.services.mediaArtworkProvider.cacheSize() }
+        .task { await model.measure() }
         .confirmationDialog("Clear thumbnail cache?", isPresented: $isConfirming, titleVisibility: .visible) {
-            Button("Clear Cache", role: .destructive) { Task { await clear() } }
+            Button("Clear Cache", role: .destructive) { Task { await model.clear() } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Removes generated SMB thumbnails and their durations. They regenerate as you browse.")
@@ -50,7 +50,7 @@ struct ThumbnailCacheCard: View {
                 .font(.rowBody)
                 .foregroundStyle(Color.label)
             Spacer(minLength: Space.s12)
-            Text(sizeLabel)
+            Text(model.sizeLabel)
                 .font(.rowValue)
                 .monospacedDigit()
                 .foregroundStyle(Color.secondaryLabel)
@@ -74,17 +74,4 @@ struct ThumbnailCacheCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     #endif
-
-    private var sizeLabel: String {
-        if isClearing { return "Clearing…" }
-        guard let byteCount else { return "Calculating…" }
-        return byteCount == 0 ? "Empty" : byteCount.formatted(.byteCount(style: .file))
-    }
-
-    private func clear() async {
-        isClearing = true
-        await app.services.mediaArtworkProvider.clearCache()
-        byteCount = 0
-        isClearing = false
-    }
 }
