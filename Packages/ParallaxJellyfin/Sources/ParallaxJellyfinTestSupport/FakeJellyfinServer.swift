@@ -366,6 +366,8 @@ public final class FakeJellyfinServer: Observable, Sendable {
         case encodingKills
         /// Only the subtitle streams, as a server still extracting them answers.
         case subtitles
+        /// Only the PlaybackInfo negotiations, as a server slow to open a stream answers.
+        case playbackInfo
     }
 
     /// Leaves the chosen requests from now on unanswered until `releaseResponses()`, which answers
@@ -382,6 +384,8 @@ public final class FakeJellyfinServer: Observable, Sendable {
             transport.holdReplies { $0 == Self.path(of: Paths.stopEncodingProcess(deviceID: "", playSessionID: "")) }
         case .subtitles:
             transport.holdReplies { $0.contains("/Subtitles/") }
+        case .playbackInfo:
+            transport.holdReplies { $0.hasSuffix("/PlaybackInfo") }
         }
     }
 

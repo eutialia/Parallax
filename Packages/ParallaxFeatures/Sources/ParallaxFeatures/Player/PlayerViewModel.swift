@@ -285,23 +285,37 @@ public final class PlayerViewModel {
         return "\(episodeNumber). \(itemTitle)"
     }
 
-    /// Caption for the loading scrim. A transcode track switch reloads the
-    /// stream ("Switching audio · <track>"); a mid-stream stall over a live frame reads
-    /// "Buffering"; a first play is "Loading video".
+    /// Caption for the loading scrim. A transcode track switch reloads the stream and names
+    /// the dimension it changes: "Switching audio · <track>" whenever an audio pick rides the
+    /// reload, "Switching subtitles · <track or Off>" for a subtitle pick alone. A mid-stream
+    /// stall over a live frame reads "Buffering"; a first play is "Loading video".
     public var loaderTitle: String {
-        if isMidSessionReload { return LoaderCaption.switchingAudio }
-        if showsStallScrim { return LoaderCaption.buffering }
-        return LoaderCaption.loadingVideo
+        switch midSessionReload {
+        case .some(let reload) where reload.audio == nil && reload.subtitle != nil:
+            return LoaderCaption.switchingSubtitles
+        case .some:
+            return LoaderCaption.switchingAudio
+        case .none:
+            return showsStallScrim ? LoaderCaption.buffering : LoaderCaption.loadingVideo
+        }
     }
 
-    /// The scrim's three captions, named so the view's fallback and the tests
+    /// The scrim's captions, named so the view's fallback and the tests
     /// reference one source instead of re-typing the user-facing strings.
     public enum LoaderCaption {
         public static let buffering = "Buffering"
         public static let switchingAudio = "Switching audio"
+        public static let switchingSubtitles = "Switching subtitles"
         public static let loadingVideo = "Loading video"
     }
-    public var loaderSubtitle: String? { isMidSessionReload ? selectedAudioTrack?.displayName : nil }
+
+    public var loaderSubtitle: String? {
+        guard let reload = midSessionReload else { return nil }
+        if reload.audio == nil, let subtitle = reload.subtitle {
+            return TrackPick.subtitle(subtitle.pick).displayName
+        }
+        return selectedAudioTrack?.displayName
+    }
 
     /// Mid-stream stall (engine waiting for media while the user's intent is
     /// "playing") — drives the light buffering scrim over the frozen frame. See `StallDebounce`.
