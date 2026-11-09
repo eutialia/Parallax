@@ -5,9 +5,15 @@ import Observation
 @Observable
 @MainActor
 public final class ThumbnailCacheModel {
-    /// nil until the first size read completes; reset to 0 right after a clear.
-    private var byteCount: Int64?
-    private var isClearing = false
+    private enum State: Equatable {
+        case calculating
+        case size(Int64)
+        case clearing
+    }
+
+    private var state = State.calculating
+    /// Bumped by every clear, so a size read that started before one can tell it is stale.
+    private var clears = 0
 
     private let size: @Sendable () async -> Int64
     private let wipe: @Sendable () async -> Void
@@ -19,20 +25,29 @@ public final class ThumbnailCacheModel {
 
     /// The size the card shows, or what it is doing instead.
     public var sizeLabel: String {
-        if isClearing { return "Clearing…" }
-        guard let byteCount else { return "Calculating…" }
-        return byteCount == 0 ? "Empty" : byteCount.formatted(.byteCount(style: .file))
+        switch state {
+        case .calculating: "Calculating…"
+        case .clearing: "Clearing…"
+        case .size(0): "Empty"
+        case .size(let bytes): bytes.formatted(.byteCount(style: .file))
+        }
     }
 
-    /// What the card's `.task` runs: reads the cache's size.
+    /// What the card's `.task` runs: reads the cache's size. A read that a clear overtook is
+    /// dropped, since it measured what the clear removed.
     public func measure() async {
-        byteCount = await size()
+        let clearsBefore = clears
+        let bytes = await size()
+        guard clears == clearsBefore, state != .clearing else { return }
+        state = .size(bytes)
     }
 
+    /// A no-op while a clear is already running.
     public func clear() async {
-        isClearing = true
+        guard state != .clearing else { return }
+        clears += 1
+        state = .clearing
         await wipe()
-        byteCount = 0
-        isClearing = false
+        state = .size(0)
     }
 }
