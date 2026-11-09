@@ -102,9 +102,8 @@ public struct PlayerTouchChrome: Equatable, Sendable {
     /// second tap of a pair in one outer third, which HIDES the chrome and starts a ±10s burst, so
     /// the dome and its bar take over a clean surface. While a burst shows, every tap belongs to
     /// it: an outer third steps it, the middle third does nothing, so a stray tap can't raise the
-    /// HUD over the affordance. A burst the chrome has covered (a reload brings it back) is not
-    /// showing, so the chrome gets its taps. The middle third never seeks; a player that can't
-    /// seek just toggles.
+    /// HUD over the affordance. A burst that is not showing takes no taps. The middle third never
+    /// seeks; a player that can't seek just toggles.
     public mutating func tap(zone: PlayerSeekDirection?, at point: CGPoint, now: Date,
                              playbackReady: Bool, durationKnown: Bool) -> [PlayerTouchEffect] {
         // A middle-third tap records a nil zone, so it can never pair with a later outer tap.
@@ -194,7 +193,8 @@ public struct PlayerTouchChrome: Equatable, Sendable {
         }
     }
 
-    /// Leaving `.playing` brings the chrome back over the loading scrim. A failure unmounts the
+    /// Leaving `.playing` brings the chrome back over the loading scrim and drops the burst it
+    /// covers, so hiding the chrome again shows a clean surface. A failure unmounts the
     /// controls, and their drag, panels and burst die with them, so it also starts the chrome
     /// over: the status bar and home indicator return over the error scrim, pull-to-dismiss
     /// works there, and a retry re-mounts the controls visible and idle.
@@ -203,6 +203,7 @@ public struct PlayerTouchChrome: Equatable, Sendable {
             self = PlayerTouchChrome()
         } else if old == .playing, new != .playing {
             visible = true
+            burst = nil
         }
     }
 
