@@ -94,6 +94,23 @@ struct PlayerTouchChromeTests {
         #expect(chrome.visible == false)
     }
 
+    /// A burst's debounced commit on a transcode is a reload, and leaving `.playing` brings the
+    /// chrome back while the burst is still alive — over a hidden dome and bar.
+    @Test("with the chrome shown over a live burst, a tap toggles the chrome instead of feeding the hidden burst",
+          arguments: [PlayerSeekDirection?.none, .backward])
+    func revealedChromeOwnsTaps(zone: PlayerSeekDirection?) throws {
+        var chrome = PlayerTouchChrome()
+        _ = tap(&chrome, .backward, after: 0)
+        _ = tap(&chrome, .backward, after: 0.1)
+        let burst = try #require(chrome.burst)
+        chrome.phaseChanged(from: .playing, to: .loading)
+        #expect(!chrome.showsBurst(playbackReady: true))
+
+        #expect(tap(&chrome, zone, after: 0.5) == [])
+        #expect(chrome.visible == false)
+        #expect(chrome.burst == burst)
+    }
+
     @Test("a player that can't seek just toggles on an edge double-tap")
     func notReadyToggles() {
         var chrome = PlayerTouchChrome()
