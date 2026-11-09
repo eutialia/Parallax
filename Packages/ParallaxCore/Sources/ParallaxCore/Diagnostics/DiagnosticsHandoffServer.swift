@@ -37,6 +37,11 @@ public actor DiagnosticsHandoffServer {
         /// `192.168.1.42:53187/k3xq` — and, deliberately, the whole thing somebody has to type.
         /// Named for what it was before the token; it is still "the address, in full".
         public let hostAndPort: String
+
+        public init(url: URL, hostAndPort: String) {
+            self.url = url
+            self.hostAndPort = hostAndPort
+        }
     }
 
     private let payload: Data

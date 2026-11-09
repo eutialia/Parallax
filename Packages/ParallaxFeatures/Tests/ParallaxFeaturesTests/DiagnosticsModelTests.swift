@@ -28,7 +28,7 @@ struct DiagnosticsModelTests {
         #expect(!logging.isOn)
     }
 
-    @Test("leaving the handoff screen while the listener is still binding stops the server")
+    @Test("a listener that finishes binding after the handoff screen left is stopped and never shown")
     func leavingMidStartStopsTheServer() async {
         let binding = AsyncGate(open: false)
         let server = RecordingHandoffServer(binding: binding)
@@ -40,7 +40,7 @@ struct DiagnosticsModelTests {
         await binding.open()
         await screen.value
 
-        #expect(await server.stops > 0)
+        #expect(await !server.isListening)
         guard case .starting = handoff.phase else {
             Issue.record("the screen left mid-start but shows \(handoff.phase)")
             return
@@ -54,11 +54,11 @@ private final class LoggingSwitch: Sendable {
     func set(_ value: Bool) { state.withLock { $0 = value } }
 }
 
-/// A handoff server whose `start()` parks on `binding`, then fails the way a listener torn down
-/// mid-bind does.
+/// A handoff server whose `start()` parks on `binding` and then binds regardless of any stop that
+/// came first: the worst a listener can do to a screen that already left.
 private actor RecordingHandoffServer: DiagnosticsHandoffServing {
     private let binding: AsyncGate
-    private(set) var stops = 0
+    private(set) var isListening = false
 
     init(binding: AsyncGate) {
         self.binding = binding
@@ -66,12 +66,13 @@ private actor RecordingHandoffServer: DiagnosticsHandoffServing {
 
     func start() async throws -> DiagnosticsHandoffServer.Endpoint {
         await binding.pass()
-        throw DiagnosticsHandoffServer.HandoffError.stopped
+        isListening = true
+        return DiagnosticsHandoffServer.Endpoint(url: URL(filePath: "/handoff"), hostAndPort: "host:1/token")
     }
 
     func waitUntilStopped() async {}
 
-    func stop() async { stops += 1 }
+    func stop() async { isListening = false }
 }
 
 private extension DiagnosticsEdge {
