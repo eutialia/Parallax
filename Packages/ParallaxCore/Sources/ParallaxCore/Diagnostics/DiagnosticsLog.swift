@@ -113,9 +113,14 @@ public enum DiagnosticsLog {
     private static let state = OSAllocatedUnfairLock(initialState: State())
 
     struct State {
-        var sink: DiagnosticsSink?
-        var startInstant: ContinuousClock.Instant?
+        /// This run's open file, and when it opened. nil until `start()` opens one.
+        var session: Session?
         var isEnabled = true
+    }
+
+    struct Session {
+        let sink: DiagnosticsSink
+        let startInstant: ContinuousClock.Instant
     }
 
     // MARK: - Lifecycle
@@ -144,19 +149,16 @@ public enum DiagnosticsLog {
 
     /// Opens `url` as this run's session in `state`, or returns nil when a session is already open
     /// there or the file can't be opened.
+    ///
+    /// The file is opened under the lock, after the open-session check: re-enabling logging calls
+    /// `start()` again while this run's session is open, and a sink opened before that check would
+    /// leak its never-closed descriptor and leave an empty session file behind.
     static func openSession(at url: URL, in state: OSAllocatedUnfairLock<State>) -> DiagnosticsSink? {
-        guard let sink = DiagnosticsSink(url: url) else { return nil }
-        // The guard has to escape the FUNCTION, not just the lock closure — an early `return` inside
-        // `withLock` only leaves the closure, so a second `start()` would fall through and write a
-        // header to a descriptor nothing else ever uses. Latent while launch was the only caller;
-        // live now that the settings toggle calls it too.
-        let didOpen = state.withLock { state -> Bool in
-            guard state.sink == nil else { return false }
-            state.sink = sink
-            state.startInstant = ContinuousClock().now
-            return true
+        state.withLock { state in
+            guard state.session == nil, let sink = DiagnosticsSink(url: url) else { return nil }
+            state.session = Session(sink: sink, startInstant: ContinuousClock().now)
+            return sink
         }
-        return didOpen ? sink : nil
     }
 
     /// Whether retained logging is on. Off stops new records AND leaves existing files alone — use
@@ -189,14 +191,11 @@ public enum DiagnosticsLog {
         _ message: () -> String
     ) {
         guard level.isRetained else { return }
-        let context: (sink: DiagnosticsSink, start: ContinuousClock.Instant)? = state.withLock { state in
-            guard state.isEnabled, let sink = state.sink, let start = state.startInstant else { return nil }
-            return (sink, start)
-        }
-        guard let context else { return }
+        let session = state.withLock { $0.isEnabled ? $0.session : nil }
+        guard let session else { return }
 
-        let elapsed = context.start.duration(to: ContinuousClock().now)
-        context.sink.append("\(timestamp(elapsed)) \(level.symbol) [\(category)] \(threadLabel()) \(message())")
+        let elapsed = session.startInstant.duration(to: ContinuousClock().now)
+        session.sink.append("\(timestamp(elapsed)) \(level.symbol) [\(category)] \(threadLabel()) \(message())")
     }
 
     /// States whether the crash handlers are armed and still ours, for the run currently being
@@ -231,7 +230,7 @@ public enum DiagnosticsLog {
     /// Every retained run, newest first. The current run is included and marked.
     public static func sessions() -> [DiagnosticsSession] {
         guard let directory = directoryURL() else { return [] }
-        let currentURL = state.withLock { $0.sink?.url }
+        let currentURL = state.withLock { $0.session?.sink.url }
         let manager = FileManager.default
         let contents = (try? manager.contentsOfDirectory(
             at: directory,
@@ -294,7 +293,7 @@ public enum DiagnosticsLog {
     /// writing to a file nobody can find.
     public static func clear() {
         guard let directory = directoryURL() else { return }
-        let currentURL = state.withLock { $0.sink?.url }
+        let currentURL = state.withLock { $0.session?.sink.url }
         let contents = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         )) ?? []
