@@ -304,9 +304,8 @@ public final class LibraryGridViewModel {
             } else {
                 refresh = .failed(message)
             }
-        } else {
-            if case .reloading = refresh { refresh = .idle }
-            if items.isEmpty { state = .failed(message) }
+        } else if items.isEmpty {
+            state = .failed(message)
         }
     }
 }
