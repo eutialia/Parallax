@@ -1046,7 +1046,9 @@ struct PlayerControlsView: View {
                 // symmetrically with the release; a grab-side "missing" morph on device was a
                 // Debug-build frame drop (the chrome collapse lands on the same frame), not an
                 // API asymmetry — don't wrap this in withAnimation again.
-                perform(chrome.scrubDragChanged(), durSeconds: durSeconds)
+                // Per drag frame: only the first move changes anything, and a mutating call
+                // through the binding would rewrite the chrome on every one.
+                if !chrome.dragScrubbing { perform(chrome.scrubDragChanged(), durSeconds: durSeconds) }
                 // The gesture is the model's to know: the split head, the ghost and the bubble
                 // are all one published flight, so nothing has to infer "a finger is down" from
                 // a view flag a commit could outlive.

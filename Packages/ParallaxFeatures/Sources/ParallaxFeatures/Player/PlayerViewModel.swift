@@ -336,7 +336,7 @@ public final class PlayerViewModel {
     /// stall over a live frame reads "Buffering"; a first play is "Loading video".
     public var loaderTitle: String {
         switch midSessionReload {
-        case .some(let reload) where reload.audio == nil && reload.subtitle != nil:
+        case .some(let reload) where reload.isSubtitleOnly:
             return LoaderCaption.switchingSubtitles
         case .some:
             return LoaderCaption.switchingAudio
@@ -356,7 +356,7 @@ public final class PlayerViewModel {
 
     public var loaderSubtitle: String? {
         guard let reload = midSessionReload else { return nil }
-        if reload.audio == nil, let subtitle = reload.subtitle {
+        if reload.isSubtitleOnly, let subtitle = reload.subtitle {
             return TrackPick.subtitle(subtitle.pick).displayName
         }
         return selectedAudioTrack?.displayName
@@ -1251,7 +1251,7 @@ public final class PlayerViewModel {
             itemTitle = d.episode.name
             episodeNumber = d.episode.indexNumber
         case .series, .season:
-            surface = .failed(.playback(.unsupportedFormat))
+            failStart(.playback(.unsupportedFormat), generation: generation)
             return
         }
 
@@ -3164,9 +3164,11 @@ public final class PlayerViewModel {
         // The exit fence is `unfreezeVideoSurface()`'s and it belongs there — while dismissing,
         // the frozen frame is the card's, not this session's, and nothing may uncover it.
         let firstAfterReload = activeSession?.awaitsFirstLiveBeat == true && !isExiting
-        activeSession?.awaitsFirstLiveBeat = false
+        // `Surface` and `LiveSession` are not Equatable, so an unchanged write still notifies
+        // every reader of the phase, on every beat.
+        if activeSession?.awaitsFirstLiveBeat == true { activeSession?.awaitsFirstLiveBeat = false }
         unfreezeVideoSurface()
-        if framesMoving || firstAfterReload { surface = .playing }
+        if framesMoving || firstAfterReload, phase != .playing { surface = .playing }
         if firstAfterReload {
             // Closes the trail the session transition opened: which transport the reloaded
             // session came back on, and what the surface did with it. A reload that never

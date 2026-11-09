@@ -40,6 +40,8 @@ struct PendingReload: Equatable {
     var position: CMTime?
     var audio: AudioChange?
     var subtitle: SubtitleChange?
+    /// A subtitle pick with no audio pick riding the same reload.
+    var isSubtitleOnly: Bool { audio == nil && subtitle != nil }
 
     /// A track pick is standing, which is the only thing that costs a reload — the drain's
     /// loop condition. An Off subtitle pick counts: `subtitle` is set with a nil `pick`.
