@@ -24,8 +24,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// A terminal beat (`.ended`, `.failed`) ends the session in place. The app does not tear
     /// the engine down on `.failed`, so the item and its observers outlive it, and AVPlayer can
     /// still recover underneath the error scrim: a link back after the stall deadline, an HLS
-    /// item ready after the load deadline. Nothing from that recovery is the session's to
-    /// publish. Only the next `load()` opens a live one.
+    /// item ready after the load deadline. So ending the session also pauses the player, and
+    /// nothing from a recovery is the session's to publish. Only the next `load()` opens a live one.
     private enum SessionPhase: Equatable {
         case live(PlaybackSessionID)
         case terminated(PlaybackSessionID)
@@ -216,6 +216,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         switch state {
         case .ended, .failed:
             phase = .terminated(session)
+            player.pause()
             loadWatchdog.disarm()
             disarmStallDeadlines()
         case .idle, .loading, .ready, .playing, .paused, .buffering:
