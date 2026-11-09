@@ -17,15 +17,26 @@ public final class LibraryGridViewModel {
         let state: LoadState
     }
 
+    /// A sort/filter refetch over items already on screen.
+    private enum Refresh {
+        case idle
+        /// In flight with the stale items still shown. `restoring` is what a failed or cancelled
+        /// refetch puts back; nil once a full `load()` has taken over.
+        case reloading(restoring: ReloadSnapshot?)
+        /// The refetch failed with stale items still visible: a non-blocking error.
+        case failed(String)
+    }
+
     public private(set) var state: LoadState = .idle
     public private(set) var items: [Item] = []
     public private(set) var isLoadingMore: Bool = false
+    private var refresh = Refresh.idle
     /// True while a sort/filter change is in flight but stale items are still shown.
-    public private(set) var isRefreshing: Bool = false
+    public var isRefreshing: Bool { if case .reloading = refresh { true } else { false } }
     /// Bumped only after a successful reset fetch — drives grid crossfade without O(n) ID scans.
     private(set) var refreshGeneration: UInt = 0
     /// Non-blocking error when a sort/filter refresh fails but stale items remain visible.
-    public private(set) var refreshErrorMessage: String?
+    public var refreshErrorMessage: String? { if case .failed(let message) = refresh { message } else { nil } }
     public private(set) var availableGenres: [String] = []
     /// True while the genre list is in flight on first load — drives the placeholder
     /// row so the grid below doesn't shift when genres arrive.
@@ -94,7 +105,6 @@ public final class LibraryGridViewModel {
     private var cursor: PageCursor?
     private var inFlight: Task<Void, Never>?
     private var genreTask: Task<Void, Never>?
-    private var reloadSnapshot: ReloadSnapshot?
     /// Monotonic token so only the latest reset fetch may mutate refresh UI state.
     private var fetchGeneration: UInt = 0
     private let repo: any MediaRepository
@@ -171,8 +181,7 @@ public final class LibraryGridViewModel {
             await inFlight?.value
             return
         }
-        refreshErrorMessage = nil
-        reloadSnapshot = nil
+        refresh = isRefreshing ? .reloading(restoring: nil) : .idle
         state = .loading
         let generation = beginResetFetch()
         loadGenres()
@@ -209,15 +218,13 @@ public final class LibraryGridViewModel {
         // would then bail, leaving the grid stuck on the spinner forever.
         // We've already cancelled the in-flight task, so a fresh fetch is safe.
         inFlight?.cancel()
-        refreshErrorMessage = nil
         let generation = beginResetFetch()
 
         if items.isEmpty {
-            reloadSnapshot = nil
+            refresh = isRefreshing ? .reloading(restoring: nil) : .idle
             state = .loading
         } else {
-            reloadSnapshot = ReloadSnapshot(items: items, cursor: cursor, state: state)
-            isRefreshing = true
+            refresh = .reloading(restoring: ReloadSnapshot(items: items, cursor: cursor, state: state))
         }
         cursor = nil
         await fetchPage(reset: true, generation: generation)
@@ -228,12 +235,15 @@ public final class LibraryGridViewModel {
         return fetchGeneration
     }
 
-    private func restoreSnapshotIfNeeded() {
-        guard let snapshot = reloadSnapshot else { return }
-        items = snapshot.items
-        cursor = snapshot.cursor
-        state = snapshot.state
-        reloadSnapshot = nil
+    /// Ends an in-flight refetch that did not land, putting back the items it was showing.
+    private func abandonRefresh() {
+        guard case .reloading(let snapshot) = refresh else { return }
+        if let snapshot {
+            items = snapshot.items
+            cursor = snapshot.cursor
+            state = snapshot.state
+        }
+        refresh = .idle
     }
 
     private func isCurrentResetFetch(_ generation: UInt) -> Bool {
@@ -258,22 +268,19 @@ public final class LibraryGridViewModel {
                 if reset {
                     items = page.items
                     refreshGeneration &+= 1
-                    reloadSnapshot = nil
                 } else {
                     items.append(contentsOf: page.items)
                 }
                 cursor = page.nextCursor
                 state = .loaded
-                isRefreshing = false
-                refreshErrorMessage = nil
+                refresh = .idle
             } catch let error as AppError {
                 if !Task.isCancelled {
                     handleFetchFailure(error.userMessage, reset: reset, generation: generation)
                 }
             } catch is CancellationError {
                 if let generation, isCurrentResetFetch(generation) {
-                    restoreSnapshotIfNeeded()
-                    isRefreshing = false
+                    abandonRefresh()
                 }
             } catch {
                 if !Task.isCancelled {
@@ -289,17 +296,17 @@ public final class LibraryGridViewModel {
         if let generation, !isCurrentResetFetch(generation) { return }
 
         Log.ui.error("LibraryGrid load failed: \(message)")
-        isRefreshing = false
 
         if reset {
-            restoreSnapshotIfNeeded()
+            abandonRefresh()
             if items.isEmpty {
                 state = .failed(message)
             } else {
-                refreshErrorMessage = message
+                refresh = .failed(message)
             }
-        } else if items.isEmpty {
-            state = .failed(message)
+        } else {
+            if case .reloading = refresh { refresh = .idle }
+            if items.isEmpty { state = .failed(message) }
         }
     }
 }
