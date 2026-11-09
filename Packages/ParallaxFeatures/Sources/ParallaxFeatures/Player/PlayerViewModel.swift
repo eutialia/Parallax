@@ -730,10 +730,33 @@ public final class PlayerViewModel {
     /// The exit fence: the in-flight start path bails at its next checkpoint instead of
     /// resurrecting playback after dismissal or across a replay's teardown.
     private var isExiting: Bool { isClosed || stopping != nil }
-    /// True while `start()` is executing. The HUD is live during loading, so a track
-    /// pick could otherwise land in the sliver where `beginPlayback` is suspended
-    /// (engine.load) and race it with a second resolve/engine.
-    private var isStartingPlayback = false
+    /// The newest start this view model has begun: the session generation it starts into, and
+    /// whether its cold start is still executing. A replay can begin a start while the one it
+    /// superseded is still suspended in its resolve, so every unwind a start owes — ending its
+    /// audio, dropping the cold-start latch, raising its failure — is owed only while it is still
+    /// the newest. Later than that it would land on the session that replaced it.
+    private struct StartAttempt {
+        let generation: Int
+        var isCold: Bool
+    }
+    private var newestStart: StartAttempt?
+    /// A cold start is executing. The HUD is live during loading, so a track pick could otherwise
+    /// land in the sliver where `beginPlayback` is suspended (engine.load) and race it with a
+    /// second resolve/engine.
+    private var isStartingPlayback: Bool { newestStart?.isCold == true }
+
+    /// Records a start into `generation`, which every entry reads before its first await: read
+    /// after it, the generation would be that of whatever replaced the start.
+    private func claimStart(_ generation: Int, cold: Bool) {
+        newestStart = StartAttempt(generation: generation, isCold: cold)
+    }
+
+    /// No newer start has begun since the one into `generation`.
+    private func isNewestStart(_ generation: Int) -> Bool { newestStart?.generation == generation }
+
+    private func endColdStart(_ generation: Int) {
+        if isNewestStart(generation) { newestStart?.isCold = false }
+    }
     /// Server language preferences were applied to this item's initial tracks —
     /// once per `start`, never on track-switch reloads or duplicate `.ready` beats.
     private var didApplyPreferredTracks = false
@@ -1110,21 +1133,25 @@ public final class PlayerViewModel {
     /// detail fetch lands.
     func start(itemID: ItemID, fromBeginning: Bool = false) async {
         guard !isClosed else { return }
+        let generation = sessionGeneration
+        claimStart(generation, cold: false)
         diagnostics.armOpen()
         phase = .loading
         pendingItemID = itemID
         pendingFromBeginning = fromBeginning
         do {
             let detail = try await fetchDetail(itemID)
-            try checkStillActive()
-            await start(item: detail, fromBeginning: fromBeginning)
+            try checkStillActive(generation: generation)
+            await start(item: detail, fromBeginning: fromBeginning, generation: generation)
         } catch is CancellationError {
             // Exit raced the detail fetch — the view is gone; nothing to surface.
         } catch let error as AppError {
-            phase = .failed(error)
+            if isNewestStart(generation) { phase = .failed(error) }
         } catch {
             Log.playback.error("item detail fetch failed: \(error.networkDiagnostic)")
-            phase = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
+            if isNewestStart(generation) {
+                phase = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
+            }
         }
     }
 
@@ -1134,10 +1161,14 @@ public final class PlayerViewModel {
     /// which every method resumes by SEEKING client-side on `.ready` (see
     /// `PlayerAssetFactory.asset(for:)`), so a restart is simply a nil start time.
     func start(item: ItemDetail, fromBeginning: Bool = false) async {
+        await start(item: item, fromBeginning: fromBeginning, generation: sessionGeneration)
+    }
+
+    private func start(item: ItemDetail, fromBeginning: Bool, generation: Int) async {
         guard !isClosed else { return }
         diagnostics.armOpen()
-        isStartingPlayback = true
-        defer { isStartingPlayback = false }
+        claimStart(generation, cold: true)
+        defer { endColdStart(generation) }
         phase = .loading
         didApplyPreferredTracks = false
         pendingFromBeginning = fromBeginning
@@ -1191,23 +1222,28 @@ public final class PlayerViewModel {
                 startTime: resumeTime,
                 audioStreamIndex: nil,
                 subtitleStreamIndex: nil,
-                generation: sessionGeneration
+                generation: generation
             )
-        } catch is CancellationError {
-            // Exit raced the start path. stop() owns the real teardown; just make
-            // sure the audio session isn't left active if stop() completed before
-            // activate() did (deactivate is idempotent).
-            await audioSession.deactivate()
-        } catch let error as AppError {
-            phase = .failed(error)
-            await audioSession.deactivate()
         } catch {
-            // A non-AppError reaching here is genuinely unexpected (resolve()
-            // already maps its failures to AppError). Log it and preserve the
-            // underlying error in diagnostics instead of mislabeling it as a
-            // network problem.
-            Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic)")
-            phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+            // A start a replay superseded unwinds nothing: the audio session and the phase
+            // belong to the start that replaced it, which has activated the one and set the other.
+            guard isNewestStart(generation) else { return }
+            switch error {
+            case is CancellationError:
+                // Exit raced the start path. stop() owns the real teardown; just make
+                // sure the audio session isn't left active if stop() completed before
+                // activate() did (deactivate is idempotent).
+                break
+            case let error as AppError:
+                phase = .failed(error)
+            default:
+                // A non-AppError reaching here is genuinely unexpected (resolve()
+                // already maps its failures to AppError). Log it and preserve the
+                // underlying error in diagnostics instead of mislabeling it as a
+                // network problem.
+                Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic)")
+                phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+            }
             await audioSession.deactivate()
         }
     }
@@ -1224,6 +1260,8 @@ public final class PlayerViewModel {
     /// session is never double-activated and `phase` is managed in one place per step.
     func start(resolvingSMB resolve: @escaping () async throws -> SMBPlaybackItem) async {
         guard !isClosed else { return }
+        let generation = sessionGeneration
+        claimStart(generation, cold: false)
         diagnostics.armOpen()
         phase = .loading
         // Kept so the failure scrim's "Try again" can replay the SMB path (retry() otherwise
@@ -1231,6 +1269,12 @@ public final class PlayerViewModel {
         smbResolve = resolve
         do {
             let item = try await diagnostics.timingResolve(route: { .smb(bridged: $0.isBridged) }, resolve)
+            // Superseded during the resolve: `smbCleanup` is the replacement's slot now, so this
+            // bridge is reaped here, and nothing of this start is written.
+            guard isNewestStart(generation) else {
+                await item.cleanup?()
+                return
+            }
             // Stash the bridge cleanup BEFORE the exit fence below: `resolve()` already
             // started the bridge (bridge route), and `checkStillActive()` throws when a
             // dismissal landed in the resolve window (the common exit case). Stashing here
@@ -1241,8 +1285,8 @@ public final class PlayerViewModel {
             // The resolve is the off-tap window an exit usually lands in — bail before
             // delegating so a dismissed player can't start audio. `start(smbItem:)`
             // re-checks after activating the session.
-            try checkStillActive()
-            await start(smbItem: item)
+            try checkStillActive(generation: generation)
+            await start(smbItem: item, generation: generation)
         } catch is CancellationError {
             // Exit raced the resolve — the view is gone. Reap the bridge we just stashed:
             // if `stop()` already ran (`runPlayer` ending the session during the resolve), it
@@ -1251,10 +1295,12 @@ public final class PlayerViewModel {
             // (nil-before-await), so it's safe even if a concurrent `stop()` also reaps it.
             await tearDownSMBBridge()
         } catch let error as AppError {
-            phase = .failed(error)
+            if isNewestStart(generation) { phase = .failed(error) }
         } catch {
             Log.playback.error("SMB resolve failed: \(error.networkDiagnostic)")
-            phase = .failed(.unexpected("couldn't load file", underlying: AnySendableError(error)))
+            if isNewestStart(generation) {
+                phase = .failed(.unexpected("couldn't load file", underlying: AnySendableError(error)))
+            }
         }
     }
 
@@ -1270,9 +1316,13 @@ public final class PlayerViewModel {
     /// validated primary (the spike passed), so the asset routes to VLCKit via
     /// `hints.scheme == "smb"`.
     func start(smbItem: SMBPlaybackItem) async {
+        await start(smbItem: smbItem, generation: sessionGeneration)
+    }
+
+    private func start(smbItem: SMBPlaybackItem, generation: Int) async {
         guard !isClosed else { return }
-        isStartingPlayback = true
-        defer { isStartingPlayback = false }
+        claimStart(generation, cold: true)
+        defer { endColdStart(generation) }
         phase = .loading
         itemTitle = smbItem.title
         episodeNumber = nil
@@ -1296,7 +1346,7 @@ public final class PlayerViewModel {
                 Log.playback.error("audio session activate failed: \(error.networkDiagnostic)")
                 throw AppError.playback(.audioSessionFailed)
             }
-            try checkStillActive()
+            try checkStillActive(generation: generation)
             // Sidecar subs are already filename-matched by the caller; surface them so
             // `SidecarSubtitles.loadSidecarSubtitle` finds the URL by index, exactly like the
             // Jellyfin path's `resolved.subtitleStreamURLs` in `beginPlayback`.
@@ -1313,19 +1363,23 @@ public final class PlayerViewModel {
             let asset = assets.asset(for: smbItem)
             let support = await deviceProfileBuilder.build().avPlayer
             try await loadAndPlay(asset, route: .select(support), reusingEngine: false,
-                                  generation: sessionGeneration)
-        } catch is CancellationError {
-            // Exit fence: the player is dismissing, so `stop()` (`runPlayer`'s backstop) owns the
-            // bridge teardown — don't race it here.
-            await audioSession.deactivate()
-        } catch let error as AppError {
-            phase = .failed(error)
-            await tearDownSMBBridge()
-            await audioSession.deactivate()
+                                  generation: generation)
         } catch {
-            Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
-            phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
-            await tearDownSMBBridge()
+            // Superseded: the bridge slot, the audio session and the phase are the replacement's.
+            guard isNewestStart(generation) else { return }
+            switch error {
+            case is CancellationError:
+                // Exit fence: the player is dismissing, so `stop()` (`runPlayer`'s backstop) owns
+                // the bridge teardown — don't race it here.
+                break
+            case let error as AppError:
+                phase = .failed(error)
+                await tearDownSMBBridge()
+            default:
+                Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
+                phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+                await tearDownSMBBridge()
+            }
             await audioSession.deactivate()
         }
     }
