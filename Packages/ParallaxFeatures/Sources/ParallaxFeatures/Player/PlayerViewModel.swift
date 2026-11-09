@@ -168,6 +168,20 @@ public final class PlayerViewModel {
     public var subtitleRenderer: SubtitleRenderer? { sidecar.subtitleRenderer }
     public var sidecarSubtitleInfo: SidecarSubtitleInfo? { sidecar.sidecarSubtitleInfo }
     public var subtitleRendererGeneration: Int { sidecar.subtitleRendererGeneration }
+    /// What the subtitle overlay's `SubtitleDriver` reads each tick.
+    public var subtitleFeed: SubtitleFeed {
+        SubtitleFeed(
+            source: { [weak self] in
+                guard let self, let renderer = subtitleRenderer else { return nil }
+                return (renderer, subtitleRendererGeneration)
+            },
+            engineSeconds: { [weak self] in
+                guard let now = self?.engine?.currentTime, now.isValid else { return nil }
+                return CMTimeGetSeconds(now)
+            },
+            clock: clock
+        )
+    }
     /// The subtitle track whose sidecar is being fetched right now — the subtitle chip
     /// spins on its own glyph, and the menu row's check column with it.
     public var loadingSubtitleTrackID: TrackID? {

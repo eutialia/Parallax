@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import CoreMedia
 import ParallaxFeatures
 import ParallaxPlayback
 import ParallaxSubtitles
@@ -30,12 +29,7 @@ struct SubtitleOverlayView: View {
     @Environment(SubtitlePreferences.self) private var subtitlePrefs
     @Environment(\.displayScale) private var displayScale
 
-    @State private var frame: SubtitleFrame?
-    /// Mirrors "the engine clock is readable" — while false (VLC buffering/seek) the
-    /// last frame is HIDDEN, not discarded: the renderer's change-tracking doesn't
-    /// know we blanked, so discarding would leave the cue lost until the next cue
-    /// transition once the clock returns.
-    @State private var clockValid = true
+    @State private var driver = SubtitleDriver()
     /// The video surface size, captured via `onGeometryChange` instead of a
     /// `GeometryReader` (which greedily expands and re-runs its closure every frame).
     /// The render canvas derives from it; the first cue only appears once playback is
@@ -52,7 +46,7 @@ struct SubtitleOverlayView: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { surfaceSize = $0 }
             .overlay(alignment: .topLeading) {
                 SubtitleFrameView(
-                    frame: clockValid ? frame : nil,
+                    frame: driver.shownFrame,
                     pointScale: displayScale,
                     canvasOrigin: canvasRect.origin,
                     lift: lift
@@ -131,59 +125,14 @@ struct SubtitleOverlayView: View {
         )
     }
 
-    /// Polls the engine clock ~15×/s and renders whatever the track says belongs on
-    /// screen "now". 0.5s playback-state beats are far too coarse for sub-second cues,
-    /// so we read `engine.currentTime` directly rather than going through the state
-    /// stream. `frame(at:)` returns nil when nothing changed, so idle ticks are cheap.
     private func drive() async {
         pushAppearance()
-        // Canvas pushes are keyed on (renderer generation, video rect, scale) so the
-        // actor hop happens only when one of them actually changed. Generation, not
-        // object identity: a freed renderer's address can be reused by the next one.
-        var pushedCanvas: CanvasKey?
-        while !Task.isCancelled {
-            guard let renderer = vm.subtitleRenderer else {
-                frame = nil
-                pushedCanvas = nil
-                try? await Task.sleep(for: .milliseconds(66))
-                continue
-            }
-            let rect = canvasRect
-            let key = CanvasKey(
-                generation: vm.subtitleRendererGeneration, rect: rect, scale: displayScale
-            )
-            if key != pushedCanvas, rect.size != .zero {
-                await renderer.setCanvas(
-                    size: rect.size, scale: displayScale, storageSize: canvasStorage
-                )
-                pushedCanvas = key
-                // The converted-track font mapping depends on the canvas height.
-                pushAppearance()
-            }
-            // `.invalid` is VLC's "clock not ready" signal (buffering/seek); hide the
-            // frame for that window so a transient unknown time doesn't flash a stale
-            // cue. AVKit always reports a valid time (0 at the start), so a genuine
-            // 0:00 cue still shows.
-            // Matching absolute cue times against the engine clock holds only while an
-            // out-of-buffer transcode seek restarts ffmpeg frame-accurately under the
-            // item's timeline mapping (see PlayerViewModel.seek(to:)).
-            if let now = vm.engine?.currentTime, now.isValid {
-                clockValid = true
-                if pushedCanvas != nil,
-                   let fresh = await renderer.frame(at: CMTimeGetSeconds(now)) {
-                    frame = fresh
-                }
-            } else {
-                clockValid = false
-            }
-            try? await Task.sleep(for: .milliseconds(66))
+        await driver.run(vm.subtitleFeed, scale: displayScale) {
+            SubtitleDriver.Canvas(rect: canvasRect, storage: canvasStorage)
+        } onCanvasPushed: {
+            // The converted-track font mapping depends on the canvas height.
+            pushAppearance()
         }
-    }
-
-    private struct CanvasKey: Equatable {
-        let generation: Int
-        let rect: CGRect
-        let scale: CGFloat
     }
 }
 
