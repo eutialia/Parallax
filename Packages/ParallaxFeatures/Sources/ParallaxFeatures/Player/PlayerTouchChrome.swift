@@ -102,8 +102,9 @@ public struct PlayerTouchChrome: Equatable, Sendable {
     /// second tap of a pair in one outer third, which HIDES the chrome and starts a ±10s burst, so
     /// the dome and its bar take over a clean surface. While a burst shows, every tap belongs to
     /// it: an outer third steps it, the middle third does nothing, so a stray tap can't raise the
-    /// HUD over the affordance. The middle third never seeks; a player that can't seek just
-    /// toggles.
+    /// HUD over the affordance. A burst the chrome has covered (a reload brings it back) is not
+    /// showing, so the chrome gets its taps. The middle third never seeks; a player that can't
+    /// seek just toggles.
     public mutating func tap(zone: PlayerSeekDirection?, at point: CGPoint, now: Date,
                              playbackReady: Bool, durationKnown: Bool) -> [PlayerTouchEffect] {
         // A middle-third tap records a nil zone, so it can never pair with a later outer tap.
@@ -111,7 +112,7 @@ public struct PlayerTouchChrome: Equatable, Sendable {
         lastTap = Tap(date: now, zone: zone)
         let canSeek = playbackReady && durationKnown
 
-        if burst != nil {
+        if showsBurst(playbackReady: playbackReady) {
             guard let zone, canSeek else { return [] }
             return seekStep(zone, at: point, now: now)
         }
