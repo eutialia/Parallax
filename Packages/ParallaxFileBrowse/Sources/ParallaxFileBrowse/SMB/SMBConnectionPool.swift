@@ -76,26 +76,26 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// warmest), the cap and the reaper evict from the front (oldest).
     private var idle: [SMBConnectionKey: [IdleEntry]] = [:]
 
-    /// Latest cold-connect classification per host. `nil` until a host's first cold connect; a warm
-    /// reuse records nothing (it did no round trips to time). See `recordColdLatency` for which
-    /// samples are allowed to change it.
-    private var coldLinkClass: [String: SMBLinkClass] = [:]
+    /// What the pool knows about the link to one host. A host with no entry has never been measured.
+    private enum HostLink {
+        /// One in-flight classification probe — concurrent `ensureLinkClass` callers coalesce onto
+        /// it instead of each cold-connecting.
+        case probing(Task<SMBLinkClass?, Never>)
+        /// The last probe FAILED at this uptime, so a dead host is re-probed once per
+        /// `probeFailureBackoff` window rather than once per prefetch batch.
+        case backoff(failedAt: Duration)
+        /// The latest cold-connect classification. A warm reuse records nothing (it did no round
+        /// trips to time). `slowRun` counts consecutive SLOW cold samples, reset by any fast one,
+        /// for the demotion hysteresis in `recordColdLatency`.
+        case classified(SMBLinkClass, slowRun: Int)
+    }
 
-    /// Consecutive SLOW cold samples per host, reset by any fast one. Feeds the demotion hysteresis
-    /// in `recordColdLatency`; the entry is removed (never kept at zero) once a fast sample lands.
-    private var consecutiveSlowColds: [String: Int] = [:]
+    private var hostLinks: [String: HostLink] = [:]
+    private static var probeFailureBackoff: Duration { .seconds(60) }
 
     /// Bumped by `flushIdle`. Every borrow is stamped with the epoch it was taken under, and a
     /// check-in from an older epoch is disposed instead of pooled — see `checkin`.
     private var flushEpoch = 0
-
-    /// One in-flight classification probe per host — concurrent `ensureLinkClass` callers coalesce
-    /// onto it instead of each cold-connecting.
-    private var probes: [String: Task<SMBLinkClass?, Never>] = [:]
-    /// When a host's last classification probe FAILED, so a dead host is re-probed once per backoff
-    /// window rather than once per prefetch batch.
-    private var probeFailures: [String: Duration] = [:]
-    private static var probeFailureBackoff: Duration { .seconds(60) }
 
     /// The scheduled idle sweep, started lazily on first `checkout` (a never-used pool spawns no
     /// task). Reaps opportunistically on every checkout/checkin too — the sweep only bounds a pool
@@ -305,7 +305,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// The coarse link class last observed for `host`, or nil before any cold connect to it.
     /// See `lanThreshold` — a deliberate one-shot heuristic, not a throughput measurement.
     public func linkClass(host: String) -> SMBLinkClass? {
-        coldLinkClass[host]
+        guard case .classified(let linkClass, _) = hostLinks[host] else { return nil }
+        return linkClass
     }
 
     /// The link class for `target`'s host, performing one cold connect to MEASURE it when no
@@ -325,11 +326,15 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// probe is memoised for `probeFailureBackoff` so a dead host is re-probed once per window,
     /// not once per batch.
     public func ensureLinkClass(_ target: SMBConnectionTarget) async -> SMBLinkClass? {
-        if let known = coldLinkClass[target.host] { return known }
-        if let inFlight = probes[target.host] { return await inFlight.value }
-        if let failedAt = probeFailures[target.host],
-           uptime() - failedAt < Self.probeFailureBackoff {
+        switch hostLinks[target.host] {
+        case .classified(let known, _):
+            return known
+        case .probing(let inFlight):
+            return await inFlight.value
+        case .backoff(let failedAt) where uptime() - failedAt < Self.probeFailureBackoff:
             return nil
+        case .backoff, nil:
+            break
         }
 
         let probe = Task { [weak self] () -> SMBLinkClass? in
@@ -341,15 +346,18 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             await self.checkin(borrowed)
             return await self.linkClass(host: target.host)
         }
-        probes[target.host] = probe
+        hostLinks[target.host] = .probing(probe)
         // Cleared on EVERY exit: an awaiter that goes away mid-probe would otherwise strand the
         // entry, and every later caller for this host would coalesce onto a task nobody drives.
-        defer { probes[target.host] = nil }
+        defer {
+            if case .probing = hostLinks[target.host] { hostLinks[target.host] = nil }
+        }
         return await probe.value
     }
 
     private func recordProbeFailure(host: String) {
-        probeFailures[host] = uptime()
+        guard case .probing = hostLinks[host] else { return }
+        hostLinks[host] = .backoff(failedAt: uptime())
     }
 
     /// Discards a borrowed connection instead of returning it to the idle pool — for a borrow whose
@@ -514,18 +522,17 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// LAN-only capture.
     private func recordColdLatency(host: String, elapsed: Duration) {
         guard elapsed >= Self.lanThreshold else {
-            consecutiveSlowColds[host] = nil
-            coldLinkClass[host] = .lan
+            hostLinks[host] = .classified(.lan, slowRun: 0)
             return
         }
-        let slowRun = (consecutiveSlowColds[host] ?? 0) + 1
-        consecutiveSlowColds[host] = slowRun
+        let (prior, slowRun): (SMBLinkClass?, Int) = switch hostLinks[host] {
+        case .classified(let linkClass, let slowRun): (linkClass, slowRun + 1)
+        case .probing, .backoff, nil: (nil, 1)
+        }
         // First slow sample against a host already measured `.lan` is treated as a blip; anything
         // else (unclassified host, already `.wan`, or a second slow sample in a row) classes `.wan`.
-        let isFirstBlipOnALANHost = coldLinkClass[host] == .lan && slowRun < 2
-        if !isFirstBlipOnALANHost {
-            coldLinkClass[host] = .wan
-        }
+        let isFirstBlipOnALANHost = prior == .lan && slowRun < 2
+        hostLinks[host] = .classified(isFirstBlipOnALANHost ? .lan : .wan, slowRun: slowRun)
     }
 
     private func startSweepIfNeeded() {
