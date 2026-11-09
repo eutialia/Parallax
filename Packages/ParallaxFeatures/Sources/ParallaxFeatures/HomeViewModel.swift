@@ -276,6 +276,7 @@ public final class HomeViewModel {
     func reloadFailedFeeds() async {
         let failed = feeds.filter { failedSourceIDs.contains($0.source.sourceID) }
         guard !failed.isEmpty else { return }
+        let passesBefore = passes
         let repaired = await withTaskGroup(of: (MediaSourceID, FeedSlice?).self) { group in
             for feed in failed {
                 // Resolved out here: `sourceID` is a synchronous MainActor-isolated read, so
@@ -289,7 +290,8 @@ public final class HomeViewModel {
             }
             return out
         }
-        guard !Task.isCancelled, !repaired.isEmpty else { return }
+        // A load or refresh that began meanwhile owns the shelves; this repair predates it.
+        guard !Task.isCancelled, !repaired.isEmpty, passes == passesBefore else { return }
         // Re-merge in feed order: the repaired slice for a server that came back, and what's
         // already on screen for everyone else — including a server still unreachable, whose
         // cached (or previously loaded) rows must survive a recovery pass that only repaired
