@@ -73,7 +73,8 @@ extension AppEnvironment {
                 #else
                 .home
                 #endif
-            }()
+            }(),
+            diagnostics: .live
         )
     }
 }

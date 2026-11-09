@@ -19,24 +19,23 @@ import UniformTypeIdentifiers
 /// pasteboard behind them — so it serves the file over the LAN instead and shows the address
 /// (`DiagnosticsHandoffView`). The on-screen viewer is the fallback on both.
 ///
-/// The VM-free shell: reads `DiagnosticsLog` and hands plain values to `DiagnosticsContentView`,
-/// which is what the previews render.
+/// The shell over `DiagnosticsModel`: hands plain values to `DiagnosticsContentView`, which is what
+/// the previews render.
 struct DiagnosticsView: View {
-    #if DEBUG
-    @Environment(AppModel.self) private var app
-    #endif
-    @State private var sessions: [DiagnosticsSession] = []
-    @State private var isEnabled = DiagnosticsLog.isEnabled
+    let app: AppModel
+    @State private var model: DiagnosticsModel
     @State private var isConfirmingClear = false
+
+    init(app: AppModel) {
+        self.app = app
+        _model = State(initialValue: app.makeDiagnostics())
+    }
 
     var body: some View {
         DiagnosticsContentView(
-            sessions: sessions,
-            isLoggingEnabled: isEnabled,
-            onToggleLogging: {
-                isEnabled.toggle()
-                DiagnosticsLog.isEnabled = isEnabled
-            },
+            sessions: model.sessions,
+            isLoggingEnabled: model.isLoggingEnabled,
+            onToggleLogging: { model.toggleLogging() },
             onDeleteLogs: { isConfirmingClear = true },
             onFlushSMBConnections: flushSMBConnections,
             onTriggerTestCrash: triggerTestCrash
@@ -45,31 +44,17 @@ struct DiagnosticsView: View {
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .task { await reload() }
+        .task { await model.reload() }
         .confirmationDialog(
             "Delete saved logs?", isPresented: $isConfirmingClear, titleVisibility: .visible
         ) {
             Button("Delete Logs", role: .destructive) {
-                DiagnosticsLog.clear()
-                Task { await reload() }
+                Task { await model.deleteLogs() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Removes every saved log except this run’s. Nothing else is affected.")
         }
-    }
-
-    /// Off the main thread on purpose. `View` is `@MainActor`, so a `.task` closure stays on it —
-    /// and `sessions()` opens and scans EVERY retained run looking for the crash marker, which is up
-    /// to a few megabytes of file reads and string splitting. Doing that on main would freeze the
-    /// push into this screen: the same class of main-thread stall this whole feature exists to
-    /// investigate, caused by the screen doing the investigating.
-    private func reload() async {
-        let loaded = await Task.detached(priority: .userInitiated) {
-            (sessions: DiagnosticsLog.sessions(), isEnabled: DiagnosticsLog.isEnabled)
-        }.value
-        sessions = loaded.sessions
-        isEnabled = loaded.isEnabled
     }
 
     /// Runs the foreground pool flush ON DEMAND, so the operation the post-resume watchdog kill
