@@ -531,6 +531,32 @@ struct PlayerScenarios {
         #expect(player.selectedAudioTrack?.displayName == "English")
     }
 
+    @Test("a subtitle switch that reloads the stream says it is switching subtitles, and names the pick")
+    func subtitleReloadCaptionNamesTheSubtitle() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Ran", in: "Films", minutes: 162)
+            .streams("Ran", by: .transcode, subtitles: [
+                FakeJellyfinServer.SubtitleTrack(language: "fra", title: "French", .image),
+            ])
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        let player = try await world.openPlayer()
+        try await world.streamPlays(at: .seconds(600), of: .seconds(162 * 60))
+        let burnIn = try #require(player.availableSubtitleTracks.first)
+
+        await player.selectSubtitleTrack(burnIn)
+
+        #expect(player.loaderTitle == "Switching subtitles")
+        #expect(player.loaderSubtitle == "French")
+
+        try await world.streamPlays(at: .seconds(600), of: .seconds(162 * 60))
+        await player.selectSubtitleTrack(nil)
+
+        #expect(player.loaderTitle == "Switching subtitles")
+        #expect(player.loaderSubtitle == "Off")
+    }
+
     @Test("after an in-place reload, a beat the replaced stream still had in flight doesn't move the player")
     func staleBeatAfterAnInPlaceReloadIsDropped() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
