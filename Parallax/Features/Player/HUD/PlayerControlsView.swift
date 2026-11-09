@@ -39,10 +39,11 @@ struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
     /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar.
     @Binding var controlsVisible: Bool
-    /// Debug-HUD visibility, owned by `PlayerView` (the overlay must outlive the
-    /// chrome's auto-hide). Toggled from the chip row — DEBUG builds only render
-    /// the chip; a corner overlay button was unreachable by the tvOS focus engine.
-    @Binding var debugHUD: Bool
+    /// The open panel, the debug sheet and a finger on the bar, owned by `PlayerView`, which
+    /// reads them for the status bar, pull-to-dismiss and the tvOS idle timer — and resets them
+    /// when it unmounts these controls. The debug chip renders in DEBUG builds only; a corner
+    /// overlay button was unreachable by the tvOS focus engine.
+    @Binding var interaction: PlayerHUDInteraction
     #if os(tvOS)
     /// Reports the scrub bar's focus to `PlayerView`, which gates window-level pans
     /// into analog scrub only while the bar is focused. Required, not optional —
@@ -62,19 +63,12 @@ struct PlayerControlsView: View {
     /// without this the chrome auto-hid mid-navigation (user-reported).
     let onActivity: () -> Void
     #else
-    /// Reports drag-scrub activity to `PlayerView`, which hides the status bar and
-    /// home indicator while the chrome is collapsed into the lone scrub bar.
-    let onScrubActiveChange: (Bool) -> Void
     /// True while the pull-to-dismiss drag (and its spring-back) is live. Freezes the
     /// auto-hide: a chrome hide mid-drag collapses the status-bar inset, which would shear
     /// the safe-area-bounded top bar away from the rigidly-translating card. See
     /// `PlayerPullToDismiss`.
     let pullDragging: Bool
     #endif
-    /// Reports menu state (track panels / debug sheet) to `PlayerView`: iOS suspends
-    /// the pull-to-dismiss gesture while a panel owns the screen; tvOS suspends the
-    /// HUD's inactivity auto-hide.
-    let onMenuOpenChange: (Bool) -> Void
     #if os(tvOS)
     /// Back pressed with NO menu open: fold the HUD (the reducer's `.menu`). Owned
     /// here — one root `onExitCommand` branches menu-close vs HUD-fold, so Back can
@@ -107,10 +101,10 @@ struct PlayerControlsView: View {
     /// drag began (which would snap the thumb back to live playback mid-grab).
     @State private var scrubGeneration = 0
     #endif
-    /// A finger is on the bar (iOS): the chrome collapses into the lone scrub bar over
-    /// a dimmed, paused frame — the touch analog of tvOS `PlayerHUDState.swipeScrub`.
-    /// Never set on tvOS, where that collapse is reducer-owned in `PlayerView`.
-    @State private var dragScrubbing = false
+    private var dragScrubbing: Bool {
+        get { interaction.dragScrubbing }
+        nonmutating set { interaction.dragScrubbing = newValue }
+    }
     #if os(tvOS)
     /// Whether the scrub bar holds focus — drives the focused-handle ring and gates
     /// remote left/right into ±10s seek steps.
@@ -121,26 +115,16 @@ struct PlayerControlsView: View {
     /// bottom-left corner sits exactly where the chip's is and the chip hides, no
     /// popover arrow). Touch dismisses via the tap catcher; tvOS contains focus in
     /// the panel and dismisses on Menu (`onExitCommand`).
-    // nonisolated: `chipNearest` (and its tests) hash this off the main actor — the
-    // app target's default-MainActor mode would otherwise isolate the conformance.
-    nonisolated enum TrackMenuKind: Hashable {
-        case audio, subtitles, speed, chapters
-        /// VoiceOver name for the open panel. The in-panel `MenuHeader` was removed, so the
-        /// panel container carries the menu's name instead — the opening chip is `.disabled`
-        /// (hence hidden from VoiceOver) while the panel is up.
-        var accessibilityTitle: String {
-            switch self {
-            case .audio: "Audio"
-            case .subtitles: "Subtitles"
-            case .speed: "Playback speed"
-            case .chapters: "Chapters"
-            }
-        }
+    typealias TrackMenuKind = PlayerTrackMenuKind
+    /// The open panel, IDENTITY AND ALL (`nil` = none) — see `PlayerPanel`.
+    private var openMenu: PlayerPanel? {
+        get { interaction.panel }
+        nonmutating set { interaction.panel = newValue }
     }
-    /// The open panel, IDENTITY AND ALL (`nil` = none). Not a bare kind beside a generation
-    /// counter: those two could only ever be written together, and a write that set one
-    /// without the other would silently recycle a panel.
-    @State private var openMenu: PanelIdentity?
+    private var debugHUD: Bool {
+        get { interaction.debugOpen }
+        nonmutating set { interaction.debugOpen = newValue }
+    }
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
     @State private var chipFrames: [TrackMenuKind: CGRect] = [:]
     /// Measured content height PER MENU KIND; the inline panel sizes to it. Keyed
@@ -190,9 +174,9 @@ struct PlayerControlsView: View {
     @State private var hudPhysicalSize = CGSize.zero
     #endif
 
-    // debugHUD needs no build-config fork: the binding is unconditional (only the
-    // DEBUG-only chip can ever set it), so in Release it's just always false.
-    private var menuOpen: Bool { openMenu != nil || debugHUD }
+    // The debug sheet needs no build-config fork: only the DEBUG-only chip can ever open it,
+    // so in Release it's just always false.
+    private var menuOpen: Bool { interaction.menuOpen }
 
     #if os(tvOS)
     /// The open panel's row focus, keyed by each row's `rowID` (threaded to the rows
@@ -248,8 +232,8 @@ struct PlayerControlsView: View {
     /// because landscape's max dimension is the width, which the status bar never touches.
     private var hudPhysicalMax: CGFloat { max(hudPhysicalSize.width, hudPhysicalSize.height) }
 
-    /// The in-view mirror of `PlayerView`'s status-bar rule (`!chromeVisible ||
-    /// scrubHUDActive` hides it): while this is true, the safe-area reader reports
+    /// The negation of `PlayerTouchChrome.statusBarHidden`, which `PlayerView` applies, over
+    /// the same two fields: while this is true, the safe-area reader reports
     /// the status bar's REAL inset — including a legitimate 0 in iPhone landscape —
     /// and `HUDInsetLatch` may adopt it. While false, the bar is hidden by us and
     /// its transient 0 must be ignored.
@@ -359,7 +343,6 @@ struct PlayerControlsView: View {
         #endif
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
-            onMenuOpenChange(open)
         }
         #if os(tvOS)
         // ONE Back handler for the whole HUD, wherever focus sits: an open panel
@@ -504,17 +487,6 @@ struct PlayerControlsView: View {
         }
     }
     #endif
-
-    /// A panel's identity: which menu, and WHICH OPEN of it. Kind alone is stable across a
-    /// close/reopen, which is exactly the case that has to produce a new view, so every value
-    /// mints a fresh `token` — construction IS the generation bump, with no counter a future
-    /// caller can forget to advance.
-    private struct PanelIdentity: Hashable {
-        let kind: TrackMenuKind
-        private let token = UUID()
-
-        init(kind: TrackMenuKind) { self.kind = kind }
-    }
 
     /// The TV-app corner-aligned track panel (every platform): the panel's
     /// bottom-left corner sits exactly on the (vacated) chip's bottom-left corner —
@@ -1026,7 +998,7 @@ struct PlayerControlsView: View {
                         isActive: debugHUD, iconOnly: iconOnly, metrics: m, accessibilityLabel: "Debug info") {
             resetHideTimer(); debugHUD = true
         }
-        .trackPresentation(isPresented: $debugHUD) { debugMenuList }
+        .trackPresentation(isPresented: $interaction.debugOpen) { debugMenuList }
         #endif
     }
 
@@ -1132,7 +1104,6 @@ struct PlayerControlsView: View {
                     // withAnimation again.
                     isScrubbing = true
                     dragScrubbing = true
-                    onScrubActiveChange(true)
                     hideTask?.cancel()
                     cancelPendingSeek()
                     // The picture freezes on the preview frame; the transport INTENT is
@@ -1146,7 +1117,6 @@ struct PlayerControlsView: View {
             },
             onScrubEnded: { frac in
                 dragScrubbing = false
-                onScrubActiveChange(false)
                 resetHideTimer()
                 guard playbackReady, vm.engine != nil, durSeconds > 0 else {
                     // Nothing to commit — hand the bar back rather than leaving it split on a
@@ -1457,7 +1427,7 @@ struct PlayerControlsView: View {
     /// (see `inlineTrackPanel`).
     private func openPanel(_ kind: TrackMenuKind) {
         resetHideTimer()
-        openMenu = PanelIdentity(kind: kind)
+        openMenu = PlayerPanel(kind: kind)
     }
 
     /// Close the open track panel, handing focus back to the chip that opened it on
@@ -1662,19 +1632,16 @@ private extension View {
 private struct PlayerControlsPreviewHost: View {
     let bigWidth: CGFloat?
     @State private var vm = PlayerViewModel.previewPlaying()
-    @State private var visible = true
-    @State private var debugHUD = false
+    @State private var chrome = PlayerTouchChrome()
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             PlayerControlsView(
                 vm: vm,
-                controlsVisible: $visible,
-                debugHUD: $debugHUD,
-                onScrubActiveChange: { _ in },
+                controlsVisible: $chrome.visible,
+                interaction: $chrome.interaction,
                 pullDragging: false,
-                onMenuOpenChange: { _ in },
                 onDismiss: {},
                 previewBigWidth: bigWidth
             )

@@ -23,25 +23,16 @@ struct PlayerView: View {
     /// the video host mounts only once the view model exists). Read at asset construction
     /// for the engine's subtitle sizing; `.zero` means geometry hasn't landed yet.
     @State private var surfaceSize: CGSize = .zero
-    /// Chrome visibility, owned here so the status bar can hide with the controls.
-    /// On tvOS this mirrors `hudState == .fullHUD` (driven by `send`).
-    @State private var chromeVisible = true
-    #if !os(tvOS)
-    /// True while a finger drags the scrub bar — `PlayerControlsView` has collapsed
-    /// the chrome into the lone scrub bar (the iOS analog of tvOS swipe-scrub), so
-    /// the status bar and home indicator hide with it.
-    @State private var scrubHUDActive = false
-    #endif
-    /// Mirror of the HUD's open-menu state (track panels / debug sheet). iOS: while
-    /// a panel owns the screen, the pull-to-dismiss gesture stands down so a drag
-    /// inside a list can't start dragging the whole player. tvOS: the full-HUD
-    /// inactivity auto-hide is suspended — folding the chrome would take the open
-    /// panel (and the debug sheet's mount point) with it.
-    @State private var trackMenuOpen = false
     #if os(tvOS)
-    /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD),
-    /// driven by `TVRemoteInputView` through `send(_:_:)`. See `PlayerHUDReducer`.
-    @State private var hudState: PlayerHUDState = .floor
+    /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD) and what
+    /// the user is doing inside the full chrome, driven by `TVRemoteInputView` through
+    /// `send(_:_:)`. See `PlayerHUDReducer` and `PlayerTVHUD`. Opens on the full chrome: the
+    /// initial load shows it over the scrim.
+    @State private var hud = PlayerTVHUD(state: .fullHUD)
+    private var hudState: PlayerHUDState {
+        get { hud.state }
+        nonmutating set { hud.state = newValue }
+    }
     @State private var idleTask: Task<Void, Never>? = nil
     /// Mirrors the full-HUD scrubber's focus (reported by `PlayerControlsView`) —
     /// gates window-level pans into analog scrub; on any other focused control a
@@ -61,11 +52,20 @@ struct PlayerView: View {
     /// exactly once; later loading dips (track-switch re-buffers) keep whatever
     /// HUD state the user is in, so an open menu survives the swap.
     @State private var didBeginPlayback = false
+    #else
+    /// The chrome's visibility and what the user is doing inside it, owned here so the status
+    /// bar, home indicator and pull-to-dismiss derive from the same storage the controls drive.
+    @State private var chrome = PlayerTouchChrome()
     #endif
-    /// Unconditional so the binding can thread into `PlayerControlsView`'s chip
-    /// row without forking its initializer per build config; everything that
-    /// RENDERS from it (the chip, the overlay) stays `#if DEBUG`.
-    @State private var showDebugHUD = false
+
+    /// Chrome visibility. tvOS: the full chrome is mounted (`PlayerHUDState.chromeUp`).
+    private var chromeVisible: Bool {
+        #if os(tvOS)
+        hudState.chromeUp
+        #else
+        chrome.visible
+        #endif
+    }
     /// One-shot suppression for the contextual Skip / Next Episode button: the segment
     /// id whose prompt has already shown (countdown elapsed, tapped, or revealed past).
     /// Shared by `PlayerSegmentPrompt`'s timer/tap and the tvOS `send` pipeline; cleared
@@ -96,7 +96,7 @@ struct PlayerView: View {
         // the sheet handle.
         .playerPullToDismiss(
             presentation: presentation,
-            isEnabled: !trackMenuOpen && !scrubHUDActive,
+            isEnabled: chrome.pullToDismissEnabled,
             exclusionsActive: chromeVisible
         ) { exitPlayer() }
         #endif
@@ -117,10 +117,10 @@ struct PlayerView: View {
         // hides in lockstep with the chrome.
         #if !os(tvOS)
         // PAIRED PREDICATE: PlayerControlsView.statusBarExpectedVisible is the
-        // exact negation of this expression. Its HUDInsetLatch only adopts the
+        // exact negation of this rule. Its HUDInsetLatch only adopts the
         // safe-area inset while the bar is expected visible — change one side
         // and the other must follow, or the top bars latch stale insets.
-        .statusBarHidden(!chromeVisible || scrubHUDActive)
+        .statusBarHidden(chrome.statusBarHidden)
         // No `.defersSystemGestures(on: .top)`: deferring the top edge is what made
         // Control Center / Notification Center need TWO swipes (the first only surfaced
         // the system grabber). We'd added it so the pull-to-dismiss owned the top zone,
@@ -130,15 +130,12 @@ struct PlayerView: View {
         #endif
         .persistentSystemOverlays(systemOverlaysVisible ? .automatic : .hidden)
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-        // The controls (which restore chromeVisible) only exist in .playing. If the
-        // stream fails after the chrome auto-hid, force it back so the status bar and
-        // home indicator return over the error overlay — and so a successful retry
-        // re-mounts the controls already visible. iOS-only: on tvOS the surface's
-        // phase hand-off owns chromeVisible (mirroring hudState), and forcing it
-        // true here would desync it from the floor.
+        // iOS-only: on tvOS the chrome is the reducer's `chromeUp`, and the surface's
+        // phase hand-off owns it.
         #if !os(tvOS)
-        .onChange(of: isPlaybackActive) { _, active in
-            if !active { chromeVisible = true }
+        .onChange(of: viewModel?.phase) { old, new in
+            guard let old, let new else { return }
+            chrome.phaseChanged(from: old, to: new)
         }
         #endif
         .task { await beginSession() }
@@ -245,11 +242,9 @@ struct PlayerView: View {
                     // tap-to-toggle, Close in its real spot, and the track chips as
                     // soon as their lists populate. Engine-backed transport is gated
                     // inside on vm.phase, so nothing inert looks tappable.
-                    PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
-                                       debugHUD: $showDebugHUD,
-                                       onScrubActiveChange: { scrubHUDActive = $0 },
-                                       pullDragging: presentation.isDragging,
-                                       onMenuOpenChange: { trackMenuOpen = $0 }) { exitPlayer() }
+                    PlayerControlsView(vm: vm, controlsVisible: $chrome.visible,
+                                       interaction: $chrome.interaction,
+                                       pullDragging: presentation.isDragging) { exitPlayer() }
                     #endif
                     // Contextual Skip Intro/Recap · Next Episode button — a sibling
                     // layer ABOVE the chrome so it's independent of the auto-hide HUD
@@ -285,7 +280,7 @@ struct PlayerView: View {
         #if os(tvOS)
         chromeVisible
         #else
-        chromeVisible && !scrubHUDActive
+        chrome.systemOverlaysVisible
         #endif
     }
 
@@ -308,12 +303,6 @@ struct PlayerView: View {
         playback.dismiss()
     }
 
-    /// True only while actively playing — gates the chrome-visibility reset above.
-    private var isPlaybackActive: Bool {
-        if case .playing = viewModel?.phase { return true }
-        return false
-    }
-
     /// Whether the contextual segment button may show. tvOS gates on the clean floor
     /// (revealing the HUD dismisses it); iOS hides it while a drag-scrub has collapsed
     /// the chrome into the lone bar (which owns the bottom edge and reads as clean).
@@ -321,7 +310,7 @@ struct PlayerView: View {
         #if os(tvOS)
         hudState == .floor
         #else
-        !scrubHUDActive
+        chrome.segmentPromptEnabled
         #endif
     }
 
@@ -568,26 +557,16 @@ struct PlayerView: View {
             if hudState.chromeUp {
                 // Back handling lives INSIDE the controls (one root handler that
                 // closes an open panel before folding); `onExitHUD` is the no-menu
-                // branch. The menu mirror gates the idle timer: cancel under an
-                // open panel, re-arm when it closes.
+                // branch.
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
-                                   debugHUD: $showDebugHUD,
+                                   interaction: $hud.interaction,
                                    onScrubberFocusChange: { scrubberHasFocus = $0 },
                                    onScrubberStep: { send(.click($0), vm) },
                                    onScrubberSelect: { send(.select, vm) },
                                    positionAnimation: scrubPositionAnimation(vm),
                                    onActivity: { noteRemoteActivity() },
-                                   onMenuOpenChange: { open in
-                                       trackMenuOpen = open
-                                       if open { idleTask?.cancel() } else { restartIdleTimer() }
-                                   },
                                    onExitHUD: { send(.menu, vm) }) { exitPlayer() }
                     .transition(.opacity)
-                    // The mirror can go stale when the controls unmount with a panel
-                    // up (phase → .failed swaps in the error overlay): a remount
-                    // starts with no menu but `trackMenuOpen` stuck true would
-                    // suspend the auto-hide for the rest of the session.
-                    .onDisappear { trackMenuOpen = false }
             }
         }
         // Key the cross-fades on what actually changes on screen, not on `hudState`: these two
@@ -607,6 +586,10 @@ struct PlayerView: View {
         .animation(.playerStateCrossfade, value: viewModel?.showsStallScrim ?? false)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
+        // An open panel suspends the full HUD's auto-hide; closing it re-arms.
+        .onChange(of: hud.interaction.menuOpen) { _, open in
+            if open { idleTask?.cancel() } else { restartIdleTimer() }
+        }
         // Pause pins the full HUD (the auto-hide guard reads the same intent); resuming
         // re-arms it. Keyed on INTENT, not the engine mirror, so it agrees with
         // `restartIdleTimer`'s guard: a stale `.paused` beat inside a slow engine's settle
@@ -638,9 +621,8 @@ struct PlayerView: View {
         // playback has begun (a post-failure retry remount), start on the clean
         // floor. Clear any click-seek debris a previous mount left armed.
         .onAppear {
-            hudState = didBeginPlayback ? .floor : .fullHUD
+            hud = PlayerTVHUD(state: didBeginPlayback ? .floor : .fullHUD)
             vm.cancelPendingSeek()
-            chromeVisible = hudState.chromeUp
         }
         // Command-acceptance transitions own the HUD floor hand-offs:
         // • first accepted — the loading chrome drops to the reducer's clean
@@ -680,7 +662,6 @@ struct PlayerView: View {
                 default: break
                 }
             }
-            chromeVisible = hudState.chromeUp
         }
     }
 
@@ -742,7 +723,6 @@ struct PlayerView: View {
                 segmentPromptExpiredID = vm.activeSegmentID
                 hudState = .fullHUD
                 scrubberHasFocus = false
-                chromeVisible = true
                 restartIdleTimer()
                 return
             case .swipeHorizontal, .menu, .playPause, .idle:
@@ -793,7 +773,6 @@ struct PlayerView: View {
             for case .preview(let target) in effects { scheduleClickSeek(to: target, vm) }
         }
 
-        chromeVisible = hudState.chromeUp
         restartIdleTimer()
     }
 
@@ -903,7 +882,7 @@ struct PlayerView: View {
         case .fullHUD:
             // Pinned while a seek is alive: folding to the floor mid-flight would swap the HUD's
             // dot bar for the floor's line bar in the middle of the crossing.
-            guard !trackMenuOpen, viewModel?.desiredPlaying == true, viewModel?.flight == nil else { return }
+            guard !hud.interaction.menuOpen, viewModel?.desiredPlaying == true, viewModel?.flight == nil else { return }
             timeout = .seconds(4)
         }
         idleTask = Task {
