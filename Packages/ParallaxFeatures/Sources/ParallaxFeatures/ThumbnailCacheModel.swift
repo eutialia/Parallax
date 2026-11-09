@@ -12,8 +12,9 @@ public final class ThumbnailCacheModel {
     }
 
     private var state = State.calculating
-    /// Bumped by every clear, so a size read that started before one can tell it is stale.
-    private var clears = 0
+    /// Bumped when a clear starts and again when it lands, so a size read that overlapped any part
+    /// of one can tell it measured what the clear removed.
+    private var clearEdges = 0
 
     private let size: @Sendable () async -> Int64
     private let wipe: @Sendable () async -> Void
@@ -36,18 +37,19 @@ public final class ThumbnailCacheModel {
     /// What the card's `.task` runs: reads the cache's size. A read that a clear overtook is
     /// dropped, since it measured what the clear removed.
     public func measure() async {
-        let clearsBefore = clears
+        let edgesBefore = clearEdges
         let bytes = await size()
-        guard clears == clearsBefore, state != .clearing else { return }
+        guard clearEdges == edgesBefore, state != .clearing else { return }
         state = .size(bytes)
     }
 
     /// A no-op while a clear is already running.
     public func clear() async {
         guard state != .clearing else { return }
-        clears += 1
+        clearEdges += 1
         state = .clearing
         await wipe()
+        clearEdges += 1
         state = .size(0)
     }
 }
