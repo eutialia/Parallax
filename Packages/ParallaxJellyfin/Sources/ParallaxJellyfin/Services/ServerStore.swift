@@ -66,6 +66,9 @@ public actor ServerStore {
     private var loadedSessions: [Session] = []
     private var activeID: ServerID?
     private var hiddenCollections: [String: Set<String>] = [:]
+    /// The cleanup each rejected session still has running. A sign-in for the same server waits
+    /// for it: its Keychain delete and snapshot purge would otherwise land on the new session.
+    private var invalidations: [ServerID: Task<Void, Never>] = [:]
 
     public init(settings: SettingsStore, keychain: any KeychainStoring, snapshots: SnapshotStore) {
         self.settings = settings
@@ -323,6 +326,7 @@ public actor ServerStore {
 
     /// Adds (or replaces) a session.
     public func add(_ session: Session) async throws {
+        await invalidations[session.id]?.value
         let key = Self.secretKey(for: session.id)
 
         do {
@@ -552,9 +556,17 @@ public actor ServerStore {
         guard loadedSessions.first(where: { $0.id == id })?.accessToken == rejected.accessToken else { return false }
         loadedSessions.removeAll { $0.id == id }
 
-        let key = Self.secretKey(for: id)
+        let cleanup = Task { await self.finishInvalidation(of: id) }
+        invalidations[id] = cleanup
+        await cleanup.value
+
+        Log.persistence.info("ServerStore.invalidateSession: \(id.rawValue) signed out after a rejected token")
+        return true
+    }
+
+    private func finishInvalidation(of id: ServerID) async {
         do {
-            try await keychain.delete(key)
+            try await keychain.delete(Self.secretKey(for: id))
         } catch {
             Log.persistence.error("ServerStore.invalidateSession: Keychain delete failed for \(id.rawValue) — the dead token will be re-rejected next launch. \(error.localizedDescription)")
         }
@@ -571,9 +583,7 @@ public actor ServerStore {
         // The token is dead, so the cached payloads it produced can no longer be revalidated —
         // hydrating them next launch would show a signed-out server's shelves as live content.
         await snapshots.removeSnapshots(forServerID: id.rawValue)
-
-        Log.persistence.info("ServerStore.invalidateSession: \(id.rawValue) signed out after a rejected token")
-        return true
+        invalidations[id] = nil
     }
 
     private func persistActiveID() async throws {
