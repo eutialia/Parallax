@@ -115,12 +115,6 @@ struct PlayerControlsView: View {
     /// remote left/right into ±10s seek steps.
     @FocusState private var scrubberFocused: Bool
     #endif
-    /// Which track menu is open. EVERY platform presents it as the INLINE
-    /// corner-aligned panel (see `inlineTrackPanel` — the TV-app look: the panel's
-    /// bottom-left corner sits exactly where the chip's is and the chip hides, no
-    /// popover arrow). Touch dismisses via the tap catcher; tvOS contains focus in
-    /// the panel and dismisses on Menu (`onExitCommand`).
-    typealias TrackMenuKind = PlayerTrackMenuKind
     /// The open panel, IDENTITY AND ALL (`nil` = none) — see `PlayerPanel`.
     private var openMenu: PlayerPanel? {
         get { interaction.panel }
@@ -131,12 +125,12 @@ struct PlayerControlsView: View {
         nonmutating set { interaction.debugOpen = newValue }
     }
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
-    @State private var chipFrames: [TrackMenuKind: CGRect] = [:]
+    @State private var chipFrames: [PlayerTrackMenuKind: CGRect] = [:]
     /// Measured content height PER MENU KIND; the inline panel sizes to it. Keyed
     /// because one shared scalar carried the previous menu's height into the next
     /// menu's first frames (audio's tall list sized the short speed panel, which
     /// then snapped down a frame later).
-    @State private var panelContentHeights: [TrackMenuKind: CGFloat] = [:]
+    @State private var panelContentHeights: [PlayerTrackMenuKind: CGFloat] = [:]
     /// The HUD's size in the "hud" coordinate space — the panel's clamp + scale
     /// anchor inputs.
     @State private var hudSize: CGSize = .zero
@@ -182,7 +176,7 @@ struct PlayerControlsView: View {
     /// must peel one layer, not strand focus) and by the chip row's `defaultFocus`
     /// (focus moving down from the scrubber lands on the chip nearest the playhead,
     /// not the geometric screen-center pick).
-    @FocusState private var chipFocus: TrackMenuKind?
+    @FocusState private var chipFocus: PlayerTrackMenuKind?
     /// Whether engine-backed input is accepted: a live stream, or a MID-SESSION reload,
     /// which the model parks and honors (`PendingReload`). A cold start is the only locked
     /// window. The chrome mounts from loading onward so Close, tap-to-toggle and the track
@@ -473,7 +467,7 @@ struct PlayerControlsView: View {
     /// corners still meet. The grow/shrink scales out of that corner (a screen-space
     /// `UnitPoint`, like the iOS context-menu bloom); content-sized up to a cap.
     @ViewBuilder
-    private func inlineTrackPanel(_ kind: TrackMenuKind, chip: CGRect) -> some View {
+    private func inlineTrackPanel(_ kind: PlayerTrackMenuKind, chip: CGRect) -> some View {
         let width = min(panelWidth(kind), max(hudSize.width - 32, 240))
         let fitsTrailing = chip.minX + width + 16 <= hudSize.width
         let x = fitsTrailing ? chip.minX : max(chip.maxX - width, 16)
@@ -503,7 +497,7 @@ struct PlayerControlsView: View {
     /// Panel width per menu kind — the content decides (speed is a column of
     /// numbers, chapters carry timecodes and long names), and tvOS scales up:
     /// the menus ride semantic text styles, which render ~1.5× at 10 feet.
-    private func panelWidth(_ kind: TrackMenuKind) -> CGFloat {
+    private func panelWidth(_ kind: PlayerTrackMenuKind) -> CGFloat {
         let base: CGFloat
         switch kind {
         case .speed: base = 200
@@ -523,7 +517,7 @@ struct PlayerControlsView: View {
     /// Content-sized (measured per kind in `TrackMenuPanel`), capped at a fixed
     /// ceiling and at the room above the chip; a 320 fallback covers each kind's
     /// first open before its measurement lands.
-    private func panelHeight(_ kind: TrackMenuKind, anchoredTo chip: CGRect) -> CGFloat {
+    private func panelHeight(_ kind: PlayerTrackMenuKind, anchoredTo chip: CGRect) -> CGFloat {
         let content = panelContentHeights[kind] ?? 320
         #if os(tvOS)
         return min(content, 840, max(chip.maxY - 60, 280))
@@ -533,7 +527,7 @@ struct PlayerControlsView: View {
     }
 
     @ViewBuilder
-    private func panelMenu(_ kind: TrackMenuKind) -> some View {
+    private func panelMenu(_ kind: PlayerTrackMenuKind) -> some View {
         Group {
             switch kind {
             case .audio: audioMenuList
@@ -562,7 +556,7 @@ struct PlayerControlsView: View {
     /// scrolled to — `panelSeatRowID` resolves to this same row there, for every kind.
     /// Nil on touch platforms — no focus engine in the inline panel — which keeps this the
     /// only place the tvOS fork lives.
-    private func panelSeatFocus(_ kind: TrackMenuKind) -> (() -> Void)? {
+    private func panelSeatFocus(_ kind: PlayerTrackMenuKind) -> (() -> Void)? {
         #if os(tvOS)
         // Never write a nil dismiss into a panel with no focusable row at all (every audio
         // track unsupported): the chrome is disabled and nothing in the panel can take
@@ -575,7 +569,7 @@ struct PlayerControlsView: View {
 
     /// The row a panel's list opens SELECTED-at-top on: the selected track / rate, or the
     /// chapter playing now.
-    private func panelLeadingRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
+    private func panelLeadingRowID(_ kind: PlayerTrackMenuKind) -> TrackMenuRowID? {
         switch kind {
         case .audio:
             AudioTrackMenu.leadingRowID(tracks: vm.availableAudioTracks,
@@ -595,7 +589,7 @@ struct PlayerControlsView: View {
     /// differ from the focus target there, and pinning a row focus can't reach leaves the
     /// engine's reveal pulling the offset off the seat. The other three kinds resolve the
     /// same either way; touch platforms have no focus to reconcile and keep the selected row.
-    private func panelSeatRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
+    private func panelSeatRowID(_ kind: PlayerTrackMenuKind) -> TrackMenuRowID? {
         #if os(tvOS)
         panelFocusRowID(kind)
         #else
@@ -606,7 +600,7 @@ struct PlayerControlsView: View {
     #if os(tvOS)
     /// The row the panel should land first focus on: its leading row, except in audio,
     /// where the unsupported rows are `.disabled` and can't take focus.
-    private func panelFocusRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
+    private func panelFocusRowID(_ kind: PlayerTrackMenuKind) -> TrackMenuRowID? {
         guard kind == .audio else { return panelLeadingRowID(kind) }
         return AudioTrackMenu.focusableLeadingRowID(tracks: vm.availableAudioTracks,
                                                     selectedID: vm.selectedAudioTrack?.id)
@@ -871,15 +865,15 @@ struct PlayerControlsView: View {
 
     /// The chip has handed its spot to the open inline panel (see
     /// `PlayerGlassChip.isVacated`).
-    private func isVacated(_ kind: TrackMenuKind) -> Bool {
+    private func isVacated(_ kind: PlayerTrackMenuKind) -> Bool {
         openMenu?.kind == kind
     }
 
     /// Pure playhead-nearest pick over the measured chip frames — `playheadChip`'s
     /// core, extracted nonisolated so `PlayerControlsViewTests` can pin the mapping.
     nonisolated static func chipNearest(
-        playheadX: CGFloat, in frames: [TrackMenuKind: CGRect]
-    ) -> TrackMenuKind? {
+        playheadX: CGFloat, in frames: [PlayerTrackMenuKind: CGRect]
+    ) -> PlayerTrackMenuKind? {
         frames.min { abs($0.value.midX - playheadX) < abs($1.value.midX - playheadX) }?.key
     }
 
@@ -888,14 +882,14 @@ struct PlayerControlsView: View {
     /// DISABLED (it gates on a live engine), and a FocusState write or default-focus
     /// preference targeting a disabled view is silently dropped — both the playhead
     /// pick and the close-restore must route around it.
-    private func chipIsFocusable(_ kind: TrackMenuKind) -> Bool {
+    private func chipIsFocusable(_ kind: PlayerTrackMenuKind) -> Bool {
         kind != .chapters || playbackReady
     }
 
     /// The chip whose center sits nearest the playhead dot — the `defaultFocus`
     /// target when focus moves down from the scrubber. Falls back to the speed chip
     /// (always present and enabled) before geometry lands.
-    private var playheadChip: TrackMenuKind {
+    private var playheadChip: PlayerTrackMenuKind {
         let progress = vm.virtualFraction
         let candidates = chipFrames.filter { chipIsFocusable($0.key) }
         guard scrubberFrame.width > 0, !candidates.isEmpty else { return .speed }
@@ -1241,7 +1235,7 @@ struct PlayerControlsView: View {
     /// the four builders below carry only their content — and so a fifth menu can't be added
     /// with one of the three quietly missing.
     private func trackMenuPanel(
-        _ kind: TrackMenuKind,
+        _ kind: PlayerTrackMenuKind,
         @ViewBuilder content: @escaping () -> some View
     ) -> some View {
         TrackMenuPanel(
@@ -1311,7 +1305,7 @@ struct PlayerControlsView: View {
 
     /// Open a track panel: re-arm the auto-hide, then mint a fresh identity for this open
     /// (see `inlineTrackPanel`).
-    private func openPanel(_ kind: TrackMenuKind) {
+    private func openPanel(_ kind: PlayerTrackMenuKind) {
         resetHideTimer()
         openMenu = PlayerPanel(kind: kind)
     }
@@ -1488,8 +1482,8 @@ private extension View {
 /// (Hiding the open chip is `PlayerGlassChip.isVacated`'s job: opacity alone can't
 /// remove glass material, so it has to happen inside the chip.)
 private struct TrackChipAnchor: ViewModifier {
-    let kind: PlayerControlsView.TrackMenuKind
-    @Binding var frames: [PlayerControlsView.TrackMenuKind: CGRect]
+    let kind: PlayerTrackMenuKind
+    @Binding var frames: [PlayerTrackMenuKind: CGRect]
 
     func body(content: Content) -> some View {
         content

@@ -458,7 +458,7 @@ struct SpeedMenu: View {
 /// Width and height are the presenting panel's to set (`panelWidth`/`panelHeight`), fed by
 /// the content-height report.
 struct TrackMenuPanel<Content: View>: View {
-    let kind: PlayerControlsView.TrackMenuKind
+    let kind: PlayerTrackMenuKind
     /// The row seated flush against the panel's top edge. On tvOS this is also the row
     /// first focus lands on (`PlayerControlsView.panelSeatRowID`) — scroll and focus have
     /// to aim at the same row, or the engine's reveal drags the offset off the seat.

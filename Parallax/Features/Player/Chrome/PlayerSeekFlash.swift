@@ -18,9 +18,8 @@ import ParallaxFeatures
 /// App target only: pure SwiftUI, no platform conditionals (the double-tap gesture
 /// driving it is wired by the touch platforms; tvOS seeks through its HUD reducer).
 struct PlayerSeekFlash: View {
-    typealias Direction = PlayerSeekDirection
 
-    var direction: Direction
+    var direction: PlayerSeekDirection
     /// Accumulated skip for the running burst: 10, 20, 30…
     var seconds: Int
     /// Tap location in the player surface's coordinate space — the ripple's origin.

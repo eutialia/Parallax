@@ -8,7 +8,7 @@ import ParallaxFeatures
 /// progress dot, not the focus engine's geometric screen-center pick.
 @Suite("Chip row playhead focus")
 struct PlayerControlsChipFocusTests {
-    private typealias Kind = PlayerControlsView.TrackMenuKind
+    private typealias Kind = PlayerTrackMenuKind
 
     /// A realistic tvOS chip row in "hud" coordinates:
     /// audio · subtitles · speed · chapters, left to right.
