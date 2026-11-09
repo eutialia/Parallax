@@ -27,16 +27,13 @@ nonisolated public struct PlayerPanel: Hashable, Sendable {
     public init(kind: PlayerTrackMenuKind) { self.kind = kind }
 }
 
-/// What the user is doing inside the mounted HUD: an open track panel, the debug sheet, a finger
-/// on the scrub bar. One owner — the player surface — so the facts the surface reads (status bar,
-/// pull-to-dismiss, the idle timer) and the facts the controls draw from are the same storage.
-/// The controls die with their gestures and panels; whoever unmounts them owns resetting this.
+/// The menus open inside the mounted HUD: a track panel or the debug sheet. One owner — the
+/// player surface — so the facts the surface reads (pull-to-dismiss, the idle timer) and the
+/// facts the controls draw from are the same storage. The panels die with the controls; whoever
+/// unmounts them owns resetting this.
 public struct PlayerHUDInteraction: Equatable, Sendable {
     public var panel: PlayerPanel?
     public var debugOpen = false
-    /// A finger is on the touch scrub bar: the chrome collapses into the lone bar over a held
-    /// frame. Never set by the remote, whose scrubs are `PlayerHUDState.swipeScrub`.
-    public var dragScrubbing = false
 
     public init() {}
 
