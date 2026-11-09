@@ -20,7 +20,8 @@ import Testing
 /// the SMB connections under the real pool (`nas`), Bonjour browsing, the clock, reachability
 /// (scripted, online until told otherwise), the display's HDR support and its eligibility changes,
 /// what AVPlayer plays, the audio session, both frame thumbnailers, the playback engines
-/// (`engines`), Now Playing, the display and VLC's subtitle fonts.
+/// (`engines`), Now Playing, the display, VLC's subtitle fonts and the retained diagnostics log
+/// (empty, with no network to hand it off over).
 @MainActor
 final class AppWorld {
     private(set) var app: AppModel
@@ -121,7 +122,8 @@ final class AppWorld {
             clientName: "Parallax",
             deviceName: "Scenario Device",
             appVersion: "1.0",
-            launchReveal: launchReveal
+            launchReveal: launchReveal,
+            diagnostics: .offline
         )
 
         let earlierLaunch = AppModel(environment: environment)
@@ -644,6 +646,25 @@ final class RecordingAudioSession: AudioSessionControlling {
         log.withLock { $0.append(.activate) }
     }
     func deactivate() async { log.withLock { $0.append(.deactivate) } }
+}
+
+private extension DiagnosticsEdge {
+    static let offline = DiagnosticsEdge(
+        sessions: { [] },
+        isEnabled: { true },
+        setEnabled: { _ in },
+        clear: {},
+        export: { DiagnosticsExportFile(fileName: "diagnostics.txt", payload: Data()) },
+        makeHandoffServer: { _ in OfflineHandoffServer() }
+    )
+}
+
+private struct OfflineHandoffServer: DiagnosticsHandoffServing {
+    func start() async throws -> DiagnosticsHandoffServer.Endpoint {
+        throw DiagnosticsHandoffServer.HandoffError.offNetwork
+    }
+    func waitUntilStopped() async {}
+    func stop() async {}
 }
 
 extension AppWorld {

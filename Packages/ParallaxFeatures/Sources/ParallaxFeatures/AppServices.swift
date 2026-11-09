@@ -69,6 +69,7 @@ public struct AppServices {
     /// Generates + caches frame-grab posters for source-neutral items that carry no server
     /// artwork (SMB). App-scoped so generated thumbnail URLs survive grid teardown/re-entry.
     public let mediaArtworkProvider: MediaArtworkProvider
+    public let diagnostics: DiagnosticsEdge
 
     /// - Parameter onTokenRejected: every library and playback client reports here when a server
     ///   rejects our access token. The sign-in client is deliberately NOT wired: a 401 while
@@ -161,6 +162,7 @@ public struct AppServices {
         engineSubtitleFonts = environment.engineSubtitleFonts
         urlSession = URLSession(configuration: environment.urlSessionConfiguration)
         subtitleFetchTimeout = environment.subtitleFetchTimeout
+        diagnostics = environment.diagnostics
 
         smbDiscovery = SMBBonjourDiscovery(browse: environment.browseSMBServices)
         let resumeStore = SMBResumeStore(defaults: defaults)

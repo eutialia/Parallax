@@ -60,6 +60,7 @@ public struct AppEnvironment {
     public let deviceName: String
     public let appVersion: String
     public let launchReveal: LaunchRevealCoverage
+    public let diagnostics: DiagnosticsEdge
 
     public init(
         keychain: any KeychainStoring,
@@ -86,7 +87,8 @@ public struct AppEnvironment {
         clientName: String,
         deviceName: String,
         appVersion: String,
-        launchReveal: LaunchRevealCoverage
+        launchReveal: LaunchRevealCoverage,
+        diagnostics: DiagnosticsEdge
     ) {
         self.keychain = keychain
         self.defaults = defaults
@@ -113,6 +115,7 @@ public struct AppEnvironment {
         self.deviceName = deviceName
         self.appVersion = appVersion
         self.launchReveal = launchReveal
+        self.diagnostics = diagnostics
     }
 }
 

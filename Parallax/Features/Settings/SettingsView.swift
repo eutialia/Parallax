@@ -155,12 +155,12 @@ struct SettingsView: View {
         case .license(let entry):
             LicenseTextView(entry: entry)
         case .diagnostics:
-            DiagnosticsView()
+            DiagnosticsView(app: app)
         case .diagnosticsSession(let session):
             DiagnosticsSessionView(session: session)
         case .diagnosticsHandoff:
             #if os(tvOS)
-            DiagnosticsHandoffView()
+            DiagnosticsHandoffView(app: app)
             #else
             EmptyView()
             #endif

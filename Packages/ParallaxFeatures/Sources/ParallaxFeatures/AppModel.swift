@@ -165,6 +165,14 @@ public final class AppModel {
         return ThumbnailCacheModel(size: { await provider.cacheSize() }, clear: { await provider.clearCache() })
     }
 
+    public func makeDiagnostics() -> DiagnosticsModel {
+        DiagnosticsModel(edge: services.diagnostics)
+    }
+
+    public func makeDiagnosticsHandoff() -> DiagnosticsHandoffModel {
+        DiagnosticsHandoffModel(edge: services.diagnostics)
+    }
+
     public func makeSMBServerSettings(id: ServerID, data: SMBServerData) -> SMBServerSettingsModel {
         SMBServerSettingsModel(
             id: id,
