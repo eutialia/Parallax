@@ -102,13 +102,28 @@ struct PlayerTouchChromeTests {
         var chrome = PlayerTouchChrome()
         _ = tap(&chrome, .backward, after: 0)
         _ = tap(&chrome, .backward, after: 0.1)
-        let burst = try #require(chrome.burst)
+        _ = try #require(chrome.burst)
         chrome.phaseChanged(from: .playing, to: .loading)
         #expect(!chrome.showsBurst(playbackReady: true))
 
         #expect(tap(&chrome, zone, after: 0.5) == [])
         #expect(chrome.visible == false)
-        #expect(chrome.burst == burst)
+    }
+
+    /// Hiding the revealed chrome again must give a clean surface, not the covered burst's dome
+    /// and stale "N seconds" for whatever is left of its dismissal timer.
+    @Test("a burst the chrome covered does not come back when the chrome hides again")
+    func coveredBurstDoesNotReturn() throws {
+        var chrome = PlayerTouchChrome()
+        _ = tap(&chrome, .backward, after: 0)
+        _ = tap(&chrome, .backward, after: 0.1)
+        _ = try #require(chrome.burst)
+        chrome.phaseChanged(from: .playing, to: .loading)
+
+        _ = tap(&chrome, nil, after: 0.5)
+        #expect(chrome.visible == false)
+        #expect(chrome.burst == nil)
+        #expect(!chrome.showsBurst(playbackReady: true))
     }
 
     @Test("a player that can't seek just toggles on an edge double-tap")
