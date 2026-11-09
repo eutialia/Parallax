@@ -187,6 +187,20 @@ struct PlayerTouchChromeTests {
         #expect(!chrome.autoHideEligible(pullDragging: false, desiredPlaying: true))
     }
 
+    @Test("an auto-hide that fires after a panel opened or a finger took the bar leaves the chrome up")
+    func staleAutoHideIsIgnored() {
+        var underPanel = PlayerTouchChrome()
+        underPanel.interaction.panel = PlayerPanel(kind: .audio)
+        underPanel.autoHideFired()
+        #expect(underPanel.visible)
+        #expect(underPanel.interaction.menuOpen)
+
+        var underDrag = PlayerTouchChrome()
+        _ = underDrag.scrubDragChanged()
+        underDrag.autoHideFired()
+        #expect(underDrag.visible)
+    }
+
     @Test("a tap with a menu open closes it and keeps the chrome up")
     func tapClosesMenus() {
         var chrome = PlayerTouchChrome()
