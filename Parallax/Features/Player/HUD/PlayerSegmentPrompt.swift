@@ -9,10 +9,9 @@ import ParallaxFeatures
 ///
 /// It is INDEPENDENT of the auto-hide HUD: driven purely by which segment the
 /// playhead is inside (`vm.segmentPrompt`), it appears over a clean frame on segment
-/// entry and runs a 5s reverse-fill countdown, then auto-hides. **One-shot**: once it
+/// entry and runs a reverse-fill countdown, then auto-hides. **One-shot**: once it
 /// expires (or is dismissed) it stays suppressed for that segment until the playhead
-/// leaves and re-enters (a fresh edge crossing re-arms it). The suppression id lives in
-/// the parent (`PlayerView`) so the tvOS remote pipeline shares the same one-shot.
+/// leaves and re-enters — `vm.segmentPromptGate`, which the tvOS remote pipeline shares.
 ///
 /// - iOS: a tappable glass capsule. Tap fires the action; the surrounding screen-tap
 ///   layer still toggles the HUD.
@@ -23,31 +22,21 @@ import ParallaxFeatures
 struct PlayerSegmentPrompt: View {
     let vm: PlayerViewModel
     /// Whether the button may show at all right now. tvOS passes `hudState == .floor`
-    /// (revealing the HUD hides it); iOS passes `!scrubHUDActive` (the collapsed
-    /// drag-scrub bar reads as a clean screen and owns the bottom edge).
+    /// (revealing the HUD hides it); iOS passes `PlayerTouchChrome.segmentPromptEnabled`
+    /// (the collapsed drag-scrub bar reads as a clean screen and owns the bottom edge).
     let enabled: Bool
-    /// Shared one-shot suppression: the segment id whose prompt has already been shown
-    /// (countdown elapsed, tapped, or revealed-past). Written by the countdown task,
-    /// the iOS tap, and tvOS `send`; cleared when the playhead leaves all segments.
-    @Binding var expiredSegmentID: String?
     /// Fire the active prompt (skip / next episode). Same closure tvOS `send` calls, so
     /// the action is identical across the tap and the remote.
     let onActivate: () -> Void
 
-    /// The reverse-fill countdown length, shared by both platforms (the user unified
-    /// iOS onto the tvOS one-shot).
-    private let countdownSeconds: Double = 5
-
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drain: Double = 1
 
-    private var currentID: String? { vm.activeSegmentID }
-    private var visible: Bool {
-        enabled && currentID != nil && currentID != expiredSegmentID
-    }
+    private var gate: SegmentPromptGate { vm.segmentPromptGate }
     /// The identity the countdown + visibility callbacks key on: the shown segment, or
     /// nil when nothing should show. A new value re-arms the timer and the drain.
-    private var shownKey: String? { visible ? currentID : nil }
+    private var shownKey: String? { gate.shownSegmentID(enabled: enabled) }
+    private var visible: Bool { shownKey != nil }
 
     private var info: (icon: String, label: String, sub: String?) {
         switch vm.segmentPrompt {
@@ -82,21 +71,15 @@ struct PlayerSegmentPrompt: View {
         .onChange(of: shownKey, initial: true) { _, key in
             drain = 1
             if key != nil, !reduceMotion {
-                withAnimation(.linear(duration: countdownSeconds)) { drain = 0 }
+                withAnimation(.linear(duration: SegmentPromptGate.countdown / .seconds(1))) { drain = 0 }
             }
         }
-        // Leaving every segment re-arms the one-shot — a later re-entry shows again.
-        .onChange(of: currentID) { _, id in
-            if id == nil { expiredSegmentID = nil }
-        }
-        // The 5s auto-hide: suppress this segment once the countdown elapses. Keyed on
-        // the shown segment, so it cancels the moment the button hides or the segment
-        // changes.
+        .onChange(of: vm.activeSegmentID) { _, id in gate.activeSegmentChanged(to: id) }
+        // Keyed on the shown segment, so the countdown cancels the moment the button hides
+        // or the segment changes.
         .task(id: shownKey) {
             guard shownKey != nil else { return }
-            try? await Task.sleep(for: .seconds(countdownSeconds))
-            guard !Task.isCancelled else { return }
-            expiredSegmentID = currentID
+            await gate.runCountdown()
         }
     }
 
