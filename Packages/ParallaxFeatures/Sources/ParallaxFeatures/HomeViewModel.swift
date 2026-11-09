@@ -46,21 +46,35 @@ public final class HomeViewModel {
     public private(set) var heroFeed: [SourcedHeroEntry] = []
     public private(set) var continueWatching: [SourcedItem] = []
     public private(set) var nextUp: [SourcedItem] = []
+    /// The network pass that owns the shelves right now. One pass at a time: a `load()` supersedes
+    /// whatever is running, and a pass that has been superseded commits nothing when it lands.
+    private enum Activity: Equatable {
+        case idle
+        /// A full `load()`. With cached content on screen `state` stays `.loaded` through it, so
+        /// this — not `.loading` — is what keeps `refresh()` from interleaving and losing its
+        /// fresher progress data to the pass's older fan-out. `refreshAfter`: a `refresh()`
+        /// arrived mid-pass, drained once it lands so the re-pull runs against what it committed.
+        case loading(pass: UInt, refreshAfter: Bool)
+        /// `refresh()` re-pulling the progress shelves. `queued`: another `refresh()` arrived
+        /// mid-pass; the running one may have started before the change that asked, so it runs
+        /// once more instead of dropping the request.
+        case refreshing(pass: UInt, queued: Bool)
+
+        var pass: UInt? {
+            switch self {
+            case .idle: nil
+            case .loading(let pass, _), .refreshing(let pass, _): pass
+            }
+        }
+    }
+
+    private var activity = Activity.idle
+    private var passes: UInt = 0
+
     /// True while `refresh()` re-pulls the progress-driven shelves in the background.
     /// The view dims + crossfades them (the library grid's stale-while-revalidate recipe)
     /// instead of dropping back to a skeleton.
-    public private(set) var isRefreshing = false
-    /// Set when `refresh()` is called while one is already in flight. The in-flight run may
-    /// have started before the change that requested this call, so rather than dropping the
-    /// request, `refresh()` re-runs itself once more after the current pass completes.
-    private var refreshQueued = false
-    /// True while a `load()` pass is in flight. With cached content on screen `state` stays
-    /// `.loaded` through the pass, so this — not `.loading` — is what keeps `refresh()` from
-    /// interleaving and losing its fresher progress data to the pass's older fan-out.
-    private var isLoading = false
-    /// Set when `refresh()` arrived mid-`load()`; drained after the pass so the re-pull runs
-    /// against the data that pass committed instead of racing it.
-    private var refreshPendingAfterLoad = false
+    public var isRefreshing: Bool { if case .refreshing = activity { true } else { false } }
     public private(set) var favoriteErrorMessage: String?
 
     /// Drives the favorite-failure alert. The view binds `$vm.isShowingFavoriteError`;
@@ -174,22 +188,26 @@ public final class HomeViewModel {
         return true
     }
 
+    /// Supersedes any pass already running: a source change starts a new load without awaiting the
+    /// one it cancelled, and that one can land second. A pending refresh is dropped too, since this
+    /// pass starts after it was asked for and fetches the progress shelves itself.
     func load() async {
-        // Mutual exclusion with `refresh()`: `state = .loading` used to be the lock, but with
-        // cached content on screen `state` now stays `.loaded` for the whole pass, so a
-        // `.played` refresh could interleave and have its fresher progress shelves overwritten
-        // by this pass's older fan-out. Queue it instead, and drain it once this pass lands —
-        // the re-pull then runs against the fresh data.
-        isLoading = true
-        await performLoad()
-        isLoading = false
-        if refreshPendingAfterLoad {
-            refreshPendingAfterLoad = false
-            if !Task.isCancelled { await refresh() }
-        }
+        let pass = beginPass()
+        activity = .loading(pass: pass, refreshAfter: false)
+        await performLoad(pass)
+        guard case .loading(pass, let refreshAfter) = activity else { return }
+        activity = .idle
+        if refreshAfter, !Task.isCancelled { await refresh() }
     }
 
-    private func performLoad() async {
+    private func beginPass() -> UInt {
+        passes &+= 1
+        return passes
+    }
+
+    private func isCurrent(_ pass: UInt) -> Bool { activity.pass == pass }
+
+    private func performLoad(_ pass: UInt) async {
         // Content already on screen — hydrated from the cache, or a previous pass that landed —
         // stays up through this one: dropping to `.loading` over good stale data is the skeleton
         // flash this whole cache exists to remove. Read before anything mutates the shelves.
@@ -207,6 +225,7 @@ public final class HomeViewModel {
             for await result in group { out.append(result) }
             return out.sorted { $0.0 < $1.0 }.map(\.1)
         }
+        guard isCurrent(pass) else { return }
 
         // Cancellation is NOT a server failure. `loadSlice` catches every error, so a cancelled
         // load (the enclosing `.task(id:)` re-firing) arrives here as "every server threw" and
@@ -335,28 +354,27 @@ public final class HomeViewModel {
     /// screen (dimmed) through the round-trip, then the fresh lists crossfade in.
     /// No-op until the first `load()` has landed, and re-entrancy-guarded.
     func refresh() async {
-        // A `load()` pass owns the shelves while it's in flight — running now could commit
-        // fresh progress data only to have the pass's older fan-out overwrite it (and persist
-        // the stale result). Queue one re-pull for after the pass instead of dropping it.
-        guard !isLoading else {
-            refreshPendingAfterLoad = true
+        switch activity {
+        case .loading(let pass, _):
+            // A `load()` pass owns the shelves while it's in flight — running now could commit
+            // fresh progress data only to have the pass's older fan-out overwrite it (and persist
+            // the stale result). Queue one re-pull for after the pass instead of dropping it.
+            activity = .loading(pass: pass, refreshAfter: true)
             return
+        case .refreshing(let pass, _):
+            // The in-flight fetch may have started before the change that requested THIS call,
+            // so it can land already stale relative to it. Queue one trailing pass; a queue
+            // raised during the trailing pass itself queues exactly one more (never unbounded:
+            // each pass awaits real network round-trips).
+            activity = .refreshing(pass: pass, queued: true)
+            return
+        case .idle:
+            break
         }
         guard state == .loaded else { return }
-        // A refresh requested while one is already in flight can't just drop through: the
-        // in-flight fetch may have started before the change that requested THIS call, so it
-        // can land already stale relative to it. Queue one trailing pass instead of dropping
-        // it — `refreshQueued` is re-checked after every pass, so a queue raised during the
-        // trailing pass itself queues exactly one more (never unbounded: each pass awaits
-        // real network round-trips).
-        guard !isRefreshing else {
-            refreshQueued = true
-            return
-        }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        let pass = beginPass()
         repeat {
-            refreshQueued = false
+            activity = .refreshing(pass: pass, queued: false)
             let results = await withTaskGroup(of: (Int, ProgressSlice?).self) { group in
                 for (index, feed) in feeds.enumerated() {
                     group.addTask { (index, await Self.loadProgressSlice(feed)) }
@@ -365,7 +383,8 @@ public final class HomeViewModel {
                 for await result in group { out.append(result) }
                 return out.sorted { $0.0 < $1.0 }.map(\.1)
             }
-            if Task.isCancelled { return }
+            guard isCurrent(pass) else { return }
+            if Task.isCancelled { break }
             let slices = results.compactMap { $0 }
             // Every server failed → keep the stale shelves rather than blanking a working screen.
             guard !slices.isEmpty || feeds.isEmpty else { continue }
@@ -383,7 +402,8 @@ public final class HomeViewModel {
             continueWatching = .mergedByLastPlayed(cw)
             nextUp = .interleaved(nu)
             await persistSnapshots()
-        } while refreshQueued
+        } while activity == .refreshing(pass: pass, queued: true)
+        if isCurrent(pass) { activity = .idle }
     }
 
     public func toggleFavorite(for itemID: ItemID, source: MediaSourceID) async {
