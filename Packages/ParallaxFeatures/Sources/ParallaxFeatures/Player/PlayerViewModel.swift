@@ -53,21 +53,50 @@ public final class PlayerViewModel {
         }
     }
 
-    /// `didSet` rather than a line at each of the ten `phase = .failed` sites: a failed session
+    /// `phase`, plus what a `.loading` is covering.
+    private enum Surface {
+        case idle
+        case loading(Cover)
+        case playing
+        case failed(AppError)
+    }
+
+    /// What `.loading` is covering.
+    private enum Cover {
+        /// Nothing of this item is on screen yet: a first play, an episode handoff, a reroute.
+        case cold
+        /// An engine-reusing reload over a live frame, and the intent it honors. It ends where
+        /// the phase leaves `.loading` — on the NEW session's first live beat, several hundred
+        /// ms after the drain returned — so it spans the reload's TAIL too. Ending it with the
+        /// drain instead is what used to unmount the chip row and fold a live scrub for that
+        /// tail, and spent the last stretch of every scrub claiming an audio switch.
+        case reload(PendingReload)
+    }
+
+    /// `didSet` rather than a line at each of the ten `.failed` sites: a failed session
     /// publishes no further position beat, so a seek hold left standing has nothing left that
     /// could ever hand the bar back — it would ride under the error scrim and into the retry as
     /// a resume point nothing played. Every route into `.failed` owes that, and a rule the
     /// property enforces cannot be forgotten by the next one.
-    public private(set) var phase: Phase = .idle {
+    private var surface: Surface = .idle {
         didSet {
-            if case .failed = phase { seekHold = nil; diagnostics.cancelOpen() }
-            // `midSessionReload` means "phase is `.loading` because an engine-reusing
-            // reload put it there", so the phase leaving `.loading` IS its end —
-            // and it leaves on the NEW session's first live beat, several hundred ms after
-            // the drain returned. Clearing it with the drain instead is what used to unmount
-            // the chip row and fold a live scrub for that tail.
-            if case .loading = phase {} else { midSessionReload = nil }
+            if case .failed = surface { seekHold = nil; diagnostics.cancelOpen() }
         }
+    }
+
+    public var phase: Phase {
+        switch surface {
+        case .idle: .idle
+        case .loading: .loading
+        case .playing: .playing
+        case .failed(let error): .failed(error)
+        }
+    }
+
+    /// Raises the loading cover, keeping a reload's when one is already up.
+    private func coverLoading() {
+        if case .loading = surface { return }
+        surface = .loading(.cold)
     }
     /// The engine this session is driving. Read-only here: `engineSlot` owns the
     /// lifetime, and every build/retire goes through it, so "never nil between the first
@@ -453,21 +482,27 @@ public final class PlayerViewModel {
     /// `.failed`, because the reload kills the outgoing encode job before the replacement
     /// resolves, and the error scrim lands over a reload that is buffering perfectly well.
     /// Nil before the first load and after a teardown: nothing to adopt.
-    private(set) var activeSession: PlaybackSessionID?
+    private var activeSession: LiveSession?
 
-    /// The session a RELOAD opened has not published a live beat yet. Armed at the session
-    /// transition, and only where the outgoing frame is frozen under the reload cover — a cold
-    /// start and the auto-advance veil hold no frame — then consumed by that session's first
-    /// `.playing`/`.paused` beat.
-    ///
-    /// That beat carries two decisions a reload cannot make any other way. It takes the
-    /// cover down: the reload force-resumes and the transport reconcile re-pauses it, so a
-    /// reload made while PAUSED can go its whole life without ever publishing `.playing`, and the
-    /// heavy cover then sits over a rendered, healthy frame forever. And it opens the session
-    /// for reporting: the reload's replacement session has reported nothing yet, so with only
-    /// `.playing` allowed to report a start, Jellyfin never learned the new session at all — no
-    /// progress, no stop report, and the position the reload resumed at was never persisted.
-    private var reloadAwaitingFirstLiveBeat = false
+    private struct LiveSession {
+        let id: PlaybackSessionID
+        /// A RELOAD opened this session and it has not published a live beat yet. Set at the
+        /// session transition, and only where the outgoing frame is frozen under the reload
+        /// cover — a cold start and the auto-advance veil hold no frame — then consumed by the
+        /// session's first `.playing`/`.paused` beat. It belongs to the session rather than to
+        /// the phase: the fallback after a failed switch puts a superseded session back, and that
+        /// session still owes its first beat whatever the phase did meanwhile.
+        ///
+        /// That beat carries two decisions a reload cannot make any other way. It takes the
+        /// cover down: the reload force-resumes and the transport reconcile re-pauses it, so a
+        /// reload made while PAUSED can go its whole life without ever publishing `.playing`, and
+        /// the heavy cover then sits over a rendered, healthy frame forever. And it opens the
+        /// session for reporting: the reload's replacement session has reported nothing yet, so
+        /// with only `.playing` allowed to report a start, Jellyfin never learned the new session
+        /// at all — no progress, no stop report, and the position the reload resumed at was
+        /// never persisted.
+        var awaitsFirstLiveBeat: Bool
+    }
 
     /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
     /// `stop()` can cancel it — closing the window where `retry()`/`resetForReplay` tear
@@ -760,17 +795,13 @@ public final class PlayerViewModel {
     /// Server language preferences were applied to this item's initial tracks —
     /// once per `start`, never on track-switch reloads or duplicate `.ready` beats.
     private var didApplyPreferredTracks = false
-    /// The intent `phase == .loading` is covering, when an engine-reusing reload put it
-    /// there rather than a cold start. Set by `performTranscodeReload` from `reloadInFlight`
-    /// on the line before it sets the phase, and dropped by the phase's own `didSet`, so it
-    /// spans the reload's TAIL too — the window between the drain returning and the new
-    /// session's first live beat. Drives the loader caption, the scrim's flavour and
-    /// `acceptsPlaybackCommands`.
-    ///
-    /// The INTENT and not a bool because the caption reads it: `reloadInFlight` is already
-    /// nil for that whole tail, so a caption derived from it spent the last stretch of every
-    /// scrub claiming an audio switch that never happened.
-    private(set) var midSessionReload: PendingReload?
+    /// The intent `phase == .loading` is covering, when an engine-reusing reload put it there
+    /// rather than a cold start (see `Cover.reload`). Drives the loader caption, the scrim's
+    /// flavour and `acceptsPlaybackCommands`.
+    private var midSessionReload: PendingReload? {
+        guard case .loading(.reload(let intent)) = surface else { return nil }
+        return intent
+    }
     public var isMidSessionReload: Bool { midSessionReload != nil }
     /// A reload is actually in flight, so input must merge into `pendingReload` instead of
     /// reaching an engine that is being swapped out from under it. Strictly narrower than
@@ -1136,7 +1167,7 @@ public final class PlayerViewModel {
         let generation = sessionGeneration
         claimStart(generation, cold: false)
         diagnostics.armOpen()
-        phase = .loading
+        coverLoading()
         pendingItemID = itemID
         pendingFromBeginning = fromBeginning
         do {
@@ -1146,11 +1177,11 @@ public final class PlayerViewModel {
         } catch is CancellationError {
             // Exit raced the detail fetch — the view is gone; nothing to surface.
         } catch let error as AppError {
-            if isNewestStart(generation) { phase = .failed(error) }
+            if isNewestStart(generation) { surface = .failed(error) }
         } catch {
             Log.playback.error("item detail fetch failed: \(error.networkDiagnostic)")
             if isNewestStart(generation) {
-                phase = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
+                surface = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
             }
         }
     }
@@ -1169,7 +1200,7 @@ public final class PlayerViewModel {
         diagnostics.armOpen()
         claimStart(generation, cold: true)
         defer { endColdStart(generation) }
-        phase = .loading
+        coverLoading()
         didApplyPreferredTracks = false
         pendingFromBeginning = fromBeginning
         playingItem = item
@@ -1191,7 +1222,7 @@ public final class PlayerViewModel {
             itemTitle = d.episode.name
             episodeNumber = d.episode.indexNumber
         case .series, .season:
-            phase = .failed(.playback(.unsupportedFormat))
+            surface = .failed(.playback(.unsupportedFormat))
             return
         }
 
@@ -1235,14 +1266,14 @@ public final class PlayerViewModel {
                 // activate() did (deactivate is idempotent).
                 break
             case let error as AppError:
-                phase = .failed(error)
+                surface = .failed(error)
             default:
                 // A non-AppError reaching here is genuinely unexpected (resolve()
                 // already maps its failures to AppError). Log it and preserve the
                 // underlying error in diagnostics instead of mislabeling it as a
                 // network problem.
                 Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic)")
-                phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+                surface = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
             }
             await audioSession.deactivate()
         }
@@ -1263,7 +1294,7 @@ public final class PlayerViewModel {
         let generation = sessionGeneration
         claimStart(generation, cold: false)
         diagnostics.armOpen()
-        phase = .loading
+        coverLoading()
         // Kept so the failure scrim's "Try again" can replay the SMB path (retry() otherwise
         // reads only the Jellyfin playingItem/pendingItemID, which this path never sets).
         smbResolve = resolve
@@ -1295,11 +1326,11 @@ public final class PlayerViewModel {
             // (nil-before-await), so it's safe even if a concurrent `stop()` also reaps it.
             await tearDownSMBBridge()
         } catch let error as AppError {
-            if isNewestStart(generation) { phase = .failed(error) }
+            if isNewestStart(generation) { surface = .failed(error) }
         } catch {
             Log.playback.error("SMB resolve failed: \(error.networkDiagnostic)")
             if isNewestStart(generation) {
-                phase = .failed(.unexpected("couldn't load file", underlying: AnySendableError(error)))
+                surface = .failed(.unexpected("couldn't load file", underlying: AnySendableError(error)))
             }
         }
     }
@@ -1323,7 +1354,7 @@ public final class PlayerViewModel {
         guard !isClosed else { return }
         claimStart(generation, cold: true)
         defer { endColdStart(generation) }
-        phase = .loading
+        coverLoading()
         itemTitle = smbItem.title
         episodeNumber = nil
         // No Jellyfin item: skip resolve, DeviceProfile, keepalive, segments, and
@@ -1373,11 +1404,11 @@ public final class PlayerViewModel {
                 // the bridge teardown — don't race it here.
                 break
             case let error as AppError:
-                phase = .failed(error)
+                surface = .failed(error)
                 await tearDownSMBBridge()
             default:
                 Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
-                phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+                surface = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
                 await tearDownSMBBridge()
             }
             await audioSession.deactivate()
@@ -1704,7 +1735,7 @@ public final class PlayerViewModel {
             // putting the line here instead of at a beat that may or may not come.
             Log.playback.info(
                 """
-                playback session \(superseding?.description ?? self.activeSession?.description ?? "none", privacy: .public) → \
+                playback session \(superseding?.description ?? self.activeSession?.id.description ?? "none", privacy: .public) → \
                 \(opened.description, privacy: .public) \
                 origin=\(isFreshSession ? "fresh" : (reusingEngine ? "reload" : "reroute"), privacy: .public) \
                 engine=\(rebuilt ? "rebuilt" : "reused", privacy: .public) \
@@ -1713,11 +1744,10 @@ public final class PlayerViewModel {
                 playSession=\(self.resolved?.playSessionID ?? "—", privacy: .public)
                 """
             )
-            activeSession = opened
             // A frozen surface at the session boundary IS the reload: `performTranscodeReload`
             // froze the outgoing frame under the cover, and only this session's first live beat
             // can take it back down.
-            reloadAwaitingFirstLiveBeat = surfaceFrozen
+            activeSession = LiveSession(id: opened, awaitsFirstLiveBeat: surfaceFrozen)
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
             try checkStillActive(generation: generation)
@@ -1980,7 +2010,7 @@ public final class PlayerViewModel {
         sessionGeneration &+= 1
         pendingReload = PendingReload()
         reloadInFlight = nil
-        midSessionReload = nil
+        if case .loading(.reload) = surface { surface = .loading(.cold) }
         // The held frame is deliberately NOT released here: `stop()` always runs with the
         // exit fence armed, and the exit freeze is what the card slides out on. The one
         // caller that comes back (`resetForReplay`) releases it itself, after disarming
@@ -2068,7 +2098,7 @@ public final class PlayerViewModel {
         // what keeps `stop()` from doing this on a real exit.
         unfreezeVideoSurface()
         diagnostics.cancelOpen()
-        phase = .idle
+        surface = .idle
         return true
     }
 
@@ -2598,6 +2628,7 @@ public final class PlayerViewModel {
             pendingReload = PendingReload()
             reloadInFlight = intent
             let outcome = await reloadTranscode(
+                intent,
                 // The transcode plays a full-timeline HLS playlist the engine SEEKS to the
                 // resume offset (Jellyfin ignores StartTimeTicks for the playlist start), so
                 // `currentPosition` is already absolute media time — resume the new stream
@@ -2759,6 +2790,7 @@ public final class PlayerViewModel {
     /// `drainPendingReloads`, which is where the indices and the resume point come from.
     /// Costs a brief re-buffer — the server re-encodes around the new anchor.
     private func reloadTranscode(
+        _ intent: PendingReload,
         resumeAt resume: CMTime,
         audioStreamIndex: Int?,
         subtitleStreamIndex: Int?,
@@ -2775,6 +2807,7 @@ public final class PlayerViewModel {
         // synchronously before `stop()` runs.
         await Task {
             await performTranscodeReload(
+                intent,
                 resumeAt: resume,
                 audioStreamIndex: audioStreamIndex,
                 subtitleStreamIndex: subtitleStreamIndex,
@@ -2801,6 +2834,7 @@ public final class PlayerViewModel {
     /// hand the reload the replacement's generation, and every fence below would wave through
     /// a load of the previous episode's stream at the previous episode's indices.
     private func performTranscodeReload(
+        _ intent: PendingReload,
         resumeAt resume: CMTime,
         audioStreamIndex: Int?,
         subtitleStreamIndex: Int?,
@@ -2840,11 +2874,9 @@ public final class PlayerViewModel {
         do {
             await engine?.silence()
             try checkStillActive(generation: generation)
-            // Paired with the assignment below and released by the phase's `didSet`: this is
-            // what tells every scrim and gate that the `.loading` about to be set is a reload
-            // over a live frame, not a cold start.
-            midSessionReload = reloadInFlight
-            phase = .loading
+            // A reload over a live frame, not a cold start: every scrim and gate reads the
+            // difference off the cover.
+            surface = .loading(.reload(intent))
             // The outgoing stream's buffer is meaningless for the new transcode —
             // showing it would advertise instant seeks the reload can't honor.
             bufferedTo = nil
@@ -2881,7 +2913,7 @@ public final class PlayerViewModel {
             // separates "the kill was slow" from "the re-resolve was".
             Log.playback.info(
                 """
-                reload boundary: superseded=\(superseded?.description ?? "none", privacy: .public) \
+                reload boundary: superseded=\(superseded?.id.description ?? "none", privacy: .public) \
                 playSession=\(closingPlaySession ?? "—", privacy: .public) \
                 killed+reported in \(SessionDiagnostics.millis(self.elapsed() - boundary), privacy: .public)ms, \
                 re-resolving at \(CMTimeGetSeconds(resume), format: .fixed(precision: 1), privacy: .public)s
@@ -2898,7 +2930,7 @@ public final class PlayerViewModel {
                 audioStreamIndex: audioStreamIndex,
                 subtitleStreamIndex: subtitleStreamIndex,
                 reusingEngine: true,
-                superseding: superseded,
+                superseding: superseded?.id,
                 generation: generation
             )
             return .completed
@@ -2948,7 +2980,7 @@ public final class PlayerViewModel {
     /// good, so there is nothing to restore it to.
     private func fallBackAfterFailedSwitch(
         _ error: AppError,
-        restoring standing: PlaybackSessionID?
+        restoring standing: LiveSession?
     ) async -> TrackSwitchOutcome {
         if engine != nil { activeSession = standing }
         // Exit can race the failed switch: beginExit() lands while the re-resolve is
@@ -2961,7 +2993,7 @@ public final class PlayerViewModel {
             // emit a live beat now, so release the held frame here or it outlives the
             // failure (and an in-place retry would play under a pinned stale snapshot).
             unfreezeVideoSurface()
-            phase = .failed(error)
+            surface = .failed(error)
             await audioSession.deactivate()
             return .failed
         }
@@ -2972,7 +3004,7 @@ public final class PlayerViewModel {
         // so a dismissal in that window records a place nothing ever played. Dropping it
         // here hands both back to the resumed stream at once.
         seekHold = nil
-        phase = .playing
+        surface = .playing
         // Resume from the STANDING intent, not from a hardcoded play: the failed reload's
         // window is long enough for the user to have paused inside it (lock screen, the
         // transport button), and overwriting that would restart audio nobody asked for.
@@ -3013,7 +3045,7 @@ public final class PlayerViewModel {
         // superseded session's beat is still proof the engine is alive. It never adopts a
         // position — see `publish`.
         if seekHold != nil { armSeekHoldWatchdog() }
-        guard beat.session == activeSession else { return }
+        guard beat.session == activeSession?.id else { return }
         await handle(beat.state)
     }
 
@@ -3109,10 +3141,10 @@ public final class PlayerViewModel {
     private func noteLiveBeat(framesMoving: Bool) -> Bool {
         // The exit fence is `unfreezeVideoSurface()`'s and it belongs there — while dismissing,
         // the frozen frame is the card's, not this session's, and nothing may uncover it.
-        let firstAfterReload = reloadAwaitingFirstLiveBeat && !isExiting
-        reloadAwaitingFirstLiveBeat = false
+        let firstAfterReload = activeSession?.awaitsFirstLiveBeat == true && !isExiting
+        activeSession?.awaitsFirstLiveBeat = false
         unfreezeVideoSurface()
-        if framesMoving || firstAfterReload { phase = .playing }
+        if framesMoving || firstAfterReload { surface = .playing }
         if firstAfterReload {
             // Closes the trail the session transition opened: which transport the reloaded
             // session came back on, and what the surface did with it. A reload that never
@@ -3301,7 +3333,7 @@ public final class PlayerViewModel {
             // into the next episode: one cover, no pause scrim, and (on the floor) no HUD.
             let advanceTarget = canAutoAdvance ? adjacentEpisodes.next?.id : nil
             if advanceTarget != nil {
-                phase = .loading
+                coverLoading()
             } else if !isExiting {
                 // A movie or series finale ended with nowhere to go: dismiss the player
                 // (`AppModel.runPlayer` watches this and closes it) rather than
@@ -3345,7 +3377,7 @@ public final class PlayerViewModel {
                 didReactivelyReroute = true
                 // Set before spawning the hop: the UI must not sit on `.playing` (or
                 // any other stale phase) until the hop actually runs the retry.
-                phase = .loading
+                coverLoading()
                 // Unstructured hop (same shape as `.ended` above): this handler runs
                 // INSIDE `stateTask`'s await loop, and the fallback cancels `stateTask` —
                 // awaited inline, that self-cancellation trips the retry's own
@@ -3363,7 +3395,7 @@ public final class PlayerViewModel {
             // retry. Still fenced while exiting, where the freeze is the dismissal's, not
             // this session's.
             unfreezeVideoSurface()
-            phase = .failed(Self.map(error))
+            surface = .failed(Self.map(error))
         }
     }
 
@@ -3391,7 +3423,7 @@ public final class PlayerViewModel {
         isPlaying = false
         stall.clear()
         unfreezeVideoSurface()
-        phase = .loading
+        coverLoading()
         // Engine-namespaced state, cleared exactly like a session boundary: the VLC leg
         // inventories its own tracks from scratch, and `didApplyPreferredTracks = false`
         // lets it re-apply the server-preferred picks on its own first `.ready`.
@@ -3418,10 +3450,10 @@ public final class PlayerViewModel {
         } catch is CancellationError {
             // Exit raced the retry — stop() owns the real teardown.
         } catch let error as AppError {
-            phase = .failed(error)
+            surface = .failed(error)
         } catch {
             Log.playback.error("reactive VLC fallback failed (unmapped): \(error.networkDiagnostic)")
-            phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+            surface = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
         }
     }
 
@@ -3550,7 +3582,7 @@ extension PlayerViewModel {
             engineSubtitleFonts: { _ in EngineSubtitleFonts(directory: SubtitleFontBundle.directoryURL, family: "") }
         )
         vm.itemTitle = "The Grand Budapest Hotel"
-        vm.phase = .playing
+        vm.surface = .playing
         vm.isPlaying = true
         vm.desiredPlaying = true   // the transport glyph reads intent, so the preview must set it
         vm.currentDuration = CMTime(seconds: 5_460, preferredTimescale: 600)   // 1:31:00
