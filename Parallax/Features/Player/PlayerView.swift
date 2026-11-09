@@ -24,20 +24,12 @@ struct PlayerView: View {
     /// for the engine's subtitle sizing; `.zero` means geometry hasn't landed yet.
     @State private var surfaceSize: CGSize = .zero
     #if os(tvOS)
-    /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD) and what
-    /// the user is doing inside the full chrome, driven by `TVRemoteInputView` through
-    /// `send(_:_:)`. See `PlayerHUDReducer` and `PlayerTVHUD`. Opens on the full chrome: the
-    /// initial load shows it over the scrim.
-    @State private var hud = PlayerTVHUD(state: .fullHUD)
-    private var hudState: PlayerHUDState {
-        get { hud.state }
-        nonmutating set { hud.state = newValue }
-    }
+    /// The tvOS HUD (floor → swipeScrub → clickSeek → fullHUD, and what the user is doing
+    /// inside the full chrome), driven by `TVRemoteInputView` through `send(_:_:)`. See
+    /// `PlayerTVHUD` and `PlayerHUDReducer`.
+    @State private var hud = PlayerTVHUD()
+    private var hudState: PlayerHUDState { hud.state }
     @State private var idleTask: Task<Void, Never>? = nil
-    /// Mirrors the full-HUD scrubber's focus (reported by `PlayerControlsView`) —
-    /// gates window-level pans into analog scrub; on any other focused control a
-    /// swipe stays with the focus engine, same as a click.
-    @State private var scrubberHasFocus = false
     /// Last activity-driven idle re-arm — coalesces the ~60Hz pan stream (re-arming
     /// a multi-second timer per delta churns a cancel+Task each frame for nothing).
     @State private var lastActivityRearm: ContinuousClock.Instant? = nil
@@ -47,11 +39,6 @@ struct PlayerView: View {
     /// any `onChange` runs) and lowered `landingSeconds` after it ends.
     @State private var landingLinger = false
     @State private var landingLingerTask: Task<Void, Never>?
-    /// Set at the first `.playing` beat. The initial-load chrome (fullHUD over
-    /// the loading scrim — iOS parity) hands off to the reducer's clean floor
-    /// exactly once; later loading dips (track-switch re-buffers) keep whatever
-    /// HUD state the user is in, so an open menu survives the swap.
-    @State private var didBeginPlayback = false
     #else
     /// The chrome's visibility and what the user is doing inside it, owned here so the status
     /// bar, home indicator and pull-to-dismiss derive from the same storage the controls drive.
@@ -552,7 +539,7 @@ struct PlayerView: View {
                 // branch.
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
                                    interaction: $hud.interaction,
-                                   onScrubberFocusChange: { scrubberHasFocus = $0 },
+                                   onScrubberFocusChange: { hud.scrubberFocused = $0 },
                                    onScrubberStep: { send(.click($0), vm) },
                                    onScrubberSelect: { send(.select, vm) },
                                    positionAnimation: scrubPositionAnimation(vm),
@@ -608,52 +595,9 @@ struct PlayerView: View {
                 landingLinger = false
             }
         }
-        // Fresh surface: the initial load shows the full chrome over the scrim
-        // (iOS parity — the player is operable while the stream resolves); once
-        // playback has begun (a post-failure retry remount), start on the clean
-        // floor. Clear any click-seek debris a previous mount left armed.
-        .onAppear {
-            hud = PlayerTVHUD(state: didBeginPlayback ? .floor : .fullHUD)
-            vm.cancelPendingSeek()
-        }
-        // Command-acceptance transitions own the HUD floor hand-offs:
-        // • first accepted — the loading chrome drops to the reducer's clean
-        //   floor (re-buffers keep their HUD state, see `didBeginPlayback`);
-        // • losing acceptance (a cold re-load / failure) — a scrub state would strand
-        //   a frozen bar plus armed idle/commit timers over the scrim; fold to the floor
-        //   and drop the pending seek.
-        //
-        // Keyed on acceptance rather than `.playing` so a MID-SESSION reload doesn't fold
-        // a live swipe-scrub to the floor: the gesture is still going to commit, and the
-        // model will honor it. `didBeginPlayback` keeps its meaning either way.
-        .onChange(of: vm.acceptsPlaybackCommands) { _, nowPlaying in
-            if nowPlaying {
-                if !didBeginPlayback {
-                    didBeginPlayback = true
-                    if hudState.chromeUp {
-                        hudState = .floor
-                        // Same stale-mirror clear as send(): the HUD unmount may
-                        // never fire the focus callback with `false`.
-                        scrubberHasFocus = false
-                    }
-                }
-            } else {
-                vm.cancelPendingSeek()
-                idleTask?.cancel()
-                // Folding out here bypasses the reducer, so any preview it strands has to be
-                // dropped by hand — a scrub or a click step a re-buffer interrupted commits
-                // nothing. The cancel is unconditional: `.fullHUD` holds live click-step
-                // previews too, and `cancelPreview()` no-ops when none is up. The state lands
-                // wherever the scrub began, so a chrome swipe keeps its chrome. The hold goes
-                // with the preview: this exit bypasses the reducer's `.releaseHold`, and a hold
-                // nothing releases pins the engine paused under a play glyph.
-                vm.cancelPreview()
-                vm.endScrubHold()
-                switch hudState {
-                case .swipeScrub, .clickSeek: hudState = hudState.chromeUp ? .fullHUD : .floor
-                default: break
-                }
-            }
+        .onAppear { perform(hud.surfaceAppeared(), vm) }
+        .onChange(of: vm.acceptsPlaybackCommands) { _, accepts in
+            perform(hud.acceptanceChanged(to: accepts), vm)
         }
     }
 
@@ -681,91 +625,41 @@ struct PlayerView: View {
             && !vm.showsStallScrim && !hudState.chromeUp && !vm.playbackDidComplete
     }
 
-    /// Window-level pan events. On the floor's states every pan drives the reducer. Under the
-    /// chrome native focus owns navigation — only a horizontal pan while the scrubber holds
-    /// focus falls through (starting, then feeding, the scrub the chrome stays up for);
-    /// everything else stays with the focus engine, so a swipe on a chip still just moves the
-    /// highlight.
+    /// Window-level pan events; `PlayerTVHUD.routesPan` decides which reach `send`, so a
+    /// swipe on a chip still just moves the highlight.
     private func onPan(_ event: RemoteEvent, _ vm: PlayerViewModel) {
-        if hudState.chromeUp {
-            guard scrubberHasFocus, case .swipeHorizontal = event else { return }
-        }
+        guard hud.routesPan(event) else { return }
         send(event, vm)
     }
 
-    /// Feed a remote event through the reducer, apply its effects, sync the chrome
-    /// flag, and restart the inactivity timer. The click-seek debounce lives here, not in
-    /// the reducer: a `.preview` outside an analog scrub is a click step that (re-)arms one
-    /// debounced engine seek, flushed or dropped by the next state — see the coalescer
-    /// switch below.
+    /// Feed a remote event through the HUD shell and run what it returns.
     private func send(_ event: RemoteEvent, _ vm: PlayerViewModel) {
-        // While the contextual segment button shows over the floor, the remote acts
-        // on IT — the floor adapter already holds focus, so there's no competing
-        // focusable. Select fires the prompt (skip / next episode); any directional
-        // reveal lifts the HUD and one-shot-dismisses the button (it won't re-summon
-        // on return until the playhead re-enters the segment). Back still exits and an
-        // analog pan still scrubs, so neither is intercepted here.
-        if hudState == .floor, segmentButtonShowing, vm.phase == .playing {
-            switch event {
-            case .select:
-                activateSegmentPrompt(vm)
-                restartIdleTimer()
-                return
-            case .click, .swipeVertical:
-                vm.segmentPromptGate.expirePrompt()
-                hudState = .fullHUD
-                scrubberHasFocus = false
-                restartIdleTimer()
-                return
-            case .swipeHorizontal, .menu, .playPause, .idle:
-                break
+        let ctx = PlayerTVHUDContext(
+            shownProgress: vm.virtualFraction,
+            durationSeconds: CMTimeGetSeconds(vm.currentDuration),
+            acceptsPlaybackCommands: vm.acceptsPlaybackCommands,
+            isPlaying: vm.phase == .playing,
+            segmentPromptShowing: segmentButtonShowing,
+            hasPendingSeek: vm.pendingSeekTarget != nil
+        )
+        perform(hud.send(event, ctx), vm)
+    }
+
+    private func perform(_ effects: [PlayerTVHUDEffect], _ vm: PlayerViewModel) {
+        for effect in effects {
+            switch effect {
+            case .player(let batch): runEffects(batch, vm)
+            case .flushPendingSeek: vm.flushPendingSeek()
+            case .dropPendingSeek: vm.cancelPendingSeek()
+            case .scheduleClickSeek(let target): scheduleClickSeek(to: target, vm)
+            case .activateSegmentPrompt: activateSegmentPrompt(vm)
+            case .expireSegmentPrompt: vm.segmentPromptGate.expirePrompt()
+            case .restartIdleTimer: restartIdleTimer()
+            case .cancelIdleTimer: idleTask?.cancel()
+            case .cancelPreview: vm.cancelPreview()
+            case .endScrubHold: vm.endScrubHold()
             }
         }
-
-        // Cold start only: nothing has resolved, so there is no duration to seek against
-        // and no session to command — only chrome reveal, exit and idle mean anything.
-        // A MID-SESSION reload is not this window: the model parks whatever the remote
-        // sends and the running reload honors it, so the transport and the scrubber stay
-        // live through it. The reducer itself stays phase-blind.
-        if !vm.acceptsPlaybackCommands {
-            switch event {
-            case .menu where !didBeginPlayback:
-                // First load: Back exits immediately (synchronously fencing the
-                // in-flight resolve) instead of peeling the loading chrome back
-                // to an empty floor.
-                exitPlayer()
-                return
-            case .swipeVertical, .click(.up), .click(.down), .menu, .idle:
-                break
-            case .swipeHorizontal, .click(.left), .click(.right), .select, .playPause:
-                return
-            }
-        }
-
-        let ctx = ReduceContext(shownProgress: vm.virtualFraction,
-                                durationSeconds: CMTimeGetSeconds(vm.currentDuration))
-        let (next, effects) = reduce(hudState, event, ctx)
-
-        if vm.pendingSeekTarget != nil {
-            switch PlayerHUDState.pendingClickStep(after: next, on: event) {
-            case .drop: vm.cancelPendingSeek()
-            case .flush: vm.flushPendingSeek()
-            case .keep: break
-            }
-        }
-
-        hudState = next
-        // The focus mirror only matters under the chrome; clear it on the way out because
-        // unmounting the HUD may never fire the focus callback with `false`.
-        if !hudState.chromeUp { scrubberHasFocus = false }
-        runEffects(effects, vm)
-
-        // A preview outside an analog scrub is a click step: (re)arm the one debounced commit.
-        if !hudState.isAnalogScrub {
-            for case .preview(let target) in effects { scheduleClickSeek(to: target, vm) }
-        }
-
-        restartIdleTimer()
     }
 
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
@@ -839,18 +733,10 @@ struct PlayerView: View {
         }
     }
 
-    /// Per-state inactivity timer. Swipe-scrub commits ~1s after the touch goes
-    /// quiet (the reducer's `.idle` seeks and resumes — no Select required); the
-    /// click-seek bar lingers longer (its seek already landed via the 400ms click
-    /// debounce — idle only drops the bar). The full HUD auto-hides after 4s of no
-    /// remote interaction: focus-engine moves never reach `send`, so the reset
-    /// signal is `TVPanCatcher.onActivity` (window-level pans + presses, observed
-    /// in every focus state). Suspended while a panel is open (folding would
-    /// unmount it) or playback is paused (the iOS rule — vanishing chrome over a
-    /// frozen frame reads as a dead player). The floor needs no timer.
-    /// Activity from the window-level observers, coalesced to ~4 re-arms/s: a pan
-    /// streams a delta per frame, and the slop this adds (<250ms against multi-second
-    /// timeouts) is invisible — reducer-driven `send` still re-arms exactly.
+    /// Remote activity from the window-level observers. Focus-engine moves in the full HUD
+    /// never reach `send`, so this is what keeps the chrome up mid-navigation. Coalesced to
+    /// ~4 re-arms/s: a pan streams a delta per frame, and the slop this adds (<250ms against
+    /// multi-second timeouts) is invisible — `send` still re-arms exactly.
     private func noteRemoteActivity() {
         let now = ContinuousClock.now
         if let last = lastActivityRearm, now - last < .milliseconds(250) { return }
@@ -858,25 +744,12 @@ struct PlayerView: View {
         restartIdleTimer()
     }
 
+    /// Re-arm the current state's inactivity timer (`PlayerTVHUD.idleTimeout`), which feeds
+    /// the reducer `.idle` when it runs out.
     private func restartIdleTimer() {
         idleTask?.cancel()
-        let timeout: Duration
-        switch hudState {
-        case .floor:
-            return
-        case .swipeScrub:
-            // Same quiet-time as the click-seek debounce so analog scrub resumes on the
-            // identical delay after you stop — ONE source (`SeekCommitCoalescer.interval`).
-            timeout = SeekCommitCoalescer.interval
-
-        case .clickSeek:
-            timeout = .seconds(4)
-        case .fullHUD:
-            // Pinned while a seek is alive: folding to the floor mid-flight would swap the HUD's
-            // dot bar for the floor's line bar in the middle of the crossing.
-            guard !hud.interaction.menuOpen, viewModel?.desiredPlaying == true, viewModel?.flight == nil else { return }
-            timeout = .seconds(4)
-        }
+        guard let timeout = hud.idleTimeout(desiredPlaying: viewModel?.desiredPlaying == true,
+                                            flightAlive: viewModel?.flight != nil) else { return }
         idleTask = Task {
             try? await Task.sleep(for: timeout)
             if !Task.isCancelled, let vm = viewModel { send(.idle, vm) }
