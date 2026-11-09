@@ -18,10 +18,15 @@ public struct PlayerTouchChrome: Equatable, Sendable {
     /// The segment button yields the bottom edge to the drag-scrub's lone bar.
     public var segmentPromptEnabled: Bool { !interaction.dragScrubbing }
 
-    /// The controls live only while the stream does. Leaving `.playing` brings the chrome back,
-    /// so the status bar and home indicator return over a loading or error scrim and a retry
-    /// re-mounts the controls already visible.
+    /// Leaving `.playing` brings the chrome back over the loading scrim. A failure unmounts the
+    /// controls, and their drag and panels die with them, so it also starts the interaction over:
+    /// the status bar and home indicator return over the error scrim, pull-to-dismiss works
+    /// there, and a retry re-mounts the controls visible and idle.
     public mutating func phaseChanged(from old: PlayerViewModel.Phase, to new: PlayerViewModel.Phase) {
-        if old == .playing, new != .playing { visible = true }
+        if case .failed = new {
+            self = PlayerTouchChrome()
+        } else if old == .playing, new != .playing {
+            visible = true
+        }
     }
 }
