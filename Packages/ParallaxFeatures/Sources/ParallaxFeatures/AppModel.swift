@@ -160,6 +160,11 @@ public final class AppModel {
         )
     }
 
+    public func makeThumbnailCache() -> ThumbnailCacheModel {
+        let provider = services.mediaArtworkProvider
+        return ThumbnailCacheModel(size: { await provider.cacheSize() }, clear: { await provider.clearCache() })
+    }
+
     public func makeSMBServerSettings(id: ServerID, data: SMBServerData) -> SMBServerSettingsModel {
         SMBServerSettingsModel(
             id: id,
