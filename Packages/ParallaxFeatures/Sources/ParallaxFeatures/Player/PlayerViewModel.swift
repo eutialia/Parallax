@@ -198,7 +198,9 @@ public final class PlayerViewModel {
     /// that doesn't land (a failed load, a newer pick, the session's end) never reaches the server.
     private var pendingSubtitlePick: SubtitlePick?
     private struct SubtitlePick { let track: SubtitleTrack? }
-    public private(set) var currentPosition: CMTime = .zero
+    public private(set) var currentPosition: CMTime = .zero {
+        didSet { segmentPromptGate.playheadMoved(toSegment: segmentUnderPlayhead?.id) }
+    }
     public private(set) var currentDuration: CMTime = .zero
 
     /// The single source of truth for "do we have a real, scrubbable runtime?" — the player is
@@ -1110,8 +1112,12 @@ public final class PlayerViewModel {
     /// outro), or nil. Computed off the position beats, so the overlay button
     /// tracks the playhead with no extra timer.
     var activeSegment: MediaSegment? {
-        guard phase == .playing else { return nil }
-        return succession.activeSegment(atSeconds: CMTimeGetSeconds(currentPosition))
+        phase == .playing ? segmentUnderPlayhead : nil
+    }
+    /// Where the playhead is, whatever the phase: a seek made under a reload's scrim moves it
+    /// while `activeSegment` reads nil.
+    private var segmentUnderPlayhead: MediaSegment? {
+        succession.activeSegment(atSeconds: CMTimeGetSeconds(currentPosition))
     }
 
     /// What the contextual overlay button offers right now, if anything: Skip for

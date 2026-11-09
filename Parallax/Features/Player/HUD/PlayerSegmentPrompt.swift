@@ -74,7 +74,6 @@ struct PlayerSegmentPrompt: View {
                 withAnimation(.linear(duration: SegmentPromptGate.countdown / .seconds(1))) { drain = 0 }
             }
         }
-        .onChange(of: vm.activeSegmentID) { _, id in gate.activeSegmentChanged(to: id) }
         // Keyed on the shown segment, so the countdown cancels the moment the button hides
         // or the segment changes.
         .task(id: shownKey) {
