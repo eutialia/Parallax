@@ -60,10 +60,23 @@ public actor DiagnosticsHandoffServer {
     /// happen on a cooperative pool thread. Same discipline as `SMBHTTPBridge`.
     private let queue = DispatchQueue(label: "com.lhdev.parallax.diagnostics-handoff")
 
-    private(set) var listener: NWListener?
+    /// One server, one listener, one run. `starting` is claimed before the first suspension, so a
+    /// second `start()` racing the first is refused instead of binding a second listener.
+    private enum Lifecycle {
+        case idle
+        case starting
+        case listening(NWListener)
+        case stopped
+    }
+
+    private var lifecycle = Lifecycle.idle
     private var connections: [ObjectIdentifier: NWConnection] = [:]
-    private var isStopped = false
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Package-internal: lets tests reach the live listener.
+    var listener: NWListener? {
+        if case .listening(let listener) = lifecycle { listener } else { nil }
+    }
 
     /// Package-internal: lets tests wait on connection teardown instead of sleeping.
     var liveConnectionCount: Int { connections.count }
@@ -81,18 +94,27 @@ public actor DiagnosticsHandoffServer {
 
     /// Binds an ephemeral port on every interface and returns where to fetch the file.
     public func start() async throws -> Endpoint {
-        guard !isStopped else { throw HandoffError.stopped }
-        guard listener == nil else { throw HandoffError.alreadyStarted }
+        switch lifecycle {
+        case .idle: lifecycle = .starting
+        case .starting, .listening: throw HandoffError.alreadyStarted
+        case .stopped: throw HandoffError.stopped
+        }
 
         let queue = self.queue
-        let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
-            queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
+        let listener: NWListener
+        do {
+            listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
+                queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
+            }
+        } catch {
+            await stop()
+            throw error
         }
-        guard !isStopped else {
+        guard case .starting = lifecycle else {
             await offQueue { listener.cancel() }
             throw HandoffError.stopped
         }
-        self.listener = listener
+        lifecycle = .listening(listener)
 
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { connection.cancel(); return }
@@ -119,34 +141,42 @@ public actor DiagnosticsHandoffServer {
             queue.async { listener.start(queue: queue) }
         }
 
-        guard let port = listener.port else { throw HandoffError.noPort }
+        // Every failure from here on stops the server first: the listener is already running, and a
+        // throw that left it up would serve a URL nobody was shown.
+        guard let port = listener.port else {
+            await stop()
+            throw HandoffError.noPort
+        }
         guard let host = await offQueue({ LocalNetworkAddress.primaryIPv4() }) else {
             await stop()
             throw HandoffError.offNetwork
         }
         let hostAndPort = "\(host):\(port.rawValue)/\(token)"
-        guard let url = URL(string: "http://\(hostAndPort)") else { throw HandoffError.noPort }
+        guard let url = URL(string: "http://\(hostAndPort)") else {
+            await stop()
+            throw HandoffError.noPort
+        }
         return Endpoint(url: url, hostAndPort: hostAndPort)
     }
 
     /// Returns once the server has stopped, whether `stop()` was called or the listener died under
     /// it. The screen awaits this to stop showing a URL nothing serves.
     public func waitUntilStopped() async {
-        if isStopped { return }
+        if case .stopped = lifecycle { return }
         await withCheckedContinuation { stopWaiters.append($0) }
     }
 
-    /// Idempotent teardown. The screen calls this on disappear, so the server's lifetime is the
-    /// lifetime of the URL being on screen.
+    /// Idempotent teardown. The screen calls this when it goes away, so the server's lifetime is
+    /// the lifetime of the URL being on screen. A stop mid-`start()` makes that start throw
+    /// `stopped` and cancel the listener it was binding.
     public func stop() async {
-        guard !isStopped else { return }
-        isStopped = true
+        if case .stopped = lifecycle { return }
+        let listener = self.listener
+        lifecycle = .stopped
         let waiters = stopWaiters
         stopWaiters.removeAll()
         waiters.forEach { $0.resume() }
-        let listener = self.listener
         let connections = Array(self.connections.values)
-        self.listener = nil
         self.connections.removeAll()
         await offQueue {
             listener?.cancel()
@@ -157,7 +187,7 @@ public actor DiagnosticsHandoffServer {
     // MARK: - Serving
 
     private func accept(_ connection: NWConnection) {
-        guard !isStopped, listener != nil else {
+        guard case .listening = lifecycle else {
             Task { await self.offQueue { connection.cancel() } }
             return
         }
