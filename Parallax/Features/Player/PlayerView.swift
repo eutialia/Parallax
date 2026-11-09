@@ -98,10 +98,8 @@ struct PlayerView: View {
         // (top bar, scrubber) and status bar respect the safe area. The status bar
         // hides in lockstep with the chrome.
         #if !os(tvOS)
-        // PAIRED PREDICATE: PlayerControlsView.statusBarExpectedVisible is the
-        // exact negation of this rule. Its HUDInsetLatch only adopts the
-        // safe-area inset while the bar is expected visible — change one side
-        // and the other must follow, or the top bars latch stale insets.
+        // PlayerControlsView's HUDInsetLatch reads the same rule: it only adopts the
+        // safe-area inset while this bar shows.
         .statusBarHidden(chrome.statusBarHidden)
         // No `.defersSystemGestures(on: .top)`: deferring the top edge is what made
         // Control Center / Notification Center need TWO swipes (the first only surfaced
@@ -224,8 +222,7 @@ struct PlayerView: View {
                     // tap-to-toggle, Close in its real spot, and the track chips as
                     // soon as their lists populate. Engine-backed transport is gated
                     // inside on vm.phase, so nothing inert looks tappable.
-                    PlayerControlsView(vm: vm, controlsVisible: $chrome.visible,
-                                       interaction: $chrome.interaction,
+                    PlayerControlsView(vm: vm, chrome: $chrome,
                                        pullDragging: presentation.isDragging) { exitPlayer() }
                     #endif
                     // Contextual Skip Intro/Recap · Next Episode button — a sibling
@@ -537,8 +534,7 @@ struct PlayerView: View {
                 // Back handling lives INSIDE the controls (one root handler that
                 // closes an open panel before folding); `onExitHUD` is the no-menu
                 // branch.
-                PlayerControlsView(vm: vm, controlsVisible: .constant(true),
-                                   interaction: $hud.interaction,
+                PlayerControlsView(vm: vm, interaction: $hud.interaction,
                                    onScrubberFocusChange: { hud.scrubberFocused = $0 },
                                    onScrubberStep: { send(.click($0), vm) },
                                    onScrubberSelect: { send(.select, vm) },

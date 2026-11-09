@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxFeatures
 
 /// Double-tap seek affordance (the design's YouTube vocabulary): a radial dome
 /// darkens the tapped side while three chevrons march in the seek direction over
@@ -17,7 +18,7 @@ import SwiftUI
 /// App target only: pure SwiftUI, no platform conditionals (the double-tap gesture
 /// driving it is wired by the touch platforms; tvOS seeks through its HUD reducer).
 struct PlayerSeekFlash: View {
-    enum Direction { case backward, forward }
+    typealias Direction = PlayerSeekDirection
 
     var direction: Direction
     /// Accumulated skip for the running burst: 10, 20, 30…

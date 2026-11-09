@@ -37,14 +37,11 @@ import ParallaxFeatures
 /// populate). Engine-backed transport gates on `playbackReady`.
 struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
-    /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar.
-    @Binding var controlsVisible: Bool
-    /// The open panel, the debug sheet and a finger on the bar, owned by `PlayerView`, which
-    /// reads them for the status bar, pull-to-dismiss and the tvOS idle timer — and resets them
-    /// when it unmounts these controls. The debug chip renders in DEBUG builds only; a corner
-    /// overlay button was unreachable by the tvOS focus engine.
-    @Binding var interaction: PlayerHUDInteraction
     #if os(tvOS)
+    /// The open panel and the debug sheet, owned by `PlayerView`'s `PlayerTVHUD`, which reads
+    /// them for the idle timer and drops them when the chrome folds. The debug chip renders in
+    /// DEBUG builds only; a corner overlay button was unreachable by the tvOS focus engine.
+    @Binding var interaction: PlayerHUDInteraction
     /// Reports the scrub bar's focus to `PlayerView`, which gates window-level pans
     /// into analog scrub only while the bar is focused. Required, not optional —
     /// without the wiring, swipe-on-scrubber silently degrades to click-stepping.
@@ -63,6 +60,11 @@ struct PlayerControlsView: View {
     /// without this the chrome auto-hid mid-navigation (user-reported).
     let onActivity: () -> Void
     #else
+    /// The chrome — visibility, menus, the drag-scrub and the double-tap burst — owned by
+    /// `PlayerView`, which derives the status bar, home indicator and pull-to-dismiss from it.
+    /// Every gesture here is one input to it (see `PlayerTouchChrome`); this view runs the
+    /// effects it returns.
+    @Binding var chrome: PlayerTouchChrome
     /// True while the pull-to-dismiss drag (and its spring-back) is live. Freezes the
     /// auto-hide: a chrome hide mid-drag collapses the status-bar inset, which would shear
     /// the safe-area-bounded top bar away from the rigidly-translating card. See
@@ -92,19 +94,22 @@ struct PlayerControlsView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
 
+    #if os(tvOS)
+    /// tvOS visibility is the reducer's: this view is mounted only while the chrome is up.
+    private var controlsVisible: Bool { true }
+    /// The remote's scrubs are the reducer's `swipeScrub`; no finger ever holds this bar.
+    private var dragScrubbing: Bool { false }
+    private var debugSheet: Binding<Bool> { $interaction.debugOpen }
+    #else
     @State private var hideTask: Task<Void, Never>? = nil
-    #if !os(tvOS)
-    /// A drag-scrub's commit is still in flight — outlives the finger, so the transport
-    /// stays out until the seek lands. tvOS's equivalent is reducer-owned in `PlayerView`.
-    @State private var isScrubbing = false
-    /// Bumped on every drag start so a slow seek can't clear `isScrubbing` after a newer
-    /// drag began (which would snap the thumb back to live playback mid-grab).
-    @State private var scrubGeneration = 0
-    #endif
-    private var dragScrubbing: Bool {
-        get { interaction.dragScrubbing }
-        nonmutating set { interaction.dragScrubbing = newValue }
+    private var controlsVisible: Bool { chrome.visible }
+    private var dragScrubbing: Bool { chrome.dragScrubbing }
+    private var interaction: PlayerHUDInteraction {
+        get { chrome.interaction }
+        nonmutating set { chrome.interaction = newValue }
     }
+    private var debugSheet: Binding<Bool> { $chrome.interaction.debugOpen }
+    #endif
     #if os(tvOS)
     /// Whether the scrub bar holds focus — drives the focused-handle ring and gates
     /// remote left/right into ±10s seek steps.
@@ -136,29 +141,13 @@ struct PlayerControlsView: View {
     /// anchor inputs.
     @State private var hudSize: CGSize = .zero
     #if !os(tvOS)
-    /// The live double-tap seek flash (dome + chevrons + "N seconds"); nil when idle.
-    @State private var seekFlash: SeekFlash?
+    /// The burst's self-dismissal, `PlayerSeekFlash.duration` after its last tap.
     @State private var seekFlashDismissTask: Task<Void, Never>?
-    /// The drag-scrub (and a11y-adjust) commit in flight. Stored — not an anonymous
-    /// `Task` — so `onDisappear` can cancel it: a player dismissed mid-commit would
-    /// otherwise still `seek` + `play` the captured engine after teardown (the
-    /// generation guard can't help; dismissal never bumps it).
+    /// The drag-scrub commit in flight. Stored — not an anonymous `Task` — so `onDisappear`
+    /// can cancel it: a player dismissed mid-commit would otherwise still `seek` + `play` the
+    /// captured engine after teardown (the generation guard can't help; dismissal never
+    /// bumps it).
     @State private var scrubCommitTask: Task<Void, Never>?
-
-    private struct SeekFlash {
-        var direction: PlayerSeekFlash.Direction
-        var seconds: Int
-        var tapPoint: CGPoint
-        var trigger: Int
-        /// Burst clock for the bar's fade — mirrors the dome's internal clock so the bar
-        /// fades on the IDENTICAL `PlayerSeekFlash.envelope`. `burstStart` resets on a
-        /// direction reversal (the dome remounts via `.id`); `lastTap` bumps every tap.
-        var burstStart: Date
-        var lastTap: Date
-    }
-    /// Timestamp + zone of the previous tap — the manual double-tap pairing in
-    /// `handleTap` that replaced the count:2 recognizer.
-    @State private var lastTap: (date: Date, zone: PlayerSeekFlash.Direction?)? = nil
     /// The status-bar inset, LATCHED while the bar is expected visible: the top bar
     /// pins itself full-bleed and pads by this, so hiding the status bar with the
     /// chrome can't reflow it mid-fade (the show/hide travel was asymmetric — hide
@@ -213,9 +202,9 @@ struct PlayerControlsView: View {
         return true
         #else
         // iOS drag-scrub collapses the chrome to the lone bar; hold the transport out
-        // while the commit is in flight (`isScrubbing` outlives the finger) so the
+        // while the commit is in flight (`scrubInFlight` outlives the finger) so the
         // paused-state glyph can't flash before the seek's `.buffering` scrim lands.
-        return !isScrubbing
+        return !chrome.scrubInFlight
         #endif
     }
     /// Deliberately device-based, not `@Environment(\.appIdiom)` (which is size-class
@@ -232,12 +221,11 @@ struct PlayerControlsView: View {
     /// because landscape's max dimension is the width, which the status bar never touches.
     private var hudPhysicalMax: CGFloat { max(hudPhysicalSize.width, hudPhysicalSize.height) }
 
-    /// The negation of `PlayerTouchChrome.statusBarHidden`, which `PlayerView` applies, over
-    /// the same two fields: while this is true, the safe-area reader reports
-    /// the status bar's REAL inset — including a legitimate 0 in iPhone landscape —
-    /// and `HUDInsetLatch` may adopt it. While false, the bar is hidden by us and
-    /// its transient 0 must be ignored.
-    private var statusBarExpectedVisible: Bool { controlsVisible && !dragScrubbing }
+    /// The status bar `PlayerView` shows, read off the same chrome: while this is true, the
+    /// safe-area reader reports the status bar's REAL inset — including a legitimate 0 in
+    /// iPhone landscape — and `HUDInsetLatch` may adopt it. While false, the bar is hidden
+    /// by us and its transient 0 must be ignored.
+    private var statusBarExpectedVisible: Bool { !chrome.statusBarHidden }
     #endif
 
     /// Directional reveal offset for a chrome section (see `PlayerMetrics.hudSlide`):
@@ -254,16 +242,15 @@ struct PlayerControlsView: View {
             #if os(tvOS)
             Color.clear
                 .contentShape(.rect)
-                .onTapGesture { toggleControls() }
+                .onTapGesture { closeAllMenus() }
                 .ignoresSafeArea()
             #else
             // Tap surface: ONE single-tap recognizer, zero recognition delay — every
             // tap-up toggles the chrome the instant it lands, so a lone edge tap flicks
-            // the HUD on·off with no delay. Double-tap seek is paired MANUALLY inside
-            // `handleTap` (timestamp + zone): a count:2 recognizer — even composed
+            // the HUD on·off with no delay. Double-tap seek is paired MANUALLY in
+            // `PlayerTouchChrome.tap` (timestamp + zone): a count:2 recognizer — even composed
             // `simultaneously` — gated the second tap's delivery by ~0.5s on device while
-            // it disambiguated, and `.exclusively` before it delayed the first. The pair's
-            // second tap hides the chrome and seeks; see `handleTap`.
+            // it disambiguated, and `.exclusively` before it delayed the first.
             GeometryReader { geo in
                 ZStack {
                     Color.clear
@@ -276,10 +263,9 @@ struct PlayerControlsView: View {
                     // scrim) instead of lingering its 0.9s tail over the new scrim. The
                     // scrub bar that rides this dome is a SIBLING (`seekScrubBar` below) so
                     // it can sit in the safe area at the HUD scrubber's exact spot — this
-                    // full-bleed layer is the dome only. Gated `!controlsVisible` in lockstep
-                    // with the bar so the two always show and hide together (handleTap keeps
-                    // the chrome down for a live burst, so this is normally always true).
-                    if let flash = seekFlash, playbackReady, !controlsVisible {
+                    // full-bleed layer is the dome only, gated in lockstep with the bar
+                    // (`showsBurst`) so the two always show and hide together.
+                    if let flash = chrome.burst, chrome.showsBurst(playbackReady: playbackReady) {
                         PlayerSeekFlash(
                             direction: flash.direction, seconds: flash.seconds,
                             tapPoint: flash.tapPoint, trigger: flash.trigger,
@@ -310,10 +296,9 @@ struct PlayerControlsView: View {
             // the tvOS seek shows. A safe-area SIBLING (not inside the full-bleed dome
             // layer), so it pins to the HUD scrubber's EXACT height/width via the shared
             // `scrubberInsetX`/`scrubberBottom`. Faded on the dome's own envelope so it
-            // shows/hides WITH the scrim. Gated on `!controlsVisible`: the full-HUD scrubber
-            // sits at the IDENTICAL rect, so the two must never render together (a middle
-            // tap can raise the HUD mid-burst — this yields the bar to it, no double-exposure).
-            if let flash = seekFlash, playbackReady, !controlsVisible {
+            // shows/hides WITH the scrim. Never with the chrome (`showsBurst`): the full-HUD
+            // scrubber sits at the IDENTICAL rect.
+            if let flash = chrome.burst, chrome.showsBurst(playbackReady: playbackReady) {
                 seekScrubBar(flash)
                     .latchedSides(hudInsets)
             }
@@ -325,8 +310,8 @@ struct PlayerControlsView: View {
         .animation(.playerStateCrossfade, value: vm.showsStallScrim)
         #if !os(tvOS)
         // …and fades back in when an in-flight scrub commit lands (the transport
-        // is held out through `isScrubbing` so the paused glyph can't flash).
-        .animation(.playerStateCrossfade, value: isScrubbing)
+        // is held out through `scrubInFlight` so the paused glyph can't flash).
+        .animation(.playerStateCrossfade, value: chrome.scrubInFlight)
         .onAppear { scheduleHide() }
         // The sleeping tasks outlive a dismissed player and write to dead @State. Cancel them.
         .onDisappear {
@@ -334,40 +319,33 @@ struct PlayerControlsView: View {
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
         }
-        // A live pull-drag (and its spring-back) suspends the auto-hide — see
-        // `pullDragging`. The hide task is already armed when the drag starts, so cancel
-        // it on engage and re-arm a fresh timer on release.
+        // The hide task is already armed when a pull starts, so it is cancelled on engage and
+        // re-armed on release.
         .onChange(of: pullDragging) { _, dragging in
-            if dragging { hideTask?.cancel() } else { scheduleHide() }
+            perform(chrome.hideTimer(after: .pullDragging(dragging)))
         }
-        #endif
         .onChange(of: menuOpen) { _, open in
-            if open { hideTask?.cancel() } else { scheduleHide() }
+            perform(chrome.hideTimer(after: .menuOpen(open)))
         }
-        #if os(tvOS)
-        // ONE Back handler for the whole HUD, wherever focus sits: an open panel
-        // closes (focus back to its chip); otherwise the HUD folds to the floor.
-        .onExitCommand {
-            if openMenu != nil { closeMenu() } else { onExitHUD() }
-        }
-        #endif
         // When the chrome hides, the chips anchoring the inline panels (and the
         // debug sheet's binding) go with it — a stale `openMenu`/`debugHUD` would
         // keep `menuOpen` true and lock the user out of the chrome. Clear them.
         .onChange(of: controlsVisible) { _, visible in
             if !visible { closeAllMenus() }
         }
-        // Pause pins the chrome (see `scheduleHide`); resuming re-arms the timer. Keyed on
-        // INTENT so it agrees with `scheduleHide`'s own guard: the engine mirror lags a
+        // Keyed on INTENT so it agrees with the auto-hide's own rule: the engine mirror lags a
         // command by up to a poll (seconds on wmv), and a scrub's transient beats move it
         // without the user ever asking for a pause.
         .onChange(of: vm.desiredPlaying) { _, playing in
-            if playing {
-                if controlsVisible { scheduleHide() }
-            } else {
-                hideTask?.cancel()
-            }
+            perform(chrome.hideTimer(after: .desiredPlaying(playing)))
         }
+        #else
+        // ONE Back handler for the whole HUD, wherever focus sits: an open panel
+        // closes (focus back to its chip); otherwise the HUD folds to the floor.
+        .onExitCommand {
+            if openMenu != nil { closeMenu() } else { onExitHUD() }
+        }
+        #endif
     }
 
     // MARK: - Root layout
@@ -998,7 +976,7 @@ struct PlayerControlsView: View {
                         isActive: debugHUD, iconOnly: iconOnly, metrics: m, accessibilityLabel: "Debug info") {
             resetHideTimer(); debugHUD = true
         }
-        .trackPresentation(isPresented: $interaction.debugOpen) { debugMenuList }
+        .trackPresentation(isPresented: debugSheet) { debugMenuList }
         #endif
     }
 
@@ -1090,61 +1068,19 @@ struct PlayerControlsView: View {
                 // there is no duration to scrub against. A drag begun during a mid-session
                 // reload is fine — its commit merges into the reload that is already running.
                 guard playbackReady, durSeconds > 0 else { return }
-                // Keyed on the FINGER (dragScrubbing), not isScrubbing: the
-                // previous commit holds isScrubbing true while its seek is in
-                // flight, and a re-drag in that window must still register —
-                // bumping the generation so the old commit can neither snap the
-                // bar back mid-drag nor resume under the finger.
-                if !dragScrubbing {
-                    scrubGeneration += 1
-                    // The ambient `.animation(value: dragScrubbing)` covers this flip
-                    // symmetrically with the release; a grab-side "missing" morph on
-                    // device was a Debug-build frame drop (the chrome collapse lands
-                    // on the same frame), not an API asymmetry — don't wrap this in
-                    // withAnimation again.
-                    isScrubbing = true
-                    dragScrubbing = true
-                    hideTask?.cancel()
-                    cancelPendingSeek()
-                    // The picture freezes on the preview frame; the transport INTENT is
-                    // untouched, so the play/pause glyph keeps drawing the truth under the drag.
-                    vm.beginScrubHold()
-                }
+                // The ambient `.animation(value: dragScrubbing)` covers the entry flip
+                // symmetrically with the release; a grab-side "missing" morph on device was a
+                // Debug-build frame drop (the chrome collapse lands on the same frame), not an
+                // API asymmetry — don't wrap this in withAnimation again.
+                perform(chrome.scrubDragChanged(), durSeconds: durSeconds)
                 // The gesture is the model's to know: the split head, the ghost and the bubble
                 // are all one published flight, so nothing has to infer "a finger is down" from
                 // a view flag a commit could outlive.
                 vm.beginPreview(at: CMTime(seconds: frac * durSeconds, preferredTimescale: 600))
             },
             onScrubEnded: { frac in
-                dragScrubbing = false
-                resetHideTimer()
-                guard playbackReady, vm.engine != nil, durSeconds > 0 else {
-                    // Nothing to commit — hand the bar back rather than leaving it split on a
-                    // preview no seek will ever convert, and let the picture go: no commit is
-                    // coming to end the hold.
-                    vm.cancelPreview()
-                    vm.endScrubHold()
-                    isScrubbing = false
-                    return
-                }
-                let gen = scrubGeneration
-                let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
-                scrubCommitTask?.cancel()
-                scrubCommitTask = Task {
-                    // Route through the commit seek: it reconciles the engine to whatever the
-                    // transport intent is WHEN IT LANDS, so a press during the drag or inside
-                    // the seek wins.
-                    await vm.commitSeek(to: target)
-                    // Release the moment the commit returns — `vm.currentPosition` already
-                    // reads the target (the VM's `SeekHold` publishes it at commit time and
-                    // pins it there through the reload scrim), so handing the bar back to
-                    // live playback can no longer flash the stale pre-seek position.
-                    // A newer drag owns the bar now — leave the release to its commit.
-                    // Cancellation = the player was dismissed mid-seek (onDisappear):
-                    // don't touch a torn-down engine on the way out.
-                    guard !Task.isCancelled, scrubGeneration == gen else { return }
-                    isScrubbing = false
-                }
+                perform(chrome.scrubDragEnded(at: frac, canCommit: playbackReady && vm.engine != nil && durSeconds > 0),
+                        durSeconds: durSeconds)
             }
         )
         // VoiceOver/Switch Control can't drive the drag gesture; expose the bar as an
@@ -1155,14 +1091,8 @@ struct PlayerControlsView: View {
         .accessibilityAddTraits(.updatesFrequently)
         .accessibilityAdjustableAction { direction in
             guard playbackReady, durSeconds > 0 else { return }
-            resetHideTimer()
-            // A double-tap burst's dome would otherwise keep drawing its stale label over
-            // this step and route the next tap into the burst instead of the chrome toggle.
-            seekFlashDismissTask?.cancel()
-            seekFlash = nil
-            stepSeek(by: direction == .increment ? PlayerHUDTuning.clickStepSeconds
-                                                 : -PlayerHUDTuning.clickStepSeconds,
-                     durSeconds: durSeconds)
+            perform(chrome.accessibilityStep(direction == .increment ? .forward : .backward),
+                    durSeconds: durSeconds)
         }
         #endif
     }
@@ -1170,111 +1100,89 @@ struct PlayerControlsView: View {
     // MARK: - Double-tap seek (touch platforms)
 
     #if !os(tvOS)
-    /// The double-tap PAIRING window: a tap in an outer third within this of a previous
-    /// tap in the SAME third is the "second tap" that fires the ±10s step. The standard
-    /// iOS double-tap gap (0.3s) — long enough to pair a relaxed double-tap, short enough
-    /// that a lone edge tap's chrome toggle reads as instant.
-    static let doubleTapWindow: TimeInterval = 0.3
-
-    /// Every tap-up, handled without a count:2 recognizer (which gated the second tap
-    /// ~0.5s on device). Manual pairing on `doubleTapWindow`.
-    ///
-    /// Every tap toggles the chrome the instant it lands — a lone edge tap shows/hides the
-    /// HUD with no delay. What makes double-tap-seek coexist with that: the SECOND tap of a
-    /// pair doesn't toggle, it HIDES the chrome and starts the seek burst — so the dome +
-    /// shared scrub bar take over a clean surface, never fighting a half-shown HUD. (A first
-    /// tap that raised the HUD is dropped by that hide; one that lowered it stays lowered.)
-    /// While the burst is up, further taps in a third keep stepping (10, 20, 30… — the
-    /// YouTube burst) and leave the chrome down. The middle third never seeks; not-ready
-    /// playback just toggles.
+    /// Every tap-up, handed to `PlayerTouchChrome.tap` with its zone — the pairing, the burst
+    /// and the toggle are the chrome's.
     private func handleTap(at location: CGPoint, in size: CGSize) {
-        let zone = seekZone(at: location, in: size)
-        let now = Date()
-        // nil = no usable pair: no tap within the window, OR the previous tap was in
-        // the middle third (its recorded nil zone flattens out here — a middle tap
-        // must never pair with a later outer-third tap as a seek).
-        let pairedZone: PlayerSeekFlash.Direction? = lastTap.flatMap { prev in
-            now.timeIntervalSince(prev.date) < Self.doubleTapWindow ? prev.zone : nil
-        }
-        lastTap = (now, zone)
-
-        let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-
-        // A LIVE burst owns the surface — the dome + seek bar are up, chrome down. Route
-        // EVERY tap through it: an outer third steps the burst, a middle third is ignored.
-        // Crucially nothing here toggles the chrome, so a stray tap can't raise the HUD
-        // over the affordance (which would strand the chrome and desync the dome — gated
-        // `!controlsVisible` — from the still-marching dome). The burst self-dismisses
-        // ~0.9s after the last tap.
-        if seekFlash != nil {
-            if let zone, playbackReady, durSeconds > 0, size.width > 0 {
-                seekStep(zone, at: location, durSeconds: durSeconds, now: now)
-            }
-            return
-        }
-
-        guard let zone, playbackReady, durSeconds > 0, size.width > 0 else {
-            toggleControls()   // middle third / not ready — instant toggle, never seeks
-            return
-        }
-        if pairedZone == zone {
-            // Second tap of a fresh pair: drop the chrome the first tap may have raised
-            // (so the HUD never conflicts with the dome + bar) and start the burst.
-            hideControls()
-            seekStep(zone, at: location, durSeconds: durSeconds, now: now)
-        } else {
-            // Lone edge tap: toggle the chrome instantly. A following paired tap will
-            // hide it again before the seek.
-            toggleControls()
-        }
-    }
-
-    /// Force the chrome down for a starting seek burst — the dome + scrub bar own the
-    /// surface, so a half-shown HUD from the first tap must clear (a plain toggle could
-    /// instead SHOW it when the surface was already bare). Mirrors `toggleControls`'
-    /// drag-scrub guard: a live drag must keep its bar.
-    private func hideControls() {
-        guard !dragScrubbing else { return }
-        controlsVisible = false   // `onChange(of: controlsVisible)` closes any open menu
+        perform(chrome.tap(zone: seekZone(at: location, in: size), at: location, now: Date(),
+                           playbackReady: playbackReady,
+                           durationKnown: CMTimeGetSeconds(vm.currentDuration) > 0),
+                durSeconds: CMTimeGetSeconds(vm.currentDuration))
     }
 
     /// Outer thirds are the seek surfaces; the middle third is nil (toggle only).
-    private func seekZone(at location: CGPoint, in size: CGSize) -> PlayerSeekFlash.Direction? {
+    private func seekZone(at location: CGPoint, in size: CGSize) -> PlayerSeekDirection? {
         guard size.width > 0 else { return nil }
         if location.x < size.width / 3 { return .backward }
         if location.x > size.width * 2 / 3 { return .forward }
         return nil
     }
 
+    /// Run what the chrome returned, in order. `durSeconds` is the duration the gesture
+    /// measured its step or drag against.
+    private func perform(_ effects: [PlayerTouchEffect], durSeconds: Double) {
+        for effect in effects { perform(effect, durSeconds: durSeconds) }
+    }
+
+    private func perform(_ effect: PlayerTouchEffect?, durSeconds: Double = 0) {
+        switch effect {
+        case nil:
+            break
+        case .rearmHide:
+            scheduleHide()
+        case .cancelHide:
+            hideTask?.cancel()
+        case .stepSeek(let seconds):
+            stepSeek(by: seconds, durSeconds: durSeconds)
+        case .rearmBurstDismissal:
+            scheduleSeekFlashDismissal()
+        case .cancelBurstDismissal:
+            seekFlashDismissTask?.cancel()
+        case .dropPendingSeek:
+            // A burst whose commit is dropped must not leave the bar split.
+            vm.cancelPreview()
+            vm.cancelPendingSeek()
+        case .beginScrubHold:
+            // The picture freezes on the preview frame; the transport INTENT is untouched,
+            // so the play/pause glyph keeps drawing the truth under the drag.
+            vm.beginScrubHold()
+        case .cancelScrub:
+            // Nothing to commit — hand the bar back rather than leaving it split on a
+            // preview no seek will ever convert, and let the picture go: no commit is
+            // coming to end the hold.
+            vm.cancelPreview()
+            vm.endScrubHold()
+        case .commitScrub(let generation, let fraction):
+            let target = CMTime(seconds: fraction * durSeconds, preferredTimescale: 600)
+            scrubCommitTask?.cancel()
+            scrubCommitTask = Task {
+                // Route through the commit seek: it reconciles the engine to whatever the
+                // transport intent is WHEN IT LANDS, so a press during the drag or inside
+                // the seek wins.
+                await vm.commitSeek(to: target)
+                // Release the moment the commit returns — `vm.currentPosition` already
+                // reads the target (the VM's `SeekHold` publishes it at commit time and
+                // pins it there through the reload scrim), so handing the bar back to
+                // live playback can no longer flash the stale pre-seek position.
+                // Cancellation = the player was dismissed mid-seek (onDisappear):
+                // don't touch a torn-down engine on the way out.
+                guard !Task.isCancelled else { return }
+                chrome.scrubCommitLanded(generation: generation)
+            }
+        }
+    }
+
     /// One ±step from the bar's virtual position: the model previews it (opening the split
     /// head on the first step) and the shared coalescer commits the settled target — the same
     /// accumulate-then-fire-once shape for the double-tap burst and the VoiceOver adjust.
+    /// One seek fires after the steps settle: per-step seeks thrash a transcode and wedge the
+    /// player (the tvOS click-seek lesson).
     private func stepSeek(by seconds: Double, durSeconds: Double) {
         // No engine, no commit: the coalescer's seek would never land, leaving the preview's
         // hold armed with no beat to clear it.
         guard vm.engine != nil else { return }
         let target = min(max(CMTimeGetSeconds(vm.virtualPosition) + seconds, 0), durSeconds)
         vm.beginPreview(at: CMTime(seconds: target, preferredTimescale: 600))
-        scheduleSeekCommit(to: target)
-    }
-
-    /// One tap of a double-tap burst: drive the flash, then hand the step to `stepSeek`,
-    /// which accumulates the previewed target and debounces the one engine seek.
-    private func seekStep(_ direction: PlayerSeekFlash.Direction, at location: CGPoint, durSeconds: Double, now: Date) {
-        let step = PlayerHUDTuning.clickStepSeconds
-        let delta = direction == .forward ? step : -step
-
-        // Same direction = the same burst extends (label accumulates, dome's clock holds);
-        // a reversal is a fresh burst (label resets, dome remounts via `.id`, so its
-        // `burstStart` must reset too — the bar's fade keys off it).
-        let sameDirection = seekFlash?.direction == direction
-        let seconds = (sameDirection ? seekFlash?.seconds ?? 0 : 0) + Int(step)
-        let burstStart = sameDirection ? (seekFlash?.burstStart ?? now) : now
-        seekFlash = SeekFlash(direction: direction, seconds: seconds,
-                              tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1,
-                              burstStart: burstStart, lastTap: now)
-        stepSeek(by: delta, durSeconds: durSeconds)
-        scheduleSeekFlashDismissal()
+        vm.scheduleSeek(to: target)
     }
 
     /// The scrub bar riding the double-tap dome. Mounted in the body's safe-area context
@@ -1283,7 +1191,7 @@ struct PlayerControlsView: View {
     /// spot — same height, same width. The bar opacity rides the dome's own
     /// `PlayerSeekFlash.envelope` (keyed off the burst clock) so the two fade as one.
     @ViewBuilder
-    private func seekScrubBar(_ flash: SeekFlash) -> some View {
+    private func seekScrubBar(_ flash: PlayerSeekBurst) -> some View {
         // iPad metrics ride `hudPhysicalMax` (the physical-bounds probe, populated
         // `initial: true` on appear — always > 0 by the time a seek can run); `PlayerScrubBar`
         // self-pins to the safe-area bottom, so no GeometryReader is needed here.
@@ -1298,30 +1206,19 @@ struct PlayerControlsView: View {
         .allowsHitTesting(false)
     }
 
-    /// Accumulate the burst's target into the view model; it fires ONE seek after the taps
-    /// settle — per-tap seeks thrash a transcode and wedge the player (the tvOS click-seek
-    /// lesson).
-    private func scheduleSeekCommit(to target: Double) {
-        vm.scheduleSeek(to: target)
-    }
-
     private func scheduleSeekFlashDismissal() {
         seekFlashDismissTask?.cancel()
         seekFlashDismissTask = Task {
             try? await Task.sleep(for: .seconds(PlayerSeekFlash.duration))
-            if !Task.isCancelled { seekFlash = nil }
+            if !Task.isCancelled { chrome.burstExpired() }
         }
     }
 
-    /// Every OTHER seek-shaped action (drag-scrub, episode skip, chapter pick) and a
-    /// track reload must drop a queued double-tap burst — its debounced commit
-    /// would fire up to 400ms later and drag playback back to the stale target.
+    /// Every OTHER seek-shaped action (episode skip, chapter pick) and a track reload must
+    /// drop a queued double-tap burst — its debounced commit would fire up to 400ms later
+    /// and drag playback back to the stale target.
     private func cancelPendingSeek() {
-        // A burst whose commit is dropped must not leave the bar split.
-        vm.cancelPreview()
-        vm.cancelPendingSeek()
-        seekFlashDismissTask?.cancel()
-        seekFlash = nil
+        perform(chrome.dropBurst(), durSeconds: 0)
     }
     #endif
 
@@ -1412,17 +1309,6 @@ struct PlayerControlsView: View {
 
     // MARK: - Auto-hide
 
-    private func toggleControls() {
-        // A second finger's tap mustn't yank the chrome out from under an active
-        // drag-scrub — unmounting the bar kills the gesture with the engine paused.
-        guard !dragScrubbing else { return }
-        if menuOpen {
-            closeAllMenus(); controlsVisible = true; scheduleHide(); return
-        }
-        controlsVisible.toggle()
-        if controlsVisible { scheduleHide() }
-    }
-
     /// Open a track panel: re-arm the auto-hide, then mint a fresh identity for this open
     /// (see `inlineTrackPanel`).
     private func openPanel(_ kind: TrackMenuKind) {
@@ -1454,9 +1340,12 @@ struct PlayerControlsView: View {
         debugHUD = false
     }
 
+    /// Any chrome interaction: bring it back and restart the auto-hide. tvOS visibility and its
+    /// idle timer are the reducer's, so this is touch-only.
     private func resetHideTimer() {
-        if !controlsVisible { controlsVisible = true }
-        scheduleHide()
+        #if !os(tvOS)
+        perform(chrome.reveal(), durSeconds: 0)
+        #endif
     }
 
     /// Centre-transport episode jumps — one place for the `resetHideTimer` + async hop
@@ -1476,22 +1365,17 @@ struct PlayerControlsView: View {
         Task { await vm.playNextEpisode() }
     }
 
+    #if !os(tvOS)
+    /// Restart the auto-hide, when the chrome is eligible for one (`autoHideEligible`).
     private func scheduleHide() {
         hideTask?.cancel()
-        #if os(tvOS)
-        return   // Siri Remote has no touch-to-reveal — chrome visibility is reducer-owned.
-        #else
-        // No auto-hide while a menu is open, a finger holds the bar (hiding
-        // mid-drag would unmount the gesture's view and strand the engine paused),
-        // or playback is PAUSED — a paused frame with vanishing chrome reads as a
-        // dead player. Loading counts as not-playing: the HUD stays over the scrim.
-        guard !menuOpen, !dragScrubbing, !pullDragging, vm.desiredPlaying else { return }
+        guard chrome.autoHideEligible(pullDragging: pullDragging, desiredPlaying: vm.desiredPlaying) else { return }
         hideTask = Task {
-            try? await Task.sleep(for: .seconds(3))
-            if !Task.isCancelled { controlsVisible = false }
+            try? await Task.sleep(for: PlayerTouchChrome.autoHideDelay)
+            if !Task.isCancelled { chrome.autoHideFired() }
         }
-        #endif
     }
+    #endif
 }
 
 // MARK: - Debug overlay presentation
@@ -1639,8 +1523,7 @@ private struct PlayerControlsPreviewHost: View {
             Color.black.ignoresSafeArea()
             PlayerControlsView(
                 vm: vm,
-                controlsVisible: $chrome.visible,
-                interaction: $chrome.interaction,
+                chrome: $chrome,
                 pullDragging: false,
                 onDismiss: {},
                 previewBigWidth: bigWidth
