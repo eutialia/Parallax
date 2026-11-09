@@ -6,11 +6,10 @@ import ParallaxCore
 @MainActor
 @Suite("Touch player chrome")
 struct PlayerTouchChromeTests {
-    /// The chrome the user left when the stream died: hidden, a panel open, a finger on the bar.
+    /// The chrome the user left when the stream died: a panel open, a finger on the bar.
     private func busyChrome() -> PlayerTouchChrome {
         var chrome = PlayerTouchChrome()
-        chrome.visible = false
-        chrome.interaction.panel = PlayerPanel(kind: .audio)
+        _ = chrome.openPanel(.audio)
         _ = chrome.scrubDragChanged()
         return chrome
     }
@@ -157,7 +156,7 @@ struct PlayerTouchChromeTests {
     @Test("a drag with nothing to commit hands the bar back at once")
     func uncommittableDrag() {
         var chrome = PlayerTouchChrome()
-        chrome.visible = false
+        chrome.autoHideFired()
         _ = chrome.scrubDragChanged()
         #expect(chrome.scrubDragEnded(at: 0.5, canCommit: false) == [.rearmHide, .cancelScrub])
         #expect(chrome.scrub == .idle)
@@ -183,14 +182,14 @@ struct PlayerTouchChromeTests {
         #expect(chrome.autoHideEligible(pullDragging: false, desiredPlaying: true))
         #expect(!chrome.autoHideEligible(pullDragging: true, desiredPlaying: true))
         #expect(!chrome.autoHideEligible(pullDragging: false, desiredPlaying: false))
-        chrome.interaction.debugOpen = true
+        #expect(chrome.debugSheetChanged(open: true) == [.cancelHide])
         #expect(!chrome.autoHideEligible(pullDragging: false, desiredPlaying: true))
     }
 
     @Test("an auto-hide that fires after a panel opened or a finger took the bar leaves the chrome up")
     func staleAutoHideIsIgnored() {
         var underPanel = PlayerTouchChrome()
-        underPanel.interaction.panel = PlayerPanel(kind: .audio)
+        _ = underPanel.openPanel(.audio)
         underPanel.autoHideFired()
         #expect(underPanel.visible)
         #expect(underPanel.interaction.menuOpen)
@@ -201,10 +200,22 @@ struct PlayerTouchChromeTests {
         #expect(underDrag.visible)
     }
 
+    @Test("a menu stops the auto-hide while it is open and re-arms it once the last one closes")
+    func menusOwnTheHideTimer() {
+        var chrome = PlayerTouchChrome()
+        chrome.autoHideFired()
+        #expect(chrome.openPanel(.audio) == [.cancelHide])
+        #expect(chrome.visible)
+        #expect(chrome.debugSheetChanged(open: true) == [.cancelHide])
+        #expect(chrome.closePanel() == [])
+        #expect(chrome.debugSheetChanged(open: false) == [.rearmHide])
+        #expect(chrome.closePanel() == [])
+    }
+
     @Test("a tap with a menu open closes it and keeps the chrome up")
     func tapClosesMenus() {
         var chrome = PlayerTouchChrome()
-        chrome.interaction.panel = PlayerPanel(kind: .speed)
+        _ = chrome.openPanel(.speed)
         #expect(tap(&chrome, nil, after: 0) == [.rearmHide])
         #expect(chrome.visible)
         #expect(!chrome.interaction.menuOpen)
@@ -215,7 +226,7 @@ struct PlayerTouchChromeTests {
         var chrome = PlayerTouchChrome()
         #expect(chrome.hideTimer(after: .desiredPlaying(true)) == .rearmHide)
         #expect(chrome.hideTimer(after: .desiredPlaying(false)) == .cancelHide)
-        chrome.visible = false
+        chrome.autoHideFired()
         #expect(chrome.hideTimer(after: .desiredPlaying(true)) == nil)
     }
 }

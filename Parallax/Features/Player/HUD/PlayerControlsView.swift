@@ -104,11 +104,10 @@ struct PlayerControlsView: View {
     @State private var hideTask: Task<Void, Never>? = nil
     private var controlsVisible: Bool { chrome.visible }
     private var dragScrubbing: Bool { chrome.dragScrubbing }
-    private var interaction: PlayerHUDInteraction {
-        get { chrome.interaction }
-        nonmutating set { chrome.interaction = newValue }
+    private var interaction: PlayerHUDInteraction { chrome.interaction }
+    private var debugSheet: Binding<Bool> {
+        Binding { chrome.interaction.debugOpen } set: { setDebugHUD($0) }
     }
-    private var debugSheet: Binding<Bool> { $chrome.interaction.debugOpen }
     #endif
     #if os(tvOS)
     /// Whether the scrub bar holds focus — drives the focused-handle ring and gates
@@ -116,14 +115,8 @@ struct PlayerControlsView: View {
     @FocusState private var scrubberFocused: Bool
     #endif
     /// The open panel, IDENTITY AND ALL (`nil` = none) — see `PlayerPanel`.
-    private var openMenu: PlayerPanel? {
-        get { interaction.panel }
-        nonmutating set { interaction.panel = newValue }
-    }
-    private var debugHUD: Bool {
-        get { interaction.debugOpen }
-        nonmutating set { interaction.debugOpen = newValue }
-    }
+    private var openMenu: PlayerPanel? { interaction.panel }
+    private var debugHUD: Bool { interaction.debugOpen }
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
     @State private var chipFrames: [PlayerTrackMenuKind: CGRect] = [:]
     /// Measured content height PER MENU KIND; the inline panel sizes to it. Keyed
@@ -156,10 +149,6 @@ struct PlayerControlsView: View {
     /// Feeds `HUDInsetLatch` rule 3 and the iPad metrics base.
     @State private var hudPhysicalSize = CGSize.zero
     #endif
-
-    // The debug sheet needs no build-config fork: only the DEBUG-only chip can ever open it,
-    // so in Release it's just always false.
-    private var menuOpen: Bool { interaction.menuOpen }
 
     #if os(tvOS)
     /// The open panel's row focus, keyed by each row's `rowID` (threaded to the rows
@@ -236,7 +225,7 @@ struct PlayerControlsView: View {
             #if os(tvOS)
             Color.clear
                 .contentShape(.rect)
-                .onTapGesture { closeAllMenus() }
+                .onTapGesture { interaction = PlayerHUDInteraction() }
                 .ignoresSafeArea()
             #else
             // Tap surface: ONE single-tap recognizer, zero recognition delay — every
@@ -317,15 +306,6 @@ struct PlayerControlsView: View {
         // re-armed on release.
         .onChange(of: pullDragging) { _, dragging in
             perform(chrome.hideTimer(after: .pullDragging(dragging)))
-        }
-        .onChange(of: menuOpen) { _, open in
-            perform(chrome.hideTimer(after: .menuOpen(open)))
-        }
-        // When the chrome hides, the chips anchoring the inline panels (and the
-        // debug sheet's binding) go with it — a stale `openMenu`/`debugHUD` would
-        // keep `menuOpen` true and lock the user out of the chrome. Clear them.
-        .onChange(of: controlsVisible) { _, visible in
-            if !visible { closeAllMenus() }
         }
         // Keyed on INTENT so it agrees with the auto-hide's own rule: the engine mirror lags a
         // command by up to a poll (seconds on wmv), and a scrub's transient beats move it
@@ -968,7 +948,7 @@ struct PlayerControlsView: View {
         #if DEBUG
         PlayerGlassChip(systemImage: "ladybug", label: "Debug",
                         isActive: debugHUD, iconOnly: iconOnly, metrics: m, accessibilityLabel: "Debug info") {
-            resetHideTimer(); debugHUD = true
+            resetHideTimer(); setDebugHUD(true)
         }
         .trackPresentation(isPresented: debugSheet) { debugMenuList }
         #endif
@@ -982,7 +962,7 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var debugMenuList: some View {
         let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
-        DebugInfoOverlay(vm: vm) { debugHUD = false }
+        DebugInfoOverlay(vm: vm) { setDebugHUD(false) }
             .frame(idealWidth: 440)
             .frame(maxHeight: 560)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1306,8 +1286,11 @@ struct PlayerControlsView: View {
     /// Open a track panel: re-arm the auto-hide, then mint a fresh identity for this open
     /// (see `inlineTrackPanel`).
     private func openPanel(_ kind: PlayerTrackMenuKind) {
-        resetHideTimer()
-        openMenu = PlayerPanel(kind: kind)
+        #if os(tvOS)
+        interaction.panel = PlayerPanel(kind: kind)
+        #else
+        perform(chrome.openPanel(kind), durSeconds: 0)
+        #endif
     }
 
     /// Close the open track panel, handing focus back to the chip that opened it on
@@ -1326,12 +1309,19 @@ struct PlayerControlsView: View {
         // peel-back to the opening chip onto the playhead-nearest `defaultFocus`. Clearing
         // it is also redundant — `openMenu = nil` takes the panel, and SwiftUI drops a
         // `FocusState` whose focused view is gone.
-        openMenu = nil
+        #if os(tvOS)
+        interaction.panel = nil
+        #else
+        perform(chrome.closePanel(), durSeconds: 0)
+        #endif
     }
 
-    private func closeAllMenus() {
-        openMenu = nil
-        debugHUD = false
+    private func setDebugHUD(_ open: Bool) {
+        #if os(tvOS)
+        interaction.debugOpen = open
+        #else
+        perform(chrome.debugSheetChanged(open: open), durSeconds: 0)
+        #endif
     }
 
     /// Any chrome interaction: bring it back and restart the auto-hide. tvOS visibility and its
