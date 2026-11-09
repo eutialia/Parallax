@@ -25,10 +25,11 @@ struct SegmentPromptGateTests {
         await countdown.value
         #expect(!gate.promptVisible(enabled: true))
 
-        playhead.segmentID = nil
-        gate.activeSegmentChanged(to: nil)
-        playhead.segmentID = "intro"
-        gate.activeSegmentChanged(to: "intro")
+        gate.playheadMoved(toSegment: "intro")
+        #expect(!gate.promptVisible(enabled: true))
+
+        gate.playheadMoved(toSegment: nil)
+        gate.playheadMoved(toSegment: "intro")
         #expect(gate.promptVisible(enabled: true))
     }
 
@@ -46,7 +47,7 @@ struct SegmentPromptGateTests {
         #expect(gate.promptVisible(enabled: true))
     }
 
-    @Test("a dismissed button shows again when the playhead moves straight into the next segment")
+    @Test("a dismissed button shows again when the playhead moves straight into the next segment, and back")
     func nextSegmentShowsAfterExpiry() {
         let playhead = Playhead("recap")
         let gate = SegmentPromptGate(clock: TestClock()) { playhead.segmentID }
@@ -54,7 +55,11 @@ struct SegmentPromptGateTests {
         #expect(!gate.promptVisible(enabled: true))
 
         playhead.segmentID = "intro"
-        gate.activeSegmentChanged(to: "intro")
+        gate.playheadMoved(toSegment: "intro")
+        #expect(gate.promptVisible(enabled: true))
+
+        playhead.segmentID = "recap"
+        gate.playheadMoved(toSegment: "recap")
         #expect(gate.promptVisible(enabled: true))
     }
 }

@@ -3,8 +3,7 @@ import Observation
 /// The one-shot rule for the contextual Skip / Next Episode button. The button shows while the
 /// playhead sits in an actionable segment and the surface allows it, for one countdown; once it
 /// has shown — the countdown ran out, the user fired it, or the tvOS remote revealed past it —
-/// it stays down for that segment until the playhead leaves every segment, so a re-entry
-/// re-arms it. Shared by the touch tap and the tvOS remote, so both honour the same one-shot.
+/// it stays down for that segment until the playhead leaves it, so a re-entry re-arms it. Shared by the touch tap and the tvOS remote, so both honour the same one-shot.
 @Observable
 public final class SegmentPromptGate {
     /// How long the button shows before it dismisses itself — the length of its drain.
@@ -31,9 +30,10 @@ public final class SegmentPromptGate {
     /// Dismiss the active segment's button for the rest of this visit to it.
     public func expirePrompt() { expiredID = activeSegmentID() }
 
-    /// The playhead moved between segments; leaving all of them re-arms the one-shot.
-    public func activeSegmentChanged(to id: String?) {
-        if id == nil { expiredID = nil }
+    /// Every position the player publishes, in any phase. The playhead leaving the dismissed
+    /// segment re-arms the one-shot; a reload that lands back inside it does not.
+    func playheadMoved(toSegment id: String?) {
+        if expiredID != nil, id != expiredID { expiredID = nil }
     }
 
     /// The shown button's countdown, on the player's clock. Run it for as long as the button
