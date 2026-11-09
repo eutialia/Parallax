@@ -1,14 +1,11 @@
+import Observation
+import Synchronization
 import Testing
 import ParallaxTestScaling
 @testable import ParallaxFeatures
 
-/// Unit tests for `SMBBonjourDiscovery`'s pure mapping logic.
-///
-/// Live browsing (`NWBrowser`) requires a real network stack and cannot be exercised
-/// headlessly — those paths are integration-only. The only thing this type owns that a unit
-/// test can reach is `discoveredServer(forServiceName:)`, so that mapping is the whole suite.
-/// (Dedup lives in the caller, not here; the tests that "proved" it were re-implementing the
-/// filter inside the test body, and `id == name` makes distinct-ids tautological.)
+/// Live browsing (`NWBrowser`) needs a real network stack, so the run lifecycle is driven through
+/// the injected `browse` streams.
 @Suite("SMBBonjourDiscovery", .scaledTimeLimit())
 struct SMBBonjourDiscoveryTests {
     @Test(
@@ -28,5 +25,36 @@ struct SMBBonjourDiscoveryTests {
         #expect(server.id == name)
         #expect(server.name == name)
         #expect(server.host == expectedHost)
+    }
+
+    /// Closing and reopening the picker stops one browse and starts the next; the stopped browse
+    /// winds down after the new one is running, and that must not end the new one.
+    @MainActor
+    @Test("a stopped browse winding down late leaves the browse that replaced it running")
+    func staleBrowseEndLeavesNewBrowse() async throws {
+        let browses = Browses()
+        let discovery = SMBBonjourDiscovery(browse: { browses.open() })
+        discovery.start()
+        discovery.stop()
+        discovery.start()
+
+        browses.latest(["NAS"])
+        for await names in Observations({ discovery.discovered.map(\.name) }) where names == ["NAS"] { break }
+
+        #expect(discovery.isDiscovering)
+    }
+}
+
+private final class Browses: Sendable {
+    private let continuations = Mutex<[AsyncStream<[String]>.Continuation]>([])
+
+    func open() -> AsyncStream<[String]> {
+        let (stream, continuation) = AsyncStream<[String]>.makeStream()
+        continuations.withLock { $0.append(continuation) }
+        return stream
+    }
+
+    func latest(_ names: [String]) {
+        _ = continuations.withLock { $0.last }?.yield(names)
     }
 }
