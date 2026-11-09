@@ -324,7 +324,6 @@ public actor ServerStore {
     /// Adds (or replaces) a session.
     public func add(_ session: Session) async throws {
         let key = Self.secretKey(for: session.id)
-        let existingIndex = loadedSessions.firstIndex(where: { $0.id == session.id })
 
         do {
             try await keychain.store(session.accessToken, for: key)
@@ -332,7 +331,7 @@ public actor ServerStore {
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
 
-        if let existingIndex {
+        if let existingIndex = loadedSessions.firstIndex(where: { $0.id == session.id }) {
             loadedSessions[existingIndex] = session
         } else {
             loadedSessions.append(session)
