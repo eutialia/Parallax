@@ -129,13 +129,43 @@ struct ServerStoreInvalidationTests {
         let tokens = await store.sessions.map(\.accessToken)
         #expect(tokens == [neighbour.accessToken, renewed.accessToken])
     }
+
+    /// The mirror order: the rejection is suspended in its Keychain delete when the user signs the
+    /// server in again. The delete must not land on the token that sign-in just stored.
+    @Test("A re-sign-in during a rejection's Keychain delete keeps its new token")
+    func reSignInDuringRejectionKeepsTheNewToken() async throws {
+        let (settings, _) = JellyfinFixtures.settingsStore("ServerStoreInvalidationTests")
+        let keychain = HeldStoreKeychain()
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
+        let old = session(id: "s1", token: "old")
+        let renewed = session(id: "s1", token: "new")
+        try await store.add(old)
+        await keychain.holdNextDelete()
+
+        let rejection = Task { await store.invalidateSession(old) }
+        await keychain.waitUntilHeld()
+        let reSignIn = Task { try await store.add(renewed) }
+        // The sign-in gets every chance to reach the Keychain ahead of the parked delete.
+        for _ in 0..<200 where await keychain.storeCount < 2 { await Task.yield() }
+        await keychain.release()
+        _ = await rejection.value
+        try await reSignIn.value
+
+        let stored: String? = try await keychain.read(JellyfinFixtures.tokenKey(forRawID: "s1"))
+        #expect(stored == "new")
+        #expect(await store.sessions == [renewed])
+        #expect(await store.active == renewed)
+    }
 }
 
-/// Parks the next `store` until released, so a test can run other actor work inside that await.
+/// Parks the next `store` or `delete` until released, so a test can run other actor work inside
+/// that await.
 private actor HeldStoreKeychain: KeychainStoring {
+    enum Operation { case store, delete }
+
     private enum Hold {
         case none
-        case armed
+        case armed(Operation)
         case parked(CheckedContinuation<Void, Never>)
     }
 
@@ -143,7 +173,10 @@ private actor HeldStoreKeychain: KeychainStoring {
     private var hold = Hold.none
     private var heldWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func holdNextStore() { hold = .armed }
+    private(set) var storeCount = 0
+
+    func holdNextStore() { hold = .armed(.store) }
+    func holdNextDelete() { hold = .armed(.delete) }
 
     func waitUntilHeld() async {
         if case .parked = hold { return }
@@ -155,15 +188,19 @@ private actor HeldStoreKeychain: KeychainStoring {
         hold = .none
     }
 
-    func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) async throws {
-        if case .armed = hold {
-            await withCheckedContinuation { continuation in
-                hold = .parked(continuation)
-                heldWaiters.forEach { $0.resume() }
-                heldWaiters = []
-            }
+    private func park(_ operation: Operation) async {
+        guard case .armed(operation) = hold else { return }
+        await withCheckedContinuation { continuation in
+            hold = .parked(continuation)
+            heldWaiters.forEach { $0.resume() }
+            heldWaiters = []
         }
+    }
+
+    func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) async throws {
+        await park(.store)
         try await backing.store(value, for: key)
+        storeCount += 1
     }
 
     func read<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws -> Value? {
@@ -171,6 +208,7 @@ private actor HeldStoreKeychain: KeychainStoring {
     }
 
     func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws {
+        await park(.delete)
         try await backing.delete(key)
     }
 }
