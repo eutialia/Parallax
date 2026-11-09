@@ -1112,9 +1112,11 @@ public final class PlayerViewModel {
         }
     }
     /// The id of the segment the contextual prompt is for right now, or nil. The single
-    /// source for the one-shot suppression key — read by both `PlayerSegmentPrompt` and
-    /// the tvOS `send` pipeline, so the switch-on-`segmentPrompt` lives in one place.
+    /// source for the one-shot suppression key `segmentPromptGate` keeps, so the
+    /// switch-on-`segmentPrompt` lives in one place.
     public var activeSegmentID: String? { segmentPrompt?.segment.id }
+    /// The contextual button's one-shot and countdown. See `SegmentPromptGate`.
+    @ObservationIgnored public private(set) lazy var segmentPromptGate = SegmentPromptGate(clock: clock) { [weak self] in self?.activeSegmentID }
 
     /// Seek just past the active intro/recap and keep playing.
     public func skipActiveSegment() async {

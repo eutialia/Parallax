@@ -66,11 +66,6 @@ struct PlayerView: View {
         chrome.visible
         #endif
     }
-    /// One-shot suppression for the contextual Skip / Next Episode button: the segment
-    /// id whose prompt has already shown (countdown elapsed, tapped, or revealed past).
-    /// Shared by `PlayerSegmentPrompt`'s timer/tap and the tvOS `send` pipeline; cleared
-    /// when the playhead leaves all segments so a re-entry re-arms.
-    @State private var segmentPromptExpiredID: String?
 
     var body: some View {
         ZStack {
@@ -254,7 +249,6 @@ struct PlayerView: View {
                         PlayerSegmentPrompt(
                             vm: vm,
                             enabled: segmentPromptEnabled,
-                            expiredSegmentID: $segmentPromptExpiredID,
                             onActivate: { activateSegmentPrompt(vm) }
                         )
                     }
@@ -314,13 +308,11 @@ struct PlayerView: View {
         #endif
     }
 
-    /// Whether the contextual segment button is on screen right now — derived from the
-    /// SAME inputs as `PlayerSegmentPrompt.visible` (enabled · a current segment · not
-    /// already dismissed), so `send` routes the floor remote to it off live state rather
-    /// than a frame-late mirrored flag that could strand across an episode swap.
+    /// Whether the contextual segment button is on screen right now — the same gate
+    /// `PlayerSegmentPrompt` draws from, so `send` routes the floor remote to it off live
+    /// state rather than a frame-late mirrored flag that could strand across an episode swap.
     private var segmentButtonShowing: Bool {
-        guard let vm = viewModel else { return false }
-        return segmentPromptEnabled && vm.activeSegmentID != nil && vm.activeSegmentID != segmentPromptExpiredID
+        viewModel?.segmentPromptGate.promptVisible(enabled: segmentPromptEnabled) ?? false
     }
 
     /// Fire the active segment prompt — the shared action for the iOS tap and the tvOS
@@ -333,7 +325,7 @@ struct PlayerView: View {
         case .nextEpisode: Task { await vm.playNextEpisode() }
         case nil: return
         }
-        segmentPromptExpiredID = vm.activeSegmentID
+        vm.segmentPromptGate.expirePrompt()
     }
 
     /// Whether the persistent video host is mounted. Shown for every phase except
@@ -720,7 +712,7 @@ struct PlayerView: View {
                 restartIdleTimer()
                 return
             case .click, .swipeVertical:
-                segmentPromptExpiredID = vm.activeSegmentID
+                vm.segmentPromptGate.expirePrompt()
                 hudState = .fullHUD
                 scrubberHasFocus = false
                 restartIdleTimer()
