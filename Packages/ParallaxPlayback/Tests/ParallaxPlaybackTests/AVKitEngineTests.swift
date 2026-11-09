@@ -903,7 +903,9 @@ enum TerminalPath: String, CaseIterable, CustomTestStringConvertible {
 @MainActor
 struct AVKitTerminalSessionTests {
 
-    @Test("nothing follows a terminal beat while the item recovers underneath it",
+    /// The app keeps the engine through `.failed`, so a session that ended must also stop the
+    /// player: an item left playing under the error scrim is audio nobody can pause.
+    @Test("a terminal beat stops the player and nothing follows it",
           arguments: TerminalPath.allCases)
     func nothingFollowsATerminalBeat(path: TerminalPath) async throws {
         let engine = AVKitEngine()
@@ -913,8 +915,10 @@ struct AVKitTerminalSessionTests {
 
         path.fire(on: engine, session: session)
 
-        try await requireEventually({ CMTimeGetSeconds(engine.currentTime) >= 1.2 },
-                                    "the item never recovered into playback")
+        try await Task.sleep(for: .seconds(1.5))
+        #expect(engine.avPlayer.rate == 0, "the player kept playing after the terminal beat")
+        #expect(CMTimeGetSeconds(engine.currentTime) < 0.5,
+                "the item played on to \(CMTimeGetSeconds(engine.currentTime))s under the terminal beat")
         await engine.teardown()
         var states: [PlaybackState] = []
         while let beat = await iterator.next() { states.append(beat.state) }
