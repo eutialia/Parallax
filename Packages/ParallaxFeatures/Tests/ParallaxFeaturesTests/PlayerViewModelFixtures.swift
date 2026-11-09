@@ -1,3 +1,4 @@
+import ParallaxFileBrowseTestSupport
 import Testing
 import Foundation
 import Observation
@@ -28,6 +29,13 @@ final class CallRecorder<Element: Sendable>: Sendable {
 struct NoopAudioSession: AudioSessionControlling {
     func activate() async throws {}
     func deactivate() async {}
+}
+
+/// Parks every `deactivate()` on `gate`: a session teardown held open mid-flight.
+struct GatedDeactivateAudioSession: AudioSessionControlling {
+    let gate: AsyncGate
+    func activate() async throws {}
+    func deactivate() async { await gate.pass() }
 }
 
 struct ThrowingAudioSession: AudioSessionControlling {

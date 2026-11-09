@@ -10,6 +10,7 @@ import ParallaxPlayback
 import ParallaxPlaybackTestSupport
 import ParallaxSubtitles
 import ParallaxCoreTestSupport
+import ParallaxFileBrowseTestSupport
 import ParallaxTestScaling
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
@@ -4503,6 +4504,38 @@ struct PlayerViewModelTests {
         #expect(resolveCalls == 2)
         #expect(!engine.loadedAssets.isEmpty)
         #expect(engine.calls.contains("play"))
+    }
+
+    /// The start a retry replaces is still fetching when the retry begins tearing the session
+    /// down. Its failure belongs to a session that is already ending.
+    @Test("a start that fails while its replacement tears the session down shows no error")
+    func replacedStartFailingDuringTeardownStaysQuiet() async {
+        let fetchGate = AsyncGate(open: false)
+        let teardownGate = AsyncGate(open: false)
+        let fetches = CallRecorder<ItemID>()
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
+            engine: FakePlaybackEngine(id: .avKit, capabilities: .avKit),
+            audioSession: GatedDeactivateAudioSession(gate: teardownGate),
+            fetchDetail: { id in
+                fetches.append(id)
+                guard fetches.count == 1 else { return PlayerFixtures.movieDetail() }
+                await fetchGate.pass()
+                throw AppError.playback(.resourceUnavailable)
+            }
+        )
+
+        let replaced = Task { await vm.start(itemID: ItemID(rawValue: "movie-1")) }
+        await fetchGate.awaitArrivals()
+        let retry = Task { await vm.retry() }
+        await teardownGate.awaitArrivals()
+        await fetchGate.open()
+        await replaced.value
+
+        #expect(vm.phase == .loading)
+
+        await teardownGate.open()
+        await retry.value
     }
 
     // MARK: - NowPlaying
