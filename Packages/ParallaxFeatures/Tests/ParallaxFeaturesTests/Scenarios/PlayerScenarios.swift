@@ -557,6 +557,34 @@ struct PlayerScenarios {
         #expect(player.loaderSubtitle == "Off")
     }
 
+    @Test("skipping to the next episode while the first is still opening leaves the next one's audio on")
+    func nextEpisodeDuringTheFirstOpenKeepsItsAudio() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
+            .series("Severance", in: "Shows", episodes: [2])
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Severance S1E1")), in: try await world.session(on: den))
+        let request = try #require(world.app.playback.request)
+        den.holdResponses(to: .playbackInfo)
+        var player: PlayerViewModel?
+        let app = world.app
+        let mounting = Task {
+            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { player = $0 }
+        }
+        try await world.until { den.heldResponseCount == 1 && player?.nextEpisode?.name == "Severance S1E2" }
+
+        let skipping = Task { await player?.playNextEpisode() }
+        try await world.until { den.heldResponseCount == 2 }
+        den.releaseResponses()
+        await skipping.value
+        try await world.until { player?.title == "2. Severance S1E2" && world.engine.calls.contains("play") }
+        app.playback.dismiss()
+        mounting.cancel()
+        await mounting.value
+
+        // The opening start, the teardown the skip ran, the next episode's start, the close.
+        #expect(world.audioSession.calls == [.activate, .deactivate, .activate, .deactivate])
+    }
+
     @Test("after an in-place reload, a beat the replaced stream still had in flight doesn't move the player")
     func staleBeatAfterAnInPlaceReloadIsDropped() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
