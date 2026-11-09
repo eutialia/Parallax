@@ -222,14 +222,25 @@ struct FormIntroHeader: View {
 
 /// An inline load-failure card: a centered message over a glass Retry button. Shared by the Visible
 /// Libraries picker and the SMB folder picker so their identical error states can't drift apart.
-struct SettingsRetryError: View {
+struct SettingsRetryError<Focus: Hashable>: View {
     let message: String
-    /// tvOS focus handle for the Retry button. A failure that lands ASYNCHRONOUSLY replaces whatever
-    /// row held focus while the load ran, so the owning screen needs a way to pull focus onto Retry
-    /// instead of leaving it stranded on an unrelated row. Only screens with that shape pass it; the
-    /// rest leave it nil and the focus engine's own placement stands.
-    var retryFocus: FocusState<Bool>.Binding? = nil
+    /// tvOS focus handle for the Retry button: the screen's focus state, and the value that means
+    /// Retry. A failure that lands ASYNCHRONOUSLY replaces whatever row held focus while the load
+    /// ran, so the owning screen needs a way to pull focus onto Retry instead of leaving it stranded
+    /// on an unrelated row. Only screens with that shape pass it; the rest leave it nil and the focus
+    /// engine's own placement stands.
+    let retryFocus: (binding: FocusState<Focus?>.Binding, value: Focus)?
     let onRetry: () -> Void
+
+    init(
+        message: String,
+        retryFocus: (binding: FocusState<Focus?>.Binding, value: Focus)?,
+        onRetry: @escaping () -> Void
+    ) {
+        self.message = message
+        self.retryFocus = retryFocus
+        self.onRetry = onRetry
+    }
 
     var body: some View {
         VStack(spacing: Space.s12) {
@@ -243,6 +254,12 @@ struct SettingsRetryError: View {
         }
         .frame(maxWidth: .infinity)
         .padding(Space.s30)
+    }
+}
+
+extension SettingsRetryError where Focus == Never {
+    init(message: String, onRetry: @escaping () -> Void) {
+        self.init(message: message, retryFocus: nil, onRetry: onRetry)
     }
 }
 

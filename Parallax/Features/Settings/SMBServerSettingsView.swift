@@ -37,13 +37,12 @@ struct SMBServerSettingsView: View {
 
     // MARK: - tvOS focus
 
-    /// Which share row holds focus, keyed by share name. Driven PROGRAMMATICALLY when the load
-    /// settles (see `relocateFocus`) — while shares load, "Remove Server" is the screen's ONLY
-    /// focusable row, so focus parks at the bottom and the rows that appear above it get nothing.
-    /// Unused on iOS: the rows bind through `tvFocused`, which is a no-op there.
-    @FocusState private var focusedShare: String?
-    /// The failure state's Retry button, same relocation contract as `focusedShare`.
-    @FocusState private var retryFocused: Bool
+    /// Which of the shares group's rows holds focus: a share row, keyed by share name, or the
+    /// failure state's Retry button. Driven PROGRAMMATICALLY when the load settles (see
+    /// `relocateFocus`) — while shares load, "Remove Server" is the screen's ONLY focusable row, so
+    /// focus parks at the bottom and the rows that appear above it get nothing. Unused on iOS: the
+    /// rows bind through `tvFocused`, which is a no-op there.
+    @FocusState private var focus: SMBServerSettingsModel.ShareFocusTarget?
 
     // MARK: - Derived
 
@@ -130,7 +129,7 @@ struct SMBServerSettingsView: View {
                     .frame(maxWidth: .infinity, minHeight: 80)
 
             case .failed(let message, let offersPasswordRecovery):
-                SettingsRetryError(message: message, retryFocus: $retryFocused) {
+                SettingsRetryError(message: message, retryFocus: ($focus, .retry)) {
                     Task { await model.loadShares() }
                 }
                 if offersPasswordRecovery {
@@ -157,9 +156,9 @@ struct SMBServerSettingsView: View {
         // here would work too, but it's the wrong tool: this isn't async work keyed to an identity,
         // it's a plain "state changed, react once" hook — `.onChange` is what `HomeHeroCarousel` uses
         // for the same shape, e.g. its `entries.map(\.id)` reset.) tvOS-ONLY, and compiled out
-        // everywhere else: unlike `focusedShare`/`retryFocused`'s bindings (already no-ops off tvOS
-        // via `tvFocused`), this block is the thing that WRITES them — iPhone/iPad never run the
-        // write at all, since there's no reason to fire an inert relocation on every load.
+        // everywhere else: unlike `focus`'s bindings (already no-ops off tvOS via `tvFocused`), this
+        // block is the thing that WRITES it — iPhone/iPad never run the write at all, since there's
+        // no reason to fire an inert relocation on every load.
         .onChange(of: loadState) { _, newValue in
             relocateFocus(to: SMBServerSettingsModel.focusTarget(for: newValue, enabled: enabledShares))
         }
@@ -193,7 +192,7 @@ struct SMBServerSettingsView: View {
                     share: share,
                     isSelected: enabledShares.contains(share.name)
                 ) { model.toggle(share.name) }
-                    .tvFocused($focusedShare, equals: share.name)
+                    .tvFocused($focus, equals: .row(share.name))
             }
             ForEach(unavailable, id: \.self) { name in
                 ShareSelectionRow(
@@ -201,7 +200,7 @@ struct SMBServerSettingsView: View {
                     isSelected: true,
                     isUnavailable: true
                 ) { model.toggle(name) }
-                    .tvFocused($focusedShare, equals: name)
+                    .tvFocused($focus, equals: .row(name))
             }
         }
     }
@@ -218,12 +217,7 @@ struct SMBServerSettingsView: View {
     /// committing this transaction's view updates, not synchronously inside the callback.
     private func relocateFocus(to target: SMBServerSettingsModel.ShareFocusTarget?) {
         guard let target else { return }
-        Task { @MainActor in
-            switch target {
-            case .row(let name): focusedShare = name
-            case .retry: retryFocused = true
-            }
-        }
+        Task { @MainActor in focus = target }
     }
 
     /// Removes the server, then refreshes the shared settings list so the row goes with it (a list

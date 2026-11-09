@@ -20,7 +20,7 @@ public final class SMBServerSettingsModel {
     }
 
     /// Where focus should land once the shares group settles.
-    public enum ShareFocusTarget: Equatable {
+    public enum ShareFocusTarget: Hashable {
         case row(String)
         case retry
     }
