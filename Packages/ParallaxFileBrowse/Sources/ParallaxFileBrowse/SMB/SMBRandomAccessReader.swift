@@ -44,17 +44,19 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// this bounds only per-read timeouts on an already-borrowed manager.
     private let connectTimeout: TimeInterval
 
-    /// The live borrowed manager, set on first use. Reset by `disconnect()`.
-    private var manager: Connection?
+    /// Where this reader's pool borrow stands. Every op shares one borrow, including a checkout still
+    /// in flight, so concurrent first reads (the HTTP bridge serves each TCP connection against the
+    /// same reader) take one connection rather than one each.
+    private enum Borrow {
+        case none
+        case pending(Task<Connection, any Error>)
+        case held(SMBPooledConnection<Connection>)
+        /// Set by either teardown, permanently, so a straggler read (an HTTP-bridge serve loop
+        /// already past its own stop check) can't lazily re-borrow a session nothing would check in.
+        case closed
+    }
 
-    /// The pool borrow backing `manager`. Held so `disconnect()` can check the exact connection back
-    /// in (or discard it).
-    private var handle: SMBPooledConnection<Connection>?
-
-    /// Set by `disconnect()`, permanently. Guards `connectedManager()` so a straggler read (an
-    /// HTTP-bridge serve loop that was already past its own stop check) can't lazily re-borrow a
-    /// session that nothing would check back in.
-    private var isClosed = false
+    private var borrow = Borrow.none
 
     /// File size, cached after the first successful `attributesOfItem`. The bridge and probe treat the
     /// first read as authoritative — a mid-walk grow must not shift the size out from under an
@@ -209,11 +211,7 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     ///    running to race.
     ///  - otherwise the borrow completed a clean lifecycle and CHECKS IN.
     public func disconnect() async {
-        isClosed = true
-        manager = nil
-        let borrowed = handle
-        handle = nil
-        guard let borrowed else { return }
+        guard let borrowed = close() else { return }
         if inFlightOps > 0 {
             await pool.condemn(borrowed, settlement: settlementForCondemnedOps())
         } else if tainted {
@@ -248,11 +246,7 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// running, and disconnecting it then is the crash `SMBConnectionGraveyard` documents. Condemning
     /// is also awaited, but it parks a reference rather than draining a socket, so it adds no tail.
     public func drainAndDisconnect() async {
-        isClosed = true
-        manager = nil
-        let borrowed = handle
-        handle = nil
-        guard let borrowed else { return }
+        guard let borrowed = close() else { return }
         await waitForDrain(upTo: connectTimeout)
         if inFlightOps > 0 {
             await pool.condemn(borrowed, settlement: settlementForCondemnedOps())
@@ -263,9 +257,17 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         }
     }
 
+    /// Closes the reader for good, handing back the borrow it held, if any. A checkout still in flight
+    /// returns its connection to the pool itself when it lands on a closed reader.
+    private func close() -> SMBPooledConnection<Connection>? {
+        defer { borrow = .closed }
+        guard case .held(let borrowed) = borrow else { return nil }
+        return borrowed
+    }
+
     /// The receipt for a connection being condemned right now, signalled by `opFinished()` when the
-    /// last in-flight op unwinds. Minted at most once per reader: both teardown paths take `handle`
-    /// and nil it before they ask, so a second teardown returns early and never reaches here.
+    /// last in-flight op unwinds. Minted at most once per reader: both teardown paths `close()` before
+    /// they ask, so a second teardown finds nothing held and never reaches here.
     private func settlementForCondemnedOps() -> SMBOperationSettlement {
         let settlement = SMBOperationSettlement()
         condemnedSettlement = settlement
@@ -316,23 +318,37 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
 
     // MARK: - Connection
 
-    /// Returns the live borrowed manager, checking one out of the pool on first use. ASSUMES a single
-    /// caller per instance: the `await` on `checkout` is a suspension point *before* `self.manager` is
-    /// set, so two CONCURRENT first reads would borrow two connections (actor reentrancy). The HTTP
-    /// bridge fronts this reader from many connections, but it always probes/starts via one
-    /// `fileSize`/`read` before serving, and AMSMB2 itself serialises; if concurrent cold-start ever
-    /// becomes real, memoize an in-flight checkout `Task` here.
+    /// Returns the borrowed manager, checking one out of the pool on first use. Callers that arrive
+    /// while that checkout is in flight await the same one.
     private func connectedManager() async throws -> Connection {
-        // A read that lost the race with `disconnect()` fails like a cancellation — the serve loop it
-        // belongs to is being torn down anyway.
-        guard !isClosed else { throw CancellationError() }
-        if let manager { return manager }
+        switch borrow {
+        case .closed:
+            // A read that lost the race with `disconnect()` fails like a cancellation — the serve
+            // loop it belongs to is being torn down anyway.
+            throw CancellationError()
+        case .held(let borrowed):
+            return borrowed.connection
+        case .pending(let checkout):
+            return try await checkout.value
+        case .none:
+            let checkout = Task { try await self.adoptCheckout() }
+            borrow = .pending(checkout)
+            return try await checkout.value
+        }
+    }
 
-        let borrowed = try await pool.checkout(target)
-        // Re-check after the suspension: a `disconnect()` that ran while this checkout was in flight
-        // saw `handle == nil` and had nothing to check in. This is a healthy warm connection — return
-        // it to the pool for reuse rather than leaking or discarding it.
-        if isClosed {
+    private func adoptCheckout() async throws -> Connection {
+        let borrowed: SMBPooledConnection<Connection>
+        do {
+            borrowed = try await pool.checkout(target)
+        } catch {
+            if case .pending = borrow { borrow = .none }
+            throw error
+        }
+        // A teardown that ran while this checkout was in flight had nothing to check in. This is a
+        // healthy warm connection — return it to the pool for reuse rather than leaking or
+        // discarding it.
+        guard case .pending = borrow else {
             await pool.checkin(borrowed)
             throw CancellationError()
         }
@@ -340,8 +356,7 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         // borrower's `timeout`, so re-assert ours so a wedged read fails in `connectTimeout` rather
         // than whatever the last borrow left set (or AMSMB2's 60s default).
         borrowed.connection.setOperationTimeout(connectTimeout)
-        handle = borrowed
-        manager = borrowed.connection
+        borrow = .held(borrowed)
         return borrowed.connection
     }
 }
