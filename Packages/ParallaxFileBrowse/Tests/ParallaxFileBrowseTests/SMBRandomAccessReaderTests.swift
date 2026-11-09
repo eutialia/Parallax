@@ -430,6 +430,30 @@ struct SMBRandomAccessReaderTests {
         #expect(world.connectedIDs == [0])
     }
 
+    /// The HTTP bridge serves one loop per TCP connection against a shared reader, so two first reads
+    /// can both find no borrow. A second checkout would overwrite the first, which nothing then
+    /// checks back in.
+    @Test("concurrent first reads share one checkout")
+    func concurrentFirstReadsShareOneCheckout() async throws {
+        let world = FakeSMBWorld(clock: TestClock())
+        let pool = makeFakePool(world: world)
+        let reader = makeReader(world: world, pool: pool)
+        await world.connectGate.close()
+
+        let first = Task { try await reader.read(offset: 0, length: 16) }
+        await world.connectGate.awaitArrivals()
+        let second = Task { try await reader.read(offset: 16, length: 16) }
+        // A second checkout would reach the gate within these turns; a coalesced one never does.
+        for _ in 0..<1_000 where await world.connectGate.arrivalCount < 2 { await Task.yield() }
+        await world.connectGate.open()
+
+        #expect(try await first.value == Self.fixture.subdata(in: 0..<16))
+        #expect(try await second.value == Self.fixture.subdata(in: 16..<32))
+        await reader.disconnect()
+        #expect(world.connectedIDs == [0])
+        #expect(await pool.idleCount == 1, "the one borrow went back to the pool")
+    }
+
     @Test("fileSize keeps serving its cached value after disconnect")
     func cachedFileSizeSurvivesDisconnect() async throws {
         let world = FakeSMBWorld(clock: TestClock())
