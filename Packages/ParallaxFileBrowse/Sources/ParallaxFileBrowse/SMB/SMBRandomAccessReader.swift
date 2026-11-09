@@ -329,12 +329,21 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         case .held(let borrowed):
             return borrowed.connection
         case .pending(let checkout):
-            return try await checkout.value
+            return try await awaitCheckout(checkout)
         case .none:
             let checkout = Task { try await self.adoptCheckout() }
             borrow = .pending(checkout)
-            return try await checkout.value
+            return try await awaitCheckout(checkout)
         }
+    }
+
+    /// A waiter resumes in its own actor job, after the checkout published `.held`. A teardown can
+    /// run in between and check that borrow in with no op counted, so the borrow is re-read here, in
+    /// the job that goes on to count the op, and a waiter that lost it fails like a cancellation.
+    private func awaitCheckout(_ checkout: Task<Connection, any Error>) async throws -> Connection {
+        let connection = try await checkout.value
+        guard case .held = borrow else { throw CancellationError() }
+        return connection
     }
 
     private func adoptCheckout() async throws -> Connection {
