@@ -871,3 +871,79 @@ struct AVKitSupersededSessionTests {
         }
     }
 }
+
+/// The engine-side ways a session ends while the item underneath it is still alive.
+enum TerminalPath: String, CaseIterable, CustomTestStringConvertible {
+    case loadTimeout
+    case stallTimeout
+    case end
+
+    var testDescription: String { rawValue }
+
+    @MainActor
+    func fire(on engine: AVKitEngine, session: PlaybackSessionID) {
+        switch self {
+        case .loadTimeout: engine.handleLoadTimeout(from: session)
+        case .stallTimeout: engine.handleStallTimeout(from: session)
+        case .end: engine.handleEnded(from: session)
+        }
+    }
+}
+
+/// A terminal beat is the last word on its session. The app does not tear the engine down on
+/// `.failed` (the user's retry or exit does), so the item, its observers and the player stay
+/// mounted under the error scrim, and AVPlayer is free to recover: a link that comes back after
+/// the stall deadline flips `timeControlStatus` to `.playing`, a slow HLS item turns ready after
+/// the load deadline. A beat published from that recovery reaches `PlayerViewModel` as a live
+/// beat and puts playback back over the error. Only the next `load()` opens a session again.
+///
+/// The recovery is real: the fixture is played past two periodic ticks, so the item's status
+/// KVO, the `timeControlStatus` KVO and the periodic observer all fire after the terminal beat.
+@Suite("AVKitEngine — a terminal beat ends the session", .serialized, .scaledTimeLimit())
+@MainActor
+struct AVKitTerminalSessionTests {
+
+    @Test("nothing follows a terminal beat while the item recovers underneath it",
+          arguments: TerminalPath.allCases)
+    func nothingFollowsATerminalBeat(path: TerminalPath) async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        let session = try await engine.load(.fixture(url: AVKitFixtures.subtitled))
+        await engine.play()
+
+        path.fire(on: engine, session: session)
+
+        try await requireEventually({ CMTimeGetSeconds(engine.currentTime) >= 1.2 },
+                                    "the item never recovered into playback")
+        await engine.teardown()
+        var states: [PlaybackState] = []
+        while let beat = await iterator.next() { states.append(beat.state) }
+        let terminal = try #require(states.firstIndex { $0.isTerminal }, "no terminal beat in \(states)")
+        let after = Array(states[(terminal + 1)...])
+        #expect(after.isEmpty, "the session kept publishing after \(states[terminal]): \(after)")
+    }
+
+    /// The control: the latch is the session's, so the next `load()` publishes as usual.
+    @Test("the next load publishes again")
+    func nextLoadPublishesAgain() async throws {
+        let engine = AVKitEngine()
+        let ended = try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        engine.handleStallTimeout(from: ended)
+
+        let live = try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        let ready = await engine.firstBeat { beat in
+            if case .ready = beat.state, beat.session == live { true } else { false }
+        }
+        #expect(ready != nil, "the reload after a terminal beat never reached .ready")
+        await engine.teardown()
+    }
+}
+
+extension PlaybackState {
+    fileprivate var isTerminal: Bool {
+        switch self {
+        case .ended, .failed: true
+        default: false
+        }
+    }
+}
