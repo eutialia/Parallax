@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import ParallaxCore
 
@@ -83,6 +84,21 @@ struct DiagnosticsTests {
         let text = try String(contentsOf: url, encoding: .utf8)
         #expect(!text.contains("SENTINEL-ORDINARY-RECORD"))
         #expect(text.contains(CrashSentinel.crashMarker))
+    }
+
+    // MARK: - Session lifecycle
+
+    /// Re-enabling logging calls `start()` again while this run's session is still open.
+    @Test("opening a second session while one is open leaves no second file behind")
+    func reopenLeavesNoFile() {
+        let state = OSAllocatedUnfairLock(initialState: DiagnosticsLog.State())
+        let open = Self.temporaryFile()
+        let reopened = Self.temporaryFile()
+        defer { [open, reopened].forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        #expect(DiagnosticsLog.openSession(at: open, in: state) != nil)
+        #expect(DiagnosticsLog.openSession(at: reopened, in: state) == nil)
+        #expect(!FileManager.default.fileExists(atPath: reopened.path))
     }
 
     // MARK: - Crash detection
