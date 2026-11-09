@@ -80,7 +80,7 @@ public final class PlayerViewModel {
     /// property enforces cannot be forgotten by the next one.
     private var surface: Surface = .idle {
         didSet {
-            if case .failed = surface { seekHold = nil; diagnostics.cancelOpen() }
+            if case .failed = surface { releaseSeekHold(); diagnostics.cancelOpen() }
         }
     }
 
@@ -814,34 +814,32 @@ public final class PlayerViewModel {
     /// reports an OBSERVED one. See `SeekHold` and `publish(position:provenance:)`. Nil
     /// whenever no seek is outstanding.
     ///
-    /// `private(set)` rather than private for the paths that DROP it — an abandoned reload,
-    /// a failed phase, the watchdog. Every one of those is invisible from the published
-    /// positions (a hold and no hold treat each provenance identically; only the window's END
-    /// differs), so a test that cannot read it can only assert the defect one window later, if
-    /// at all.
-    private(set) var seekHold: SeekHold? {
-        didSet {
-            // The flight is the hold's meaning, so it cannot outlive it: every path that ends
-            // a hold — the engine landing, a failed phase, an abandoned reload, the
-            // watchdog, `stop()` — ends the flight too, and a rule the property enforces
-            // cannot be forgotten by the next one. A PREVIEW has no hold to end (the finger is
-            // still down, nothing has been dispatched), so it is left alone; `beginExit()`
-            // clears that one explicitly.
-            if seekHold == nil, flight?.stage != .previewing { flight = nil }
-            // Same reason the flight teardown lives here: the deadline belongs to the hold that
-            // stands, so every write — a re-scrub, a landing, a failed phase, `stop()` — retires
-            // the previous one, and only the arming site would ever remember to.
-            if seekHold == nil {
-                seekHoldWatchdogTask?.cancel()
-                seekHoldWatchdogTask = nil
-            } else {
-                armSeekHoldWatchdog()
-            }
+    /// Read off the flight, which carries it (`SeekFlight.hold`): a committed or landing flight
+    /// is one, and a preview may sit over one.
+    ///
+    /// Readable outside for the paths that DROP it — an abandoned reload, a failed phase, the
+    /// watchdog. Every one of those is invisible from the published positions (a hold and no
+    /// hold treat each provenance identically; only the window's END differs), so a test that
+    /// cannot read it can only assert the defect one window later, if at all.
+    var seekHold: SeekHold? { flight?.hold }
+
+    /// Ends the standing hold. The flight is the hold's meaning, so it cannot outlive it: every
+    /// path that ends a hold — the engine landing, a failed phase, an abandoned reload, the
+    /// watchdog — ends the flight too. A PREVIEW is the exception (the finger is still down,
+    /// nothing has been dispatched): it stays, with nothing left under it for a cancel to hand
+    /// back. `beginExit()` and `stop()` clear that one too.
+    private func releaseSeekHold() {
+        switch flight?.progress {
+        case .committed, .landing: flight = nil
+        case .previewing(.some): flight?.progress = .previewing(over: nil)
+        case .previewing(.none), nil: break
         }
     }
 
     /// The standing hold's silence budget — see `SeekHold.watchdog`. Nil whenever no hold
-    /// stands. Armed by `seekHold`'s `didSet`, restarted by every beat in `handle(_:from:)`.
+    /// stands. Armed by `commitSeek`, restarted by every beat in `handle(_:from:)`, and retired
+    /// by `flight`'s `didSet` on every write that leaves no hold standing, which only the
+    /// arming site would otherwise remember to do.
     private var seekHoldWatchdogTask: Task<Void, Never>?
 
     /// Cancellation is the whole supersession story: every restart cancels the standing task,
@@ -856,14 +854,21 @@ public final class PlayerViewModel {
             // Releasing without a position, which is the whole difference between this exit and
             // `absorb`'s: there was no beat for the whole budget — that is the wedge — and the
             // last one there was carried the pre-seek clock the hold exists to keep off the
-            // bar. The `didSet` tears down the flight, which is what unpins the tvOS full HUD.
-            self.seekHold = nil
+            // bar. Ending the flight with it is what unpins the tvOS full HUD.
+            self.releaseSeekHold()
         }
     }
 
     /// The one seek in flight — gesture, commit and landing — or nil when the bar is settled.
     /// See `SeekFlight`. Every transition is a method below; nothing else writes it.
-    public private(set) var flight: SeekFlight?
+    public private(set) var flight: SeekFlight? {
+        didSet {
+            if flight?.hold == nil {
+                seekHoldWatchdogTask?.cancel()
+                seekHoldWatchdogTask = nil
+            }
+        }
+    }
     /// Monotonic flight ids. Never reset: identity has to survive a reload, a track switch
     /// and a `retry()` within one view model, or the bar could key an animation on a number it
     /// has already used.
@@ -1864,7 +1869,6 @@ public final class PlayerViewModel {
         // slide-out, which without this carries a scrub bar and a timestamp bubble out of the
         // screen with them. (`stop()` clears it as well, but `runPlayer` only runs that at the
         // END of the dismissal.)
-        seekHold = nil
         flight = nil
         isHoldingStillFrame = false
         // A transport command armed just before the fence is still pending its hop to the
@@ -2031,7 +2035,6 @@ public final class PlayerViewModel {
         // `resetForReplay` restart must publish the NEW stream's beats, not a dead
         // seek's destination. (Deliberately NOT cleared in a transcode reload: that
         // window is exactly what the hold exists to cover.)
-        seekHold = nil
         flight = nil
         isHoldingStillFrame = false
         currentDuration = .zero
@@ -2506,14 +2509,14 @@ public final class PlayerViewModel {
     public func beginPreview(at requested: CMTime) {
         guard flight?.stage != .previewing else { return updatePreview(to: requested) }
         flight = SeekFlight(id: nextFlightID(), played: concretePosition,
-                            requested: requested, stage: .previewing)
+                            requested: requested, progress: .previewing(over: seekHold))
     }
 
     /// The preview moved. Same flight, same origin, same identity — only the promise changes.
     func updatePreview(to requested: CMTime) {
         guard let live = flight, live.stage == .previewing else { return }
         flight = SeekFlight(id: live.id, played: live.played,
-                            requested: requested, stage: .previewing)
+                            requested: requested, progress: live.progress)
     }
 
     /// The gesture ended without committing — an explicit cancel (tvOS Back out of a swipe
@@ -2523,8 +2526,8 @@ public final class PlayerViewModel {
     /// is already drawn restarts), or nothing at all.
     public func cancelPreview() {
         guard let live = flight, live.stage == .previewing else { return }
-        flight = seekHold.map {
-            SeekFlight(id: live.id, played: live.played, requested: $0.target, stage: .committed)
+        flight = live.hold.map {
+            SeekFlight(id: live.id, played: live.played, requested: $0.target, progress: .committed)
         }
     }
 
@@ -2571,8 +2574,8 @@ public final class PlayerViewModel {
         // all along. A fresh id supersedes whatever was in flight: the bar drops the old span on
         // an integer compare, with no tolerance to get wrong.
         flight = SeekFlight(id: nextFlightID(), played: concretePosition,
-                            requested: target, stage: .committed)
-        seekHold = SeekHold(target: target)
+                            requested: target, progress: .committed)
+        armSeekHoldWatchdog()
         lastPosition = target
         currentPosition = target
         // Now Playing extrapolates its clock from the last write, and a commit merged into a
@@ -2845,7 +2848,7 @@ public final class PlayerViewModel {
             // non-`.completed` outcome — so a hold armed at it now points at a place nothing
             // will play. Same reasoning (and same fix) as `fallBackAfterFailedSwitch`: hand the
             // bar and the resume point back to whatever stream is actually running.
-            seekHold = nil
+            releaseSeekHold()
             return .abandoned
         }
 
@@ -3003,7 +3006,7 @@ public final class PlayerViewModel {
         // `lastPosition` (the resume/PlaybackStopped point) on the target in the meantime —
         // so a dismissal in that window records a place nothing ever played. Dropping it
         // here hands both back to the resumed stream at once.
-        seekHold = nil
+        releaseSeekHold()
         surface = .playing
         // Resume from the STANDING intent, not from a hardcoded play: the failed reload's
         // window is long enough for the user to have paused inside it (lock screen, the
@@ -3118,13 +3121,13 @@ public final class PlayerViewModel {
                 // this position. So the flight has stopped hiding a jump — the honest position
                 // is the published clock again, and the concrete indicator stops claiming the
                 // video sits at A for the whole (multi-second, on a VLC reload) settle.
-                if flight?.stage == .committed { flight?.stage = .landing }
+                if flight?.stage == .committed { flight?.progress = .landing }
             }
         case .release:
             // The one release that carries a position: `.observed` is the engine's own clock
             // with no seek of its own outstanding, so it owns both the bar and the resume point
             // from here.
-            seekHold = nil
+            releaseSeekHold()
             lastPosition = position
             currentPosition = position
         }

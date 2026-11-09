@@ -25,7 +25,7 @@ import ParallaxPlayback
 ///
 /// It is the release POLICY and nothing else. What the window means — the origin the crossing
 /// runs from, the identity a re-scrub supersedes, the stage the bar draws — belongs to
-/// `SeekFlight`, which lives and dies with it.
+/// `SeekFlight`, which carries it (`SeekFlight.hold`).
 ///
 /// Pure value semantics so `SeekHoldTests` can pin the release rules without a player.
 nonisolated struct SeekHold: Equatable, Sendable {

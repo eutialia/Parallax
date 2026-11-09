@@ -11,7 +11,8 @@ import CoreMedia
 ///
 /// It is deliberately not the release policy. `SeekHold` still decides which engine beat ends
 /// the window (`absorb`), and the view model's watchdog ends one that no beat ever will; the
-/// flight decides what the window MEANS.
+/// flight decides what the window MEANS. The hold itself is carried here, in `progress`, so a
+/// flight and its hold cannot disagree.
 nonisolated public struct SeekFlight: Equatable, Sendable {
     public enum Stage: Equatable, Sendable {
         /// A gesture owns the bar: `requested` rides the finger (or the tvOS swipe) and
@@ -39,7 +40,32 @@ nonisolated public struct SeekFlight: Equatable, Sendable {
     /// B — where the bar is promising the picture will be: the finger's preview while
     /// `.previewing`, the committed target after.
     public let requested: CMTime
-    public internal(set) var stage: Stage
+
+    /// `Stage`, with what each one holds. A committed or landing flight IS a seek hold, on
+    /// `requested`; a preview holds nothing of its own, but may sit over an earlier commit the
+    /// engine has not landed yet — the hold a cancel hands back.
+    enum Progress: Equatable, Sendable {
+        case previewing(over: SeekHold?)
+        case committed
+        case landing
+    }
+    var progress: Progress
+
+    public var stage: Stage {
+        switch progress {
+        case .previewing: .previewing
+        case .committed: .committed
+        case .landing: .landing
+        }
+    }
+
+    /// The seek hold this flight stands for, if any.
+    var hold: SeekHold? {
+        switch progress {
+        case .previewing(let over): over
+        case .committed, .landing: SeekHold(target: requested)
+        }
+    }
 }
 
 /// The flight as the BAR sees it: the committed jump in 0...1 track fractions, with the
