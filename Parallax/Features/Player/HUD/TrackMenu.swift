@@ -2,6 +2,7 @@ import SwiftUI
 import ParallaxPlayback
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// A track-menu row's identity — ONE value that serves as both the scroll-target id
 /// (`.id(_:)` under `TrackMenuPanel`'s `scrollTargetLayout`) and the tvOS focus key, so

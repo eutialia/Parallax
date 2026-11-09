@@ -1,5 +1,6 @@
 import CoreGraphics
 import Testing
+import ParallaxFeatures
 @testable import Parallax
 
 /// Pins the playhead→chip mapping behind the tvOS chip row's `defaultFocus`:
