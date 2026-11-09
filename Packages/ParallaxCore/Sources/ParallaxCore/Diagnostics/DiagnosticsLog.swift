@@ -112,7 +112,7 @@ public enum DiagnosticsLog {
 
     private static let state = OSAllocatedUnfairLock(initialState: State())
 
-    private struct State {
+    struct State {
         var sink: DiagnosticsSink?
         var startInstant: ContinuousClock.Instant?
         var isEnabled = true
@@ -135,8 +135,17 @@ public enum DiagnosticsLog {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let url = directory.appendingPathComponent(newSessionFileName())
-        guard let sink = DiagnosticsSink(url: url) else { return }
+        guard let sink = openSession(at: url, in: state) else { return }
+        pruneOldSessions(in: directory, keeping: url)
 
+        sink.appendUncapped(sessionHeader())
+        CrashSentinel.install(writingTo: sink.descriptor)
+    }
+
+    /// Opens `url` as this run's session in `state`, or returns nil when a session is already open
+    /// there or the file can't be opened.
+    static func openSession(at url: URL, in state: OSAllocatedUnfairLock<State>) -> DiagnosticsSink? {
+        guard let sink = DiagnosticsSink(url: url) else { return nil }
         // The guard has to escape the FUNCTION, not just the lock closure — an early `return` inside
         // `withLock` only leaves the closure, so a second `start()` would fall through and write a
         // header to a descriptor nothing else ever uses. Latent while launch was the only caller;
@@ -147,11 +156,7 @@ public enum DiagnosticsLog {
             state.startInstant = ContinuousClock().now
             return true
         }
-        guard didOpen else { return }
-        pruneOldSessions(in: directory, keeping: url)
-
-        sink.appendUncapped(sessionHeader())
-        CrashSentinel.install(writingTo: sink.descriptor)
+        return didOpen ? sink : nil
     }
 
     /// Whether retained logging is on. Off stops new records AND leaves existing files alone — use
