@@ -21,12 +21,6 @@ public struct SubtitleFeed {
     let engineSeconds: () -> Double?
     let clock: any Clock<Duration>
 
-    init(source: @escaping () -> (source: any SubtitleFrameSource, generation: Int)?,
-         engineSeconds: @escaping () -> Double?, clock: any Clock<Duration>) {
-        self.source = source
-        self.engineSeconds = engineSeconds
-        self.clock = clock
-    }
 }
 
 /// Polls the engine clock ~15×/s and keeps the frame the track says belongs on screen now.
@@ -65,7 +59,9 @@ public final class SubtitleDriver {
         var pushed: CanvasKey?
         while !Task.isCancelled {
             guard let (source, generation) = feed.source() else {
-                frame = nil
+                // Unguarded, this write would notify the overlay on every tick of a session
+                // with subtitles off: `SubtitleFrame` is not Equatable.
+                if frame != nil { frame = nil }
                 pushed = nil
                 try? await feed.clock.sleep(for: Self.tick)
                 continue

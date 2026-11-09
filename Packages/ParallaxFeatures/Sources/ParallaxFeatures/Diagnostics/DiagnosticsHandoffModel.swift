@@ -38,21 +38,17 @@ public final class DiagnosticsHandoffModel {
 
     private func serve(_ server: any DiagnosticsHandoffServing) async {
         do {
-            let endpoint = try await withTaskCancellationHandler {
-                try await server.start()
-            } onCancel: {
-                Task { await server.stop() }
-            }
-            guard !Task.isCancelled else { return }
-            phase = .serving(endpoint)
-            await withTaskCancellationHandler {
+            try await withTaskCancellationHandler {
+                let endpoint = try await server.start()
+                guard !Task.isCancelled else { return }
+                phase = .serving(endpoint)
                 await server.waitUntilStopped()
+                // Only a stop with the screen still up means the listener died and the address
+                // on screen leads nowhere.
+                if !Task.isCancelled { phase = .failed("Lost the network connection") }
             } onCancel: {
                 Task { await server.stop() }
             }
-            // Only a stop with the screen still up means the listener died and the address on
-            // screen leads nowhere.
-            if !Task.isCancelled { phase = .failed("Lost the network connection") }
         } catch where Task.isCancelled {
         } catch {
             phase = Self.failure(error)

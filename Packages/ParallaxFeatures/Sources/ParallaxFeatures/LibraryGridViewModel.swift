@@ -181,7 +181,7 @@ public final class LibraryGridViewModel {
             await inFlight?.value
             return
         }
-        refresh = isRefreshing ? .reloading(restoring: nil) : .idle
+        dropRestorePoint()
         state = .loading
         let generation = beginResetFetch()
         loadGenres()
@@ -221,7 +221,7 @@ public final class LibraryGridViewModel {
         let generation = beginResetFetch()
 
         if items.isEmpty {
-            refresh = isRefreshing ? .reloading(restoring: nil) : .idle
+            dropRestorePoint()
             state = .loading
         } else {
             refresh = .reloading(restoring: ReloadSnapshot(items: items, cursor: cursor, state: state))
@@ -233,6 +233,11 @@ public final class LibraryGridViewModel {
     private func beginResetFetch() -> UInt {
         fetchGeneration &+= 1
         return fetchGeneration
+    }
+
+    /// A full load takes over a refetch: nothing is left to put back.
+    private func dropRestorePoint() {
+        refresh = isRefreshing ? .reloading(restoring: nil) : .idle
     }
 
     /// Ends an in-flight refetch that did not land, putting back the items it was showing.
@@ -273,7 +278,8 @@ public final class LibraryGridViewModel {
                 }
                 cursor = page.nextCursor
                 state = .loaded
-                refresh = .idle
+                // `Refresh` is not Equatable, so an unchanged write would notify per page.
+                if case .idle = refresh {} else { refresh = .idle }
             } catch let error as AppError {
                 if !Task.isCancelled {
                     handleFetchFailure(error.userMessage, reset: reset, generation: generation)

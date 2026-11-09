@@ -28,12 +28,7 @@ public final class SMBBonjourDiscovery {
     /// Starts one live browse: a stream of the COMPLETE set of service names currently on the
     /// network, re-sent on every change, that stops browsing when its consumer goes away.
     private let browse: @Sendable () -> AsyncStream<[String]>
-    private var browsing: Browse?
-
-    private struct Browse {
-        let id: UUID
-        let task: Task<Void, Never>
-    }
+    private var browsing: Task<Void, Never>?
 
     public init(browse: @escaping @Sendable () -> AsyncStream<[String]>) {
         self.browse = browse
@@ -45,26 +40,21 @@ public final class SMBBonjourDiscovery {
         // snapshot, so a host that later leaves the network drops out on its own.
         discovered = []
         Log.network.info("SMB Bonjour discovery starting")
-        let (names, id) = (browse(), UUID())
-        let task = Task { [weak self] in
+        let names = browse()
+        browsing = Task { [weak self] in
             for await snapshot in names {
                 self?.ingest(snapshot)
             }
-            // The browser failed or was cancelled; a later `start()` opens a fresh one.
-            self?.didEnd(id)
+            // The browser failed, so a later `start()` opens a fresh one. Only `stop()` cancels
+            // a browse, and it has already cleared the slot, which a newer browse may hold by now.
+            if !Task.isCancelled { self?.browsing = nil }
         }
-        browsing = Browse(id: id, task: task)
     }
 
     public func stop() {
-        browsing?.task.cancel()
+        browsing?.cancel()
         browsing = nil
         Log.network.info("SMB Bonjour discovery stopped")
-    }
-
-    private func didEnd(_ id: UUID) {
-        guard browsing?.id == id else { return }
-        browsing = nil
     }
 
     // MARK: - Result ingestion
