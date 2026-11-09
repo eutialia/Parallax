@@ -13,7 +13,7 @@ import ParallaxCore
 /// Concurrency: an `actor` owning the `NWListener` and the set of live `NWConnection`s.
 /// Network.framework delivers listener/connection callbacks on a dedicated serial
 /// `DispatchQueue`; every callback hops back onto the actor via `Task { await self.… }`, so
-/// all mutable state (`listener`, `connections`, `isStopped`) is touched only under actor
+/// all mutable state (`lifecycle`, `connections`) is touched only under actor
 /// isolation. The shared `reader` serialises its own access, so multiple simultaneous
 /// connections (AVPlayer probes with concurrent range requests) are independent.
 public actor SMBHTTPBridge {
@@ -36,14 +36,24 @@ public actor SMBHTTPBridge {
     /// of stuck lanes stall every unrelated task in the process.
     private let queue = DispatchQueue(label: "com.lhdev.parallax.smb-http-bridge")
 
-    private var listener: NWListener?
-    /// `start()` suspends while the listener is built, so single-shot-ness can't be inferred from
-    /// `listener` alone — a second caller could slip in before the first assigns it.
-    private var hasStarted = false
+    private enum Lifecycle {
+        case idle
+        /// `start()` is building the listener. It suspends there, so a second caller has to see
+        /// this rather than slip in before the listener exists.
+        case starting
+        /// Built, and accepting connections; `start()` may still be waiting for it to be ready.
+        case listening(NWListener)
+        case stopped
+    }
+
+    private var lifecycle = Lifecycle.idle
     /// Live connections keyed by identity, so `stop()` can cancel every one and each handler
     /// can remove itself on close without a linear scan.
     private var connections: [ObjectIdentifier: NWConnection] = [:]
-    private var isStopped = false
+
+    private var isStopped: Bool {
+        if case .stopped = lifecycle { true } else { false }
+    }
 
     /// Session diagnostics: what this bridge actually cost the share. `bytesRead` counts
     /// every byte pulled from `reader` on behalf of a client — charged at READ time, so a
@@ -110,20 +120,22 @@ public actor SMBHTTPBridge {
     /// black-screens the receiver. On-device local playback works over the LAN address too, so
     /// one URL serves both. Pass `.loopback` for on-device-only clients (see `AddressScope`).
     public func start(scope: AddressScope = .lan) async throws -> URL {
-        guard !isStopped else { throw BridgeError.stopped }
-        guard !hasStarted else { throw BridgeError.alreadyStarted }
-        hasStarted = true
+        switch lifecycle {
+        case .stopped: throw BridgeError.stopped
+        case .starting, .listening: throw BridgeError.alreadyStarted
+        case .idle: lifecycle = .starting
+        }
         do {
             let queue = self.queue
             let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
                 queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
             }
             // A `stop()` that landed while the listener was being built found nothing to cancel.
-            guard !isStopped else {
+            guard case .starting = lifecycle else {
                 await offPool { listener.cancel() }
                 throw BridgeError.stopped
             }
-            self.listener = listener
+            lifecycle = .listening(listener)
 
             listener.newConnectionHandler = { [weak self] connection in
                 // Already on `queue` — Network.framework delivers this callback there.
@@ -164,11 +176,11 @@ public actor SMBHTTPBridge {
         } catch {
             // A failed start stays retryable — only a successful start (or `stop()`) spends the
             // single shot. Tear down whatever the attempt built before rethrowing.
-            if let built = self.listener {
-                self.listener = nil
+            if case .listening(let built) = lifecycle {
+                lifecycle = .starting
                 await offPool { built.cancel() }
             }
-            hasStarted = false
+            if case .starting = lifecycle { lifecycle = .idle }
             throw error
         }
     }
@@ -176,11 +188,14 @@ public actor SMBHTTPBridge {
     /// Idempotent. Cancels the listener and every open connection; in-flight sends unwind as
     /// their `receive`/`send` fail, releasing each serve loop's strong reference to `self`.
     public func stop() async {
-        guard !isStopped else { return }
-        isStopped = true
-        let listener = self.listener
+        let listener: NWListener?
+        switch lifecycle {
+        case .stopped: return
+        case .listening(let live): listener = live
+        case .idle, .starting: listener = nil
+        }
+        lifecycle = .stopped
         let connections = Array(self.connections.values)
-        self.listener = nil
         self.connections.removeAll()
         await offPool {
             listener?.cancel()
@@ -201,7 +216,7 @@ public actor SMBHTTPBridge {
 
     private func accept(_ connection: NWConnection) {
         // A connection that raced in during/after `stop()` gets refused — never served.
-        guard !isStopped, listener != nil else {
+        guard case .listening = lifecycle else {
             Task { await self.offPool { connection.cancel() } }
             return
         }
