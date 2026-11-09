@@ -159,6 +159,22 @@ struct LANServerDiscoveryDriverTests {
         #expect(discovery.isDiscovering == false)
         #expect(discovery.runningTask == nil)
     }
+
+    /// The stopped run winds down after the new one has started; its exit must not end the new run.
+    @Test("A stopped run finishing late leaves the run that replaced it discovering")
+    func staleRunFinishLeavesNewRun() async throws {
+        let clock = TestClock()
+        let (discovery, _) = discovery([], clock: clock)
+        discovery.start(timeout: 0, retries: 1, retryInterval: .seconds(10))
+        try await clock.waitForSleep(dueIn: .seconds(10))
+        let stoppedRun = try #require(discovery.runningTask)
+
+        discovery.stop()
+        discovery.start(timeout: 0, retries: 1, retryInterval: .seconds(2))
+        await stoppedRun.value
+
+        #expect(discovery.isDiscovering)
+    }
 }
 
 /// Deterministic broadcast source: hands back the scripted payload batches in order (then empties),
