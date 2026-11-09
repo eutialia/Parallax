@@ -74,18 +74,41 @@ public final class SMBBrowseViewModel {
     /// Strict per-item sidecar-image matches for `media` (keyed by `ItemID`); only matched items
     /// appear. Threaded to each tile so the thumbnail provider prefers a real poster over a frame-grab.
     public private(set) var artwork: [ItemID: SMBDirectoryEntry] = [:]
-    public private(set) var isLoading = false
-    /// True while a background re-list is in flight over content that is already on screen
-    /// (stale-while-revalidate). The view dims via `.staleWhileRevalidate` and never swaps to a
-    /// skeleton — current folders/media stay put until fresh data lands or the revalidate fails
-    /// silently.
-    public private(set) var isRefreshing = false
-    public private(set) var error: String?
-    /// True when the last failure was the server refusing the SIGN-IN (`.auth`, e.g. libsmb2's
-    /// EPERM for a stale/lost password) rather than a share/connectivity fault. The share-root
-    /// failure screen keys on this: "Share Unavailable — offline or renamed" is a misdiagnosis
-    /// when the actual fix is updating the stored credentials.
-    public private(set) var errorIsSignInRefusal = false
+    /// Why the last listing failed.
+    public struct ListingFailure: Equatable {
+        public let message: String
+        /// The server refused the SIGN-IN (`.auth`, e.g. libsmb2's EPERM for a stale/lost
+        /// password) rather than a share/connectivity fault. The failure screen keys on this:
+        /// "Share Unavailable — offline or renamed" is a misdiagnosis when the actual fix is
+        /// updating the stored credentials.
+        public let isSignInRefusal: Bool
+    }
+
+    /// Where this level's directory listing stands. The listed `folders`/`media` are kept apart
+    /// from it: a re-sort or a failure keeps the previous listing on screen.
+    public enum Listing: Equatable {
+        /// Nothing has been asked for yet, or the lister is being rebuilt.
+        case idle
+        case loading
+        /// A background re-list over content already on screen (stale-while-revalidate). The view
+        /// dims via `.staleWhileRevalidate` and never swaps to a skeleton; a failed revalidate
+        /// silently returns to `standing`, the failure that was showing before it, if any.
+        case revalidating(standing: ListingFailure?)
+        case listed
+        case failed(ListingFailure)
+
+        var failure: ListingFailure? {
+            switch self {
+            case .failed(let failure): failure
+            case .revalidating(let standing): standing
+            case .idle, .loading, .listed: nil
+            }
+        }
+    }
+
+    public private(set) var listing = Listing.idle
+    public var isLoading: Bool { listing == .loading }
+    public var isRefreshing: Bool { if case .revalidating = listing { true } else { false } }
 
     /// Whether this level is the one the user is looking at. A level covered by a pushed screen
     /// stays mounted and must not re-list under it, so the view reports its appearance here.
@@ -98,7 +121,7 @@ public final class SMBBrowseViewModel {
         switch setup {
         case .opening: false
         case .failed(_, let isCredentialLoss): !isCredentialLoss
-        case .open: error != nil && folders.isEmpty && media.isEmpty
+        case .open: listing.failure != nil && folders.isEmpty && media.isEmpty
         }
     }
 
@@ -146,16 +169,13 @@ public final class SMBBrowseViewModel {
     /// epoch, so one still winding down after a newer one started never touches the newer one's state.
     private var prefetchSink = PrefetchSink.buffering([])
     private var appearances = 0
-    /// Monotonic token so only the LATEST listing flight may clear its own progress flag
-    /// (`isLoading` for `load`, `isRefreshing` for `refresh`). A re-sort or foreground revalidate
-    /// cancels the prior task, but AMSMB2's `list` ignores cooperative cancellation, so the
-    /// cancelled task still resumes and would run its `defer` — clearing a flag while the new
-    /// flight is in progress. The data writes are already stale-guarded by `Task.isCancelled`;
-    /// this guards the shared flags. `load` and `refresh` share one counter and one `loadTask`
-    /// (single-flight): whichever starts last owns the generation. Only `load` preempts — it clears
-    /// `isRefreshing` so a revalidate it cancelled can't leave that flag stuck true when its defer
-    /// sees a generation mismatch and skips its own clear. `refresh` never preempts (it skips
-    /// while either flag is set), so it has no flag of the other's to clear.
+    /// Monotonic token so only the LATEST listing flight may move `listing`. A re-sort or
+    /// foreground revalidate cancels the prior task, but AMSMB2's `list` ignores cooperative
+    /// cancellation, so the cancelled task still resumes — and would otherwise settle `listing`
+    /// while the new flight is in progress. The data writes are already stale-guarded by
+    /// `Task.isCancelled`; this guards the phase. `load` and `refresh` share one counter and one
+    /// `loadTask` (single-flight): whichever starts last owns the generation. Only `load` preempts;
+    /// `refresh` skips while either is in flight.
     private var loadGeneration = 0
 
     init(
@@ -271,8 +291,7 @@ public final class SMBBrowseViewModel {
         folders = []
         media = []
         artwork = [:]
-        error = nil
-        errorIsSignInRefusal = false
+        listing = .idle
         setup = .opening
         await open()
     }
@@ -309,28 +328,22 @@ public final class SMBBrowseViewModel {
 
     public func load() {
         guard let source else { return }
-        isLoading = true
         // A foreground revalidate may still be in flight; this load owns the single flight now.
-        isRefreshing = false
-        error = nil
+        listing = .loading
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
         loadTask = Task { [source, share = path.share, path = path.path, sort] in
-            defer { if generation == loadGeneration { isLoading = false } }
             do {
-                let listing = try await source.browse(in: path, sort: sort)
-                guard !Task.isCancelled else { return }
-                show(listing)
+                let fresh = try await source.browse(in: path, sort: sort)
+                guard generation == loadGeneration, !Task.isCancelled else { return }
+                show(fresh)
+                listing = .listed
             } catch {
-                guard !Task.isCancelled else { return }
+                guard generation == loadGeneration, !Task.isCancelled else { return }
                 let appError = SMBFileSource.mapListError(error, share: share, path: path)
-                if case .auth = appError {
-                    self.errorIsSignInRefusal = true
-                } else {
-                    self.errorIsSignInRefusal = false
-                }
-                self.error = appError.userMessage
+                let isSignInRefusal = if case .auth = appError { true } else { false }
+                listing = .failed(ListingFailure(message: appError.userMessage, isSignInRefusal: isSignInRefusal))
             }
         }
     }
@@ -341,16 +354,15 @@ public final class SMBBrowseViewModel {
     /// and the loser's cancelled listing condemns its connection to the graveyard for nothing. So:
     /// - A listing ALREADY IN FLIGHT does NOTHING. It is about to deliver fresh data, which is all
     ///   a revalidate wants; preempting it just cancels a live listing and condemns its connection.
-    ///   This is also what keeps the offline-recovery race honest: `load()` clears `error`
-    ///   synchronously, so by the time this runs (after the foreground flush suspension) `isStalled`
+    ///   This is also what keeps the offline-recovery race honest: `load()` moves `listing` to
+    ///   `.loading` synchronously, so by the time this runs (after the foreground flush suspension) `isStalled`
     ///   already reads false and the stalled guard below would wave the second flight through.
     /// - Empty AND no error (a healthy empty folder) falls through to `load()` — there is nothing
     ///   to preserve, and nobody else owns re-listing this case.
     /// - Empty WITH an error (a stalled level) does NOTHING — offline recovery owns it.
     /// - Otherwise (content on screen) revalidates in place: keeps folders/media/artwork up the
-    ///   whole time, never touches `isLoading` (nothing is loading — the first guard proved it),
-    ///   and never paints an error over content the user is already browsing. A failed revalidate
-    ///   is a silent no-op.
+    ///   whole time and never paints an error over content the user is already browsing. A failed
+    ///   revalidate is a silent no-op.
     public func refresh() {
         guard let source, !isLoading, !isRefreshing else { return }
         guard !isStalled else { return }
@@ -358,7 +370,8 @@ public final class SMBBrowseViewModel {
             load()
             return
         }
-        isRefreshing = true
+        let standing = listing.failure
+        listing = .revalidating(standing: standing)
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
@@ -372,21 +385,20 @@ public final class SMBBrowseViewModel {
         lifecycle.mark("→ refresh \(share)\(DiagnosticsRedaction.path(path))")
         loadTask = Task { [source, sort] in
             defer {
-                if generation == loadGeneration { isRefreshing = false }
                 lifecycle.mark(
                     "← refresh \(share)\(DiagnosticsRedaction.path(path)) in \(started.duration(to: ContinuousClock().now))")
             }
-            do {
-                let listing = try await source.browse(in: path, sort: sort)
-                guard !Task.isCancelled else { return }
-                show(listing)
+            let fresh = try? await source.browse(in: path, sort: sort)
+            guard generation == loadGeneration else { return }
+            if let fresh, !Task.isCancelled {
+                show(fresh)
                 // A stale error must not repaint over a refresh that came back healthy — an empty
                 // listing here means "Nothing Here", not the old failure.
-                error = nil
-                errorIsSignInRefusal = false
-            } catch {
+                listing = .listed
+            } else {
                 // Failed background revalidate must not paint over content the user is browsing —
-                // leave folders/media/artwork/error/errorIsSignInRefusal exactly as they were.
+                // folders/media/artwork and the standing failure stay exactly as they were.
+                listing = standing.map(Listing.failed) ?? .listed
             }
         }
     }

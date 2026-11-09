@@ -152,10 +152,21 @@ private struct SMBBrowseLevelView: View {
 
     @ViewBuilder
     private var content: some View {
-        if model.isLoading, model.folders.isEmpty, model.media.isEmpty {
+        if model.folders.isEmpty, model.media.isEmpty {
+            emptyLevel
+        } else {
+            listedLevel
+        }
+    }
+
+    /// Nothing listed: still loading, failed, or a genuinely empty folder.
+    @ViewBuilder
+    private var emptyLevel: some View {
+        switch model.listing {
+        case .loading:
             loadingSkeleton
-        } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
-            if model.errorIsSignInRefusal {
+        case .failed(let failure):
+            if failure.isSignInRefusal {
                 // SIGN-IN refusal (libsmb2 EPERM — stale/lost stored password) at ANY depth: a
                 // password can go stale server-side while the user is folders deep, and walking
                 // back to the share root to find the repair is a maze. The share isn't gone, the
@@ -178,50 +189,52 @@ private struct SMBBrowseLevelView: View {
                     message: "The \(path.share) share isn’t available on \(path.ref.data.host). It may be offline, renamed, or no longer shared. If it’s gone for good, remove it from this server in Settings."
                 )
             } else {
-                StatusStateView.failure("Couldn't open \(levelTitle)", message: error)
+                StatusStateView.failure("Couldn't open \(levelTitle)", message: failure.message)
             }
-        } else if model.folders.isEmpty, model.media.isEmpty {
+        case .idle, .revalidating, .listed:
             StatusStateView(
                 title: "Nothing Here",
                 systemImage: "folder",
                 message: "This folder has no subfolders or playable media."
             )
-        } else {
-            ScrollView {
-                VStack(spacing: 0) {
-                    // The sort chip stays OUTSIDE `.staleWhileRevalidate` below — that modifier
-                    // applies `.allowsHitTesting(false)` while refreshing, and a pushed tvOS level
-                    // hides the tab sidebar, so trapping the chip too would leave the level with
-                    // zero focusable elements for the length of the re-list (the tvOS empty-focus
-                    // trap this scoping avoids; mirrors `LibraryGridView.gridScrollContent`, whose
-                    // header controls sit outside its own `MediaGrid`-scoped modifier).
-                    #if os(tvOS)
-                    SMBBrowseSortHeader(field: $model.sortField, direction: $model.sortDirection)
-                    #endif
-                    SMBBrowseGrid(
-                        folders: model.folders,
-                        media: model.media,
-                        artwork: model.artwork,
-                        ref: path.ref,
-                        share: path.share,
-                        parentPath: path.path,
-                        artworkProvider: app.services.mediaArtworkProvider,
-                        onMediaTileAppeared: { model.prefetchWindow(from: $0, lookahead: prefetchLookahead) },
-                        onPlay: { model.play($0) }
-                    )
-                    // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
-                    // with the library grid so the two never drift). Scoped to the grid, not the
-                    // whole scroll subtree — see the comment on the sort chip above.
-                    .staleWhileRevalidate(
-                        isRefreshing: model.isRefreshing,
-                        reduceMotion: reduceMotion
-                    )
-                }
-            }
-            // The share ROOT keeps the tvOS tab chrome, so it takes the root-chrome bypass to rest
-            // at the same y as the chrome-less pushed levels — see `mediaWallContentMargins`.
-            .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
         }
+    }
+
+    private var listedLevel: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // The sort chip stays OUTSIDE `.staleWhileRevalidate` below — that modifier
+                // applies `.allowsHitTesting(false)` while refreshing, and a pushed tvOS level
+                // hides the tab sidebar, so trapping the chip too would leave the level with
+                // zero focusable elements for the length of the re-list (the tvOS empty-focus
+                // trap this scoping avoids; mirrors `LibraryGridView.gridScrollContent`, whose
+                // header controls sit outside its own `MediaGrid`-scoped modifier).
+                #if os(tvOS)
+                SMBBrowseSortHeader(field: $model.sortField, direction: $model.sortDirection)
+                #endif
+                SMBBrowseGrid(
+                    folders: model.folders,
+                    media: model.media,
+                    artwork: model.artwork,
+                    ref: path.ref,
+                    share: path.share,
+                    parentPath: path.path,
+                    artworkProvider: app.services.mediaArtworkProvider,
+                    onMediaTileAppeared: { model.prefetchWindow(from: $0, lookahead: prefetchLookahead) },
+                    onPlay: { model.play($0) }
+                )
+                // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
+                // with the library grid so the two never drift). Scoped to the grid, not the
+                // whole scroll subtree — see the comment on the sort chip above.
+                .staleWhileRevalidate(
+                    isRefreshing: model.isRefreshing,
+                    reduceMotion: reduceMotion
+                )
+            }
+        }
+        // The share ROOT keeps the tvOS tab chrome, so it takes the root-chrome bypass to rest
+        // at the same y as the chrome-less pushed levels — see `mediaWallContentMargins`.
+        .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
     }
 
     /// The listing placeholder both loading branches show (building the lister, and the first
