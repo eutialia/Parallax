@@ -287,6 +287,7 @@ public final class SMBBrowseViewModel {
         openTask?.cancel()
         openTask = nil
         loadTask?.cancel()
+        loadGeneration += 1
         source = nil
         folders = []
         media = []
