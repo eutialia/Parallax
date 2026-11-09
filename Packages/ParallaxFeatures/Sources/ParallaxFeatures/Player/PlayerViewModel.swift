@@ -461,13 +461,6 @@ public final class PlayerViewModel {
     /// with the rest of the per-session state in `stop()`.
     private var currentAsset: PlayableAsset?
 
-    /// One-shot latch for the reactive AVKit→VLC fallback (`attemptReactiveFallback`):
-    /// true once THIS session has already spent its single re-route, so a second
-    /// terminal failure (on VLC, or on a second MP4 defect) falls through to the normal
-    /// error scrim instead of retrying forever. Reset with the rest of the per-session
-    /// state in `stop()`.
-    private var didReactivelyReroute = false
-
     /// The engine session this view model is driving — `engine.load()`'s return value, and
     /// the ONE thing `handle` checks a beat against. An engine is reloadable in place, so the
     /// engine's own identity cannot answer "is this beat about the media I am playing now?":
@@ -507,8 +500,13 @@ public final class PlayerViewModel {
     /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
     /// `stop()` can cancel it — closing the window where `retry()`/`resetForReplay` tear
     /// the session down while a pending hop is still in flight and would otherwise build
-    /// a VLC engine for a session that's already gone.
+    /// a VLC engine for a session that's already gone. Kept once it has run: it is also the
+    /// session's one-shot latch.
     private var reactiveFallbackTask: Task<Void, Never>?
+    /// THIS session has already spent its single re-route, so a second terminal failure (on
+    /// VLC, or on a second MP4 defect) falls through to the normal error scrim instead of
+    /// retrying forever.
+    private var didReactivelyReroute: Bool { reactiveFallbackTask != nil }
 
     /// The debug overlay's session diagnostics: the startup metric and the transcode delivery.
     /// See `SessionDiagnostics`.
@@ -936,12 +934,11 @@ public final class PlayerViewModel {
     /// previous item's stream, picks and sidecar into the session that replaced it.
     private var sessionGeneration = 0
 
-    /// Set once per SMB session on its first `.playing` beat; gates `scheduleThumbnailBackfill()`
-    /// so a resume-from-pause or post-stall `.playing` beat never schedules a second backfill task.
-    private var didScheduleThumbnailBackfill = false
-    /// Pending low-priority SMB thumbnail backfill — waits past startup churn, then grabs one
+    /// Low-priority SMB thumbnail backfill — waits past startup churn, then grabs one
     /// frame from the live engine. Cancelled on session teardown (`stop()` / deinit) so a
-    /// dismissed player never pays for a capture that will never be stored.
+    /// dismissed player never pays for a capture that will never be stored. Kept once it has
+    /// run, because it is also the once-per-session gate: a resume-from-pause or post-stall
+    /// `.playing` beat never schedules a second one.
     private var thumbnailBackfillTask: Task<Void, Never>?
 
     /// The resolve surface, narrowed so the integration test can inject a stub
@@ -1462,10 +1459,9 @@ public final class PlayerViewModel {
     private func clearSMBSession() async {
         guard let session = smbSession else { return }
         smbSession = nil
-        // Session-scoped one-shot: a fresh SMB session (retry, next file) must not inherit a
-        // stale "already scheduled" flag from the previous one — and the previous session's
-        // still-sleeping backfill task must not wake up against the new session either.
-        didScheduleThumbnailBackfill = false
+        // Session-scoped one-shot: a fresh SMB session (retry, next file) must not find the
+        // previous one's backfill already scheduled — and that still-sleeping task must not
+        // wake up against the new session either.
         thumbnailBackfillTask?.cancel()
         thumbnailBackfillTask = nil
         await session.resumeSaveTask?.value
@@ -1831,11 +1827,10 @@ public final class PlayerViewModel {
         // sitting on a multi-second delay. A reactive engine rebuild (AVKit → VLC) mid-delay would
         // otherwise let it fire against an engine being torn down and burn the session's only
         // attempt; cancelling and re-arming lets the rebuilt engine's next `.playing` beat schedule
-        // a clean one. The SMB session itself survives a rebuild, so the flag has to be reset here
+        // a clean one. The SMB session itself survives a rebuild, so the gate has to be reset here
         // too (`clearSMBSession` only runs when the session really ends).
         thumbnailBackfillTask?.cancel()
         thumbnailBackfillTask = nil
-        didScheduleThumbnailBackfill = false
         stateTask?.cancel()
         stateTask = nil
         // No engine, no session: a beat that survives the cancellation below belongs to media
@@ -2045,7 +2040,6 @@ public final class PlayerViewModel {
         isPlaying = false
         desiredPlaying = false
         currentAsset = nil
-        didReactivelyReroute = false
         // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
         // stop()→start(); zeroing it would silently drop the user's chosen speed on
         // the fresh engine (beginPlayback's re-apply guard would see 1.0×). A real
@@ -3267,12 +3261,11 @@ public final class PlayerViewModel {
             // Jellyfin: report to the server session. SMB: persist the position locally —
             // same beat, same ~10s throttle discipline as the progress report.
             await reportLiveBeat(position: position, isPaused: false, opensSession: true)
-            // One-shot SMB thumbnail backfill: first `.playing` only (the flag is consumed
-            // here; resume-from-pause / post-stall beats skip it). Schedules an 8s-delayed
+            // One-shot SMB thumbnail backfill: first `.playing` only (the task is the gate;
+            // resume-from-pause / post-stall beats skip it). Schedules an 8s-delayed
             // low-priority capture so startup churn and an often-black first frame don't
             // poison the cache — see `scheduleThumbnailBackfill()`.
-            if smbSession != nil, !didScheduleThumbnailBackfill {
-                didScheduleThumbnailBackfill = true
+            if smbSession != nil, thumbnailBackfillTask == nil {
                 scheduleThumbnailBackfill()
             }
         case .paused(let position, let duration, let buffered, let provenance):
@@ -3375,9 +3368,6 @@ public final class PlayerViewModel {
                    alreadyRerouted: didReactivelyReroute,
                    error: error
                ) {
-                // Latched HERE, not in the fallback: a second `.failed` beat arriving
-                // before the hop below runs must not schedule a second retry.
-                didReactivelyReroute = true
                 // Set before spawning the hop: the UI must not sit on `.playing` (or
                 // any other stale phase) until the hop actually runs the retry.
                 coverLoading()
@@ -3386,7 +3376,9 @@ public final class PlayerViewModel {
                 // awaited inline, that self-cancellation trips the retry's own
                 // `Task.checkCancellation()` and the fallback dies silently, leaving the
                 // loading scrim up forever. Stored so `stop()` can cancel a hop that
-                // outlives its session (the retry()/resetForReplay window).
+                // outlives its session (the retry()/resetForReplay window), and stored HERE,
+                // not in the fallback, because it is the latch: a second `.failed` beat
+                // arriving before the hop runs must not schedule a second retry.
                 reactiveFallbackTask = Task { [weak self] in await self?.attemptReactiveFallback(from: asset) }
                 return
             }
