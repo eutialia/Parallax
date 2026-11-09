@@ -801,6 +801,13 @@ public final class PlayerViewModel {
     /// No newer start has begun since the one into `generation`.
     private func isNewestStart(_ generation: Int) -> Bool { newestStart?.generation == generation }
 
+    /// A start's failure reaches the surface only while its session is the one on screen. Once a
+    /// teardown is running, a replay or the exit owns what the surface shows next.
+    private func failStart(_ error: AppError, generation: Int) {
+        guard isNewestStart(generation), stopping == nil else { return }
+        surface = .failed(error)
+    }
+
     private func endColdStart(_ generation: Int) {
         if isNewestStart(generation) { newestStart?.isCold = false }
     }
@@ -1195,12 +1202,10 @@ public final class PlayerViewModel {
         } catch is CancellationError {
             // Exit raced the detail fetch — the view is gone; nothing to surface.
         } catch let error as AppError {
-            if isNewestStart(generation) { surface = .failed(error) }
+            failStart(error, generation: generation)
         } catch {
             Log.playback.error("item detail fetch failed: \(error.networkDiagnostic)")
-            if isNewestStart(generation) {
-                surface = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
-            }
+            failStart(.unexpected("couldn't load item", underlying: AnySendableError(error)), generation: generation)
         }
     }
 
@@ -1284,14 +1289,14 @@ public final class PlayerViewModel {
                 // activate() did (deactivate is idempotent).
                 break
             case let error as AppError:
-                surface = .failed(error)
+                failStart(error, generation: generation)
             default:
                 // A non-AppError reaching here is genuinely unexpected (resolve()
                 // already maps its failures to AppError). Log it and preserve the
                 // underlying error in diagnostics instead of mislabeling it as a
                 // network problem.
                 Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic)")
-                surface = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+                failStart(.unexpected("playback start failed", underlying: AnySendableError(error)), generation: generation)
             }
             await audioSession.deactivate()
         }
@@ -1344,12 +1349,10 @@ public final class PlayerViewModel {
             // (nil-before-await), so it's safe even if a concurrent `stop()` also reaps it.
             await tearDownSMBBridge()
         } catch let error as AppError {
-            if isNewestStart(generation) { surface = .failed(error) }
+            failStart(error, generation: generation)
         } catch {
             Log.playback.error("SMB resolve failed: \(error.networkDiagnostic)")
-            if isNewestStart(generation) {
-                surface = .failed(.unexpected("couldn't load file", underlying: AnySendableError(error)))
-            }
+            failStart(.unexpected("couldn't load file", underlying: AnySendableError(error)), generation: generation)
         }
     }
 
@@ -1422,11 +1425,11 @@ public final class PlayerViewModel {
                 // the bridge teardown — don't race it here.
                 break
             case let error as AppError:
-                surface = .failed(error)
+                failStart(error, generation: generation)
                 await tearDownSMBBridge()
             default:
                 Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
-                surface = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+                failStart(.unexpected("playback start failed", underlying: AnySendableError(error)), generation: generation)
                 await tearDownSMBBridge()
             }
             await audioSession.deactivate()
