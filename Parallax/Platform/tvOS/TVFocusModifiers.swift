@@ -247,14 +247,10 @@ extension View {
         #endif
     }
 
-    /// Boolean counterpart for a lone focusable control (`.focused(_:)`). Not expressible as
-    /// `tvFocused(_:equals: true)`: on a NON-optional `FocusState<Bool>` the match form has no `nil`
-    /// to write back when focus leaves, so the Boolean overload is the documented API for this shape.
-    /// The parameter is OPTIONAL and no-ops on `nil` inside the modifier: a shared atom
-    /// (`SettingsRetryError`) is only sometimes handed a focus handle by its caller, and folding the
-    /// nil-check in here lets that atom apply the modifier unconditionally instead of branching into
-    /// `_ConditionalContent` at the call site. A non-optional binding still passes through fine —
-    /// Swift promotes it to the `Optional` parameter automatically.
+    /// `tvFocused(_:equals:)` for a handle that is only sometimes there. The target is OPTIONAL and
+    /// no-ops on `nil` inside the modifier: a shared atom (`SettingsRetryError`) is only sometimes
+    /// handed a focus handle by its caller, and folding the nil-check in here lets that atom apply
+    /// the modifier unconditionally instead of branching into `_ConditionalContent` at the call site.
     ///
     /// The optional MUST be a compile-time constant per call site: whether it's `nil` or non-`nil`
     /// can't flip across a re-render. The `if let`/`else` below runs inside a `@ViewBuilder`, so
@@ -262,10 +258,10 @@ extension View {
     /// modified view and drops its focus/state, exactly like swapping `buttonStyle`s mid-selection
     /// (see `tvPosterButton()`'s identity-stability warning above).
     @ViewBuilder
-    func tvFocused(_ binding: FocusState<Bool>.Binding?) -> some View {
+    func tvFocused<V: Hashable>(_ target: (binding: FocusState<V?>.Binding, value: V)?) -> some View {
         #if os(tvOS)
-        if let binding {
-            self.focused(binding)
+        if let target {
+            self.focused(target.binding, equals: target.value)
         } else {
             self
         }
