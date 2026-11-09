@@ -45,8 +45,10 @@ public struct PlayerTouchChrome: Equatable, Sendable {
     /// short enough that a lone edge tap's toggle reads as instant.
     public static let doubleTapWindow: TimeInterval = 0.3
 
-    public var visible = true
-    public var interaction = PlayerHUDInteraction()
+    /// A hidden chrome has no menu open: every hide closes them in the same step, since the chips
+    /// that anchor a panel go with the chrome and an open menu would lock the user out of it.
+    public private(set) var visible = true
+    public private(set) var interaction = PlayerHUDInteraction()
     public private(set) var scrub = Scrub.idle
     public private(set) var burst: PlayerSeekBurst?
     private var lastTap: Tap?
@@ -89,8 +91,37 @@ public struct PlayerTouchChrome: Equatable, Sendable {
 
     // MARK: Inputs
 
-    /// The auto-hide timer ran out.
-    public mutating func autoHideFired() { visible = false }
+    /// The auto-hide timer ran out. A timer that outlived a panel opening or a finger taking the
+    /// bar does nothing.
+    public mutating func autoHideFired() {
+        guard !interaction.menuOpen, !dragScrubbing else { return }
+        hide()
+    }
+
+    /// Open a track panel, as a fresh open of it (see `PlayerPanel`). The chrome comes up under
+    /// it and stays.
+    public mutating func openPanel(_ kind: PlayerTrackMenuKind) -> [PlayerTouchEffect] {
+        visible = true
+        interaction.panel = PlayerPanel(kind: kind)
+        return [.cancelHide]
+    }
+
+    public mutating func closePanel() -> [PlayerTouchEffect] {
+        guard interaction.panel != nil else { return [] }
+        interaction.panel = nil
+        return interaction.menuOpen ? [] : [.rearmHide]
+    }
+
+    /// The debug sheet opened or closed, from its chip, its own button or a system dismissal.
+    public mutating func debugSheetChanged(open: Bool) -> [PlayerTouchEffect] {
+        guard interaction.debugOpen != open else { return [] }
+        interaction.debugOpen = open
+        if open {
+            visible = true
+            return [.cancelHide]
+        }
+        return interaction.menuOpen ? [] : [.rearmHide]
+    }
 
     /// Any interaction with the chrome: bring it back and restart the auto-hide.
     public mutating func reveal() -> [PlayerTouchEffect] {
@@ -118,7 +149,7 @@ public struct PlayerTouchChrome: Equatable, Sendable {
         guard let zone, canSeek else { return toggle() }
         guard paired == zone else { return toggle() }
         // A first tap that raised the HUD is dropped by this hide; one that lowered it stays down.
-        if !dragScrubbing { visible = false }
+        if !dragScrubbing { hide() }
         return seekStep(zone, at: point, now: now)
     }
 
@@ -132,8 +163,12 @@ public struct PlayerTouchChrome: Equatable, Sendable {
             visible = true
             return [.rearmHide]
         }
-        visible.toggle()
-        return visible ? [.rearmHide] : []
+        if visible {
+            hide()
+            return []
+        }
+        visible = true
+        return [.rearmHide]
     }
 
     /// A drag on the bar moved. The first move enters the scrub: the auto-hide stops, a queued
@@ -188,7 +223,6 @@ public struct PlayerTouchChrome: Equatable, Sendable {
     public func hideTimer(after change: AutoHideInput) -> PlayerTouchEffect? {
         switch change {
         case .pullDragging(let dragging): dragging ? .cancelHide : .rearmHide
-        case .menuOpen(let open): open ? .cancelHide : .rearmHide
         case .desiredPlaying(let playing): playing ? (visible ? .rearmHide : nil) : .cancelHide
         }
     }
@@ -208,6 +242,11 @@ public struct PlayerTouchChrome: Equatable, Sendable {
     }
 
     // MARK: Private
+
+    private mutating func hide() {
+        visible = false
+        interaction = PlayerHUDInteraction()
+    }
 
     private static func stepSeconds(_ direction: PlayerSeekDirection) -> Double {
         direction == .forward ? PlayerHUDTuning.clickStepSeconds : -PlayerHUDTuning.clickStepSeconds
@@ -233,7 +272,6 @@ public struct PlayerTouchChrome: Equatable, Sendable {
 /// An input the touch chrome's auto-hide depends on.
 public enum AutoHideInput: Equatable, Sendable {
     case pullDragging(Bool)
-    case menuOpen(Bool)
     case desiredPlaying(Bool)
 }
 
