@@ -1,5 +1,5 @@
 import ParallaxCore
-import ParallaxFeatures
+@testable import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
 import ParallaxTestScaling
@@ -183,6 +183,28 @@ struct HomeScenarios {
         try await world.openHome()
 
         #expect(world.app.home?.state == .failed("Parallax couldn't reach your servers."))
+    }
+
+    @Test("a superseded Home load that ends while the newer one is still out leaves Home loading")
+    func supersededLoadEndingLateKeepsHomeLoading() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana")
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.openHome()
+        let home = try #require(world.app.home)
+
+        den.holdResponses()
+        let superseded = Task { await home.load() }
+        try await world.until { den.heldResponseCount == 5 }
+        let current = Task { await home.load() }
+        try await world.until { den.heldResponseCount == 10 }
+        superseded.cancel()
+        await superseded.value
+
+        #expect(home.state == .loading)
+
+        den.releaseResponses()
+        await current.value
+        #expect(home.state == .loaded)
     }
 
     @Test("playing a Continue Watching movie and closing the player shows its new progress")
