@@ -105,4 +105,72 @@ struct ServerStoreInvalidationTests {
         let stored: String? = try await keychain.read(JellyfinFixtures.tokenKey(forRawID: "s1"))
         #expect(stored == "new")
     }
+
+    /// A 401 for the old token can land while a re-sign-in of the same server is suspended in its
+    /// Keychain write. The re-sign-in must not land on whatever row now sits where its server was.
+    @Test("A rejection landing mid re-sign-in keeps every other server's session")
+    func rejectionDuringReSignInKeepsNeighbours() async throws {
+        let (settings, _) = JellyfinFixtures.settingsStore("ServerStoreInvalidationTests")
+        let keychain = HeldStoreKeychain()
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
+        let old = session(id: "s1", token: "old")
+        let neighbour = session(id: "s2", token: "t2")
+        let renewed = session(id: "s1", token: "new")
+        try await store.add(old)
+        try await store.add(neighbour)
+        await keychain.holdNextStore()
+
+        async let reSignIn: Void = store.add(renewed)
+        await keychain.waitUntilHeld()
+        await store.invalidateSession(old)
+        await keychain.release()
+        try await reSignIn
+
+        let tokens = await store.sessions.map(\.accessToken)
+        #expect(tokens == [neighbour.accessToken, renewed.accessToken])
+    }
+}
+
+/// Parks the next `store` until released, so a test can run other actor work inside that await.
+private actor HeldStoreKeychain: KeychainStoring {
+    private enum Hold {
+        case none
+        case armed
+        case parked(CheckedContinuation<Void, Never>)
+    }
+
+    private let backing = FakeKeychain()
+    private var hold = Hold.none
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func holdNextStore() { hold = .armed }
+
+    func waitUntilHeld() async {
+        if case .parked = hold { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        if case .parked(let continuation) = hold { continuation.resume() }
+        hold = .none
+    }
+
+    func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) async throws {
+        if case .armed = hold {
+            await withCheckedContinuation { continuation in
+                hold = .parked(continuation)
+                heldWaiters.forEach { $0.resume() }
+                heldWaiters = []
+            }
+        }
+        try await backing.store(value, for: key)
+    }
+
+    func read<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws -> Value? {
+        try await backing.read(key)
+    }
+
+    func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws {
+        try await backing.delete(key)
+    }
 }
