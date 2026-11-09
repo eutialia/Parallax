@@ -10,16 +10,30 @@ import ParallaxSubtitles
 @Observable
 @MainActor
 final class SidecarSubtitles {
+    /// A renderer that is up and drawing, with what it was built from.
+    private struct Installed {
+        let renderer: SubtitleRenderer
+        /// Format + size the renderer was loaded with — debug panel and the style-override
+        /// policy read it.
+        let info: SidecarSubtitleInfo
+        /// The raw payload, kept so a font-design change can REBUILD the renderer: the CJK
+        /// `\fn` tags and font plan are baked at load against the style family, so a new
+        /// family needs a fresh load, not a style push.
+        let data: Data
+        let languageCode: String?
+        /// The family the renderer was built around.
+        let family: String
+    }
+    private var installed: Installed?
+
     /// The client-side renderer (libass, `ParallaxSubtitles`) for the active sidecar
     /// subtitle that `SubtitleOverlayView` draws: used by the transcode path AND by
     /// direct-play EXTERNAL subs (VLC can't shape sidecar text on iOS). Nil when no
     /// such subtitle is active — including direct-play EMBEDDED subs, which the engine
     /// renders itself. This is how we sidestep the in-manifest WebVTT drift
     /// (jellyfin/jellyfin#16647) while keeping authored ASS styling intact.
-    private(set) var subtitleRenderer: SubtitleRenderer?
-    /// Format + size the renderer was loaded with — debug panel and the style-override
-    /// policy read it. Nil ⟺ `subtitleRenderer` is nil.
-    private(set) var sidecarSubtitleInfo: SidecarSubtitleInfo?
+    var subtitleRenderer: SubtitleRenderer? { installed?.renderer }
+    var sidecarSubtitleInfo: SidecarSubtitleInfo? { installed?.info }
     /// Monotonic token bumped on every renderer install/clear. The overlay keys its
     /// canvas pushes on this instead of object identity — a freed actor's address can
     /// be reused by its replacement, which would silently skip the new canvas push
@@ -57,13 +71,6 @@ final class SidecarSubtitles {
     /// user's style. Its fontScale remaps the tuned per-device size onto the
     /// synthesized script's base, which only means anything for a script we wrote.
     private var convertedSubtitleAppearance: SubtitleStyleOverride?
-    /// The current sidecar's raw payload, kept so a font-design change can
-    /// REBUILD the renderer: the CJK `\fn` tags and font plan are baked at load
-    /// against the style family, so a new family needs a fresh load, not a
-    /// style push.
-    private var sidecarPayload: (data: Data, format: SubtitleSourceFormat, languageCode: String?)?
-    /// The family the current renderer was built around.
-    private var sidecarRendererFamily: String?
     /// Identity of one fetched sidecar. The media source is part of it because a
     /// transcode reload re-resolves the SAME source (cache still valid) while an
     /// episode change resolves a different one (stream indices mean something else).
@@ -221,13 +228,11 @@ final class SidecarSubtitles {
             Log.playback.error("sidecar subtitle load failed (\(String(describing: format))): \(error)")
             return false
         }
-        let info = SidecarSubtitleInfo(format: format, byteCount: data.count)
         await renderer.setStyleOverride(effectiveStyleOverride(for: format))
         if Task.isCancelled { return false }
-        subtitleRenderer = renderer
-        sidecarSubtitleInfo = info
-        sidecarPayload = (data, format, languageCode)
-        sidecarRendererFamily = family
+        installed = Installed(renderer: renderer,
+                              info: SidecarSubtitleInfo(format: format, byteCount: data.count),
+                              data: data, languageCode: languageCode, family: family)
         sidecarFetchStreamIndex = nil
         subtitleRendererGeneration &+= 1
         return true
@@ -243,10 +248,7 @@ final class SidecarSubtitles {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
         sidecarFetchStreamIndex = nil
-        subtitleRenderer = nil
-        sidecarSubtitleInfo = nil
-        sidecarPayload = nil
-        sidecarRendererFamily = nil
+        installed = nil
         subtitleRendererGeneration &+= 1
     }
 
@@ -257,26 +259,27 @@ final class SidecarSubtitles {
     /// (whose files we don't have), is already done at load inside the renderer.
     func applySubtitleAppearance(converted: SubtitleStyleOverride?) {
         convertedSubtitleAppearance = converted
-        guard let renderer = subtitleRenderer, let info = sidecarSubtitleInfo else { return }
+        guard let installed else { return }
+        let format = installed.info.format
         // A font-FAMILY change can't be pushed onto a loaded track: the CJK
         // font plan and \fn tags were baked at load against the previous
         // family. Rebuild the renderer from the kept payload instead — unless
         // another track's fetch is in flight: that install reads the family at
         // its own completion, and cancelling it here would strand the newer
         // pick on the old track's payload.
-        if sidecarFetchStreamIndex == nil, let payload = sidecarPayload,
-           effectiveSidecarFontFamily(for: info.format) != sidecarRendererFamily {
+        if sidecarFetchStreamIndex == nil, effectiveSidecarFontFamily(for: format) != installed.family {
             subtitleFetchTask?.cancel()
             subtitleFetchTask = Task { [weak self] in
                 guard await self?.installSubtitleRenderer(
-                    data: payload.data, format: payload.format,
-                    languageCode: payload.languageCode
+                    data: installed.data, format: format,
+                    languageCode: installed.languageCode
                 ) == false, !Task.isCancelled else { return }
                 self?.clearSidecarSubtitle()
             }
             return
         }
-        let effective = effectiveStyleOverride(for: info.format)
+        let effective = effectiveStyleOverride(for: format)
+        let renderer = installed.renderer
         let previous = stylePushChain
         stylePushChain = Task {
             await previous?.value          // submission order → the LAST edit wins
