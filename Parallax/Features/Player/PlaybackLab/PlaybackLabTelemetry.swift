@@ -8,9 +8,7 @@ import Foundation
 /// waiting for the app to exit.
 ///
 /// One JSON object per line, always carrying `t` (unix epoch seconds) and
-/// `event`; everything else is event-specific. The unified-log stream
-/// (category `vlc-audio`) is captured separately by the driver and merged by
-/// timestamp — libvlc internals are deliberately NOT duplicated here.
+/// `event`; everything else is event-specific.
 actor PlaybackLabTelemetry {
 
     static let fileURL = URL.documentsDirectory.appending(path: "PlaybackLab/telemetry.jsonl")

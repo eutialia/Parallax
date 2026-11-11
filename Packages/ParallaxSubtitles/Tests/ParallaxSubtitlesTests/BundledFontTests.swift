@@ -68,10 +68,9 @@ struct BundledFontTests {
         "NotoSerifOriya-Regular.ttf": ["Noto Serif Oriya"],
     ]
 
-    /// The directory is also handed to VLC as `:ssa-fontsdir`, and libass'
-    /// `load_fonts_from_dir` calls `ass_add_font` on EVERY file it finds — so a
-    /// stray README or licence text is one warning per launch. Nothing but faces
-    /// may live here; the shared OFL text ships in the app's Resources/Licenses.
+    /// Nothing but faces may live here; the shared OFL text ships in the app's
+    /// Resources/Licenses. The exact listing also catches a face added without a
+    /// family entry above.
     @Test("the fonts directory holds exactly the expected files and nothing else")
     func directoryContents() throws {
         let contents = try FileManager.default.contentsOfDirectory(

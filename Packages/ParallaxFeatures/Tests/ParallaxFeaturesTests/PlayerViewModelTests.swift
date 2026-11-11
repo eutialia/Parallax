@@ -15,42 +15,13 @@ import ParallaxTestScaling
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
-/// One engine-routing case: what the server resolved, and the delivered hints + engine
-/// the selector must derive from it. A plain enum rather than prebuilt fixtures so the
-/// `arguments:` table stays evaluable outside the suite's MainActor isolation.
-private enum RoutingCase: String, CaseIterable, CustomTestStringConvertible {
-    /// Source is MKV/AV1/DTS but the server DELIVERS an HLS transcode: the selector
-    /// must gate on the delivery (AVKit-playable), not the source container.
-    case transcodedMKVDeliversHLS
-    /// VC-1 is never in AVPlayer's support → .vlcKit.
-    case vc1MKVDirectPlay
-    /// Same source with an AVKit-playable AAC track — the video codec still decides.
-    case vc1MKVWithAACAudio
-    /// Container AND codec both outside AVPlayer's support → .vlcKit.
-    case vp9WebMDirectPlay
-
-    var testDescription: String { rawValue }
-
-    /// The delivered hints (`PlayerAssetFactory.deliveredHints`) and the engine id the
-    /// factory must be asked for. A transcode's hints carry NO codecs — the HLS
-    /// rendition targets the device profile, so the source codecs are irrelevant.
-    var expected: (container: Container, videoCodec: VideoCodec?, engine: PlaybackEngineID) {
-        switch self {
-        case .transcodedMKVDeliversHLS: (.hls, nil, .avKit)
-        case .vc1MKVDirectPlay: (.mkv, .vc1, .vlcKit)
-        case .vc1MKVWithAACAudio: (.mkv, .vc1, .vlcKit)
-        case .vp9WebMDirectPlay: (.webm, .vp9, .vlcKit)
-        }
-    }
-}
-
 @Suite("PlayerViewModel integration", .scaledTimeLimit())
 @MainActor
 struct PlayerViewModelTests {
-    @Test("resolves, selects .avKit, loads + plays, maps states, emits beats in order")
+    @Test("resolves, loads + plays, maps states, emits beats in order")
     func happyPath() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let resolvedItemIDs = CallRecorder<ItemID>()
 
@@ -63,10 +34,10 @@ struct PlayerViewModelTests {
 
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        // Resolve happened with the right item; engine was selected + driven.
+        // Resolve happened with the right item; the engine was driven.
         #expect(resolvedItemIDs.last == ItemID(rawValue: "movie-1"))
         #expect(!engine.loadedAssets.isEmpty)
-        #expect(engine.loadedAssets.first?.hints.container == .mp4)
+        #expect(engine.loadedAssets.first?.url == resolved.url)
         #expect(engine.calls.contains("play"))
 
         // Script ready → play → progress → ended through the single consumer.
@@ -94,7 +65,7 @@ struct PlayerViewModelTests {
     @Test("startupMillis is set after the first .playing beat, and stays put across a later .playing beat")
     func startupMillisSetOnFirstPlayingBeat() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
@@ -127,8 +98,8 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _ in resolved },
-            engineFactory: { _, _ in
-                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            engineFactory: {
+                let engine = FakePlaybackEngine()
                 createdEngines.append(engine)
                 return engine
             }
@@ -155,13 +126,13 @@ struct PlayerViewModelTests {
     @Test("incomplete media: a live beat with an unknown duration is controllable but not seekable")
     func unknownDurationIsControllableNotSeekable() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        // libvlc never resolves the length of a truncated/incomplete file, so the engine ships
+        // A truncated or still-growing file can carry no length, so the engine ships
         // a live beat with an `.indefinite` duration (instead of suppressing it and wedging the
         // player in `.loading`). The player must become controllable (`phase == .playing`) yet
         // report itself non-seekable — there's no scrubbable timeline without a known length.
@@ -176,7 +147,7 @@ struct PlayerViewModelTests {
     @Test("complete media: a live beat with a real duration reports a known, seekable duration")
     func knownDurationIsSeekable() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
@@ -192,7 +163,7 @@ struct PlayerViewModelTests {
     @Test("audio session activation failure surfaces a distinct error and short-circuits before resolve")
     func audioSessionFailureIsDistinctAndShortCircuits() async {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolutions = CallRecorder<ItemID>()
 
         let vm = makePlayerVM(
@@ -214,40 +185,10 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.isEmpty)
     }
 
-    @Test("engine routing follows the DELIVERED hints and asks the factory for the matching engine",
-          arguments: RoutingCase.allCases)
-    fileprivate func engineRoutingFollowsDeliveredHints(routing: RoutingCase) async {
-        let resolved: ResolvedPlayback = switch routing {
-        case .transcodedMKVDeliversHLS: PlayerFixtures.resolvedTranscodedMKV()
-        case .vc1MKVDirectPlay: PlayerFixtures.resolvedVC1MKV()
-        case .vc1MKVWithAACAudio: PlayerFixtures.resolvedVC1MKV(audioCodec: .aac)
-        case .vp9WebMDirectPlay: PlayerFixtures.resolvedVP9WebM()
-        }
-        let expected = routing.expected
-        // The factory hands back the fake regardless of the id it's asked for, so the
-        // captured id — not the fake's own — is the routing evidence.
-        let engine = FakePlaybackEngine(id: expected.engine, capabilities: .avKit)
-        nonisolated(unsafe) var requestedEngineID: PlaybackEngineID?
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in resolved },
-            engineFactory: { id, _ in requestedEngineID = id; return engine }
-        )
-
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        #expect(requestedEngineID == expected.engine)
-        #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
-        let asset = engine.loadedAssets.first
-        #expect(asset != nil)
-        #expect(asset?.hints.container == expected.container)
-        #expect(asset?.hints.videoCodec == expected.videoCodec)
-        #expect(engine.calls.contains("play"))
-    }
-
     @Test("teardown reports stopped and finishes the engine")
     func teardownReportsStopped() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
@@ -265,7 +206,7 @@ struct PlayerViewModelTests {
     @Test("chapterFractions is empty until a duration beat, then maps chapters to 0...1")
     func chapterFractionsTrackDuration() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         // Chapters at 0 / 600 / 1200s; the duration arrives only with the engine beat.
@@ -289,7 +230,7 @@ struct PlayerViewModelTests {
     @Test("chapterFractions clears on stop")
     func chapterFractionsClearOnStop() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 300], runtime: .seconds(600)))
@@ -304,7 +245,7 @@ struct PlayerViewModelTests {
     @Test("availableAudio/SubtitleTracks start empty and populate on .ready")
     func trackStatePopulatesOnReady() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -334,7 +275,7 @@ struct PlayerViewModelTests {
     @Test(".ready seeds the engine's default-selected audio/subtitle so the menu shows a checkmark")
     func readySeedsDefaultSelection() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -359,7 +300,7 @@ struct PlayerViewModelTests {
     @Test("direct-play: a server-preferred EXTERNAL sub deselects the engine subtitle so an embedded default can't show through the client overlay")
     func directPlayExternalSubtitleDeselectsEngine() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayExternalSub()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -372,7 +313,7 @@ struct PlayerViewModelTests {
         // The external sidecar is the active selection…
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
         // …and the engine was told to drop its own subtitle. Before the fix the
-        // server-preferred path skipped this deselect, so VLC's auto-picked embedded
+        // server-preferred path skipped this deselect, so the engine's auto-picked embedded
         // sub rendered THROUGH the overlay (two subtitles); only re-picking cleared it.
         #expect(engine.calls.contains("setSubtitleTrack(nil)"))
     }
@@ -380,21 +321,21 @@ struct PlayerViewModelTests {
     @Test("direct-play: a server-preferred EXTERNAL sub wins even when the engine already auto-selected an embedded sub (the residual double-subtitle race)")
     func directPlayExternalSubtitleOverridesEnginePreselectedEmbedded() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayExternalSub()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        // The race the prior fix left open: by the time .ready lands, VLC has ALREADY
+        // The race the prior fix left open: by the time .ready lands, the engine has ALREADY
         // discovered AND auto-selected an embedded text track, so the inventory carries it
         // and marks it selected. The server's default is still the EXTERNAL sidecar (index
         // 2). The engine's embedded pick must NOT win the `selectedSubtitleTrack == nil`
         // guard and strand the external default.
         let inventory = TrackInventory(
-            audio: [AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en")],
-            subtitles: [SubtitleTrack(id: .vlc("s1"), displayName: "English (embedded)", languageCode: "en", isForced: false)],
-            selectedAudioID: .vlc("a1"),
-            selectedSubtitleID: .vlc("s1")
+            audio: [AudioTrack(id: .avKitOption(0), displayName: "English", languageCode: "en")],
+            subtitles: [SubtitleTrack(id: .avKitOption(0), displayName: "English (embedded)", languageCode: "en", isForced: false)],
+            selectedAudioID: .avKitOption(0),
+            selectedSubtitleID: .avKitOption(0)
         )
         engine.push(.ready(duration: resolved.runtime!, tracks: inventory))
         try await engine.settle()
@@ -408,7 +349,7 @@ struct PlayerViewModelTests {
     @Test("transcode: menus come from MediaStreams; selecting audio re-resolves at position with that index")
     func transcodeAudioSwitch() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?, start: CMTime?)] = []
@@ -460,7 +401,7 @@ struct PlayerViewModelTests {
     @Test("transcode: the PGS image sub is offered as an opt-in burn-in entry, labeled, and never auto-defaulted; the sidecar URL map still excludes it")
     func transcodeMenuIncludesBurnInImageSubtitle() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // Point the server's own default AT the image sub — opt-in means this must
         // NOT auto-apply (a surprise re-encode on first play with no user action).
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: 7)
@@ -490,7 +431,7 @@ struct PlayerViewModelTests {
     @Test("transcode: picking the PGS burn-in entry re-resolves with that subtitleStreamIndex — no sidecar fetch")
     func selectingBurnInSubtitleReResolves() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // No server default sub — isolates the explicit pick.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
@@ -530,7 +471,7 @@ struct PlayerViewModelTests {
     @Test("transcode: a re-resolve names its media source, and only a burn-in withdraws video stream copy")
     func reResolveCarriesSourceAndCopyIntent() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var selections: [StreamSelection?] = []
@@ -566,7 +507,7 @@ struct PlayerViewModelTests {
     @Test("transcode: a burn-in the server declines to encode rolls back and surfaces the failure")
     func declinedBurnInRollsBack() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // The server answers "Hls" for the image sub — i.e. it never agreed to burn anything in.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
             defaultSubtitleStreamIndex: nil,
@@ -606,7 +547,7 @@ struct PlayerViewModelTests {
     @Test("transcode: leaving an active burn-in for Off re-resolves with the 'no subtitle' sentinel — the server must stop re-encoding the image in")
     func leavingBurnInForOffReResolves() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
@@ -644,7 +585,7 @@ struct PlayerViewModelTests {
     @Test("transcode: leaving an active burn-in for a text sub re-resolves, then activates the sidecar once the reload lands")
     func leavingBurnInForTextSubReResolvesThenActivatesSidecar() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
@@ -685,7 +626,7 @@ struct PlayerViewModelTests {
     @Test("transcode: Off from an active TEXT sub stays the cheap no-reload path (regression guard against always-reloading)")
     func offFromTextSubStaysNoReload() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls = 0
@@ -718,7 +659,7 @@ struct PlayerViewModelTests {
     @Test("a burn-in switch that falls back restores the previously-active sidecar: selection AND cues re-arm")
     func burnInSwitchFailureRestoresSidecarSubtitle() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls = 0
@@ -763,7 +704,7 @@ struct PlayerViewModelTests {
 
     @Test("a transcode seek goes in-stream with or without a sidecar up, and a sidecar pick after one spends no reload")
     func transcodeSeekStaysInStream() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // No server-default subtitle, so the first seek runs with no sidecar up.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
@@ -798,7 +739,7 @@ struct PlayerViewModelTests {
     @Test("delivery probe schedule exhausted with no result: transcodeDelivery stays nil and the exhausted flag flips")
     func deliveryProbeScheduleExhaustedStaysNil() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let clock = TestClock()
         let vm = makePlayerVM(
@@ -829,7 +770,7 @@ struct PlayerViewModelTests {
     @Test("scrub commit on direct play: in-stream engine.seek + resume — no re-anchor, byte-identical to the old path")
     func commitSeekDirectPlayInStream() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
             reporting: reporting,
@@ -852,19 +793,19 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
     }
 
-    /// The wmv/SMB VLC shape, and the whole reason the label is three-valued. While libvlc's
-    /// clock is still republishing at the new offset the engine publishes its own extrapolation
-    /// off the commit target: `.projected` — a guess about *landing*, but an honest statement
+    /// The whole reason the label is three-valued. While an engine's clock is still
+    /// republishing at the new offset, it may publish its own extrapolation off the commit
+    /// target: `.projected` — a guess about *landing*, but an honest statement
     /// about the PICTURE, which is already running from the target. So the bar follows it, and
     /// advances with the video for the whole hold instead of freezing at the commit for up to
-    /// ten polls (which is what a single boolean forced, while the libass overlay tracked
-    /// `displayClockMs` and moved anyway). A `.stale` beat in the same window is the opposite
+    /// ten polls (which is what a single boolean forced, while the subtitle overlay tracked
+    /// the clock and moved anyway). A `.stale` beat in the same window is the opposite
     /// claim — the engine's clock, still reading pre-seek — and touches nothing. Neither
     /// releases: only an observed clock does.
     @Test("projected beats walk the bar forward through the hold; stale beats are ignored; observed releases")
     func scrubCommitFollowsProjectedBeatsAndIgnoresStaleOnes() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
@@ -903,7 +844,7 @@ struct PlayerViewModelTests {
     @Test("projected beats move the bar but never the resume point — that stays the commit target")
     func projectedBeatsNeverMoveTheResumePoint() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
@@ -927,7 +868,7 @@ struct PlayerViewModelTests {
     @Test("scrub commit on direct play while paused: seek only, no resume — a paused scrub stays paused")
     func commitSeekDirectPlayPausedStaysPaused() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
@@ -998,8 +939,8 @@ struct PlayerViewModelTests {
 
     /// The engine is AUTHORITATIVE about an observed beat, even one that landed nowhere near
     /// the request: AVKit's load-time resume lands on its segment's first frame, an AVKit seek
-    /// only knows that `AVPlayer` returned `finished`, and a VLC hold that gave up republishes whatever the clock really
-    /// reads. Pinning the bar at an unreachable target over video that is demonstrably playing
+    /// only knows that `AVPlayer` returned `finished`, and a hold that gave up republishes whatever
+    /// the clock really reads. Pinning the bar at an unreachable target over video that is demonstrably playing
     /// elsewhere is the worse lie — which is exactly what the old 3s drift tolerance did until
     /// it had also burned a stale-beat budget.
     @Test("an observed beat far off the target still releases — onto the engine's position",
@@ -1069,7 +1010,7 @@ struct PlayerViewModelTests {
     @Test("a paused beat during a cold start neither lifts the veil nor opens the session")
     func pausedBeatDuringColdStartOpensNothing() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting, engine: engine,
                               resolved: PlayerFixtures.resolvedTranscodedMKV())
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1264,10 +1205,10 @@ struct PlayerViewModelTests {
     }
 
     /// A paused scrub's re-anchor is re-paused by `commitSeek` and may never emit
-    /// `.playing` at all. On VLC a seek committed while paused keeps projecting until playback
-    /// resumes — its extrapolation freezes ON the target, which IS the correct paused
-    /// position — so a `.projected` `.paused` AT the target is not a wedge, it is the contract
-    /// working; AVKit's `.paused` in the same window carries the pre-seek clock, `.stale`.
+    /// `.playing` at all. An engine that projects a seek committed while paused freezes its
+    /// extrapolation ON the target, which IS the correct paused position, so a `.projected`
+    /// `.paused` AT the target is not a wedge, it is the contract working; AVKit's `.paused`
+    /// in the same window carries the pre-seek clock, `.stale`.
     /// Neither releases. `SeekHold.watchdog` is the only thing that ever ends such a hold, and
     /// it ends it without adopting a position — so the bar stays on the target either way.
     @Test("held .paused beats hold — the stale pre-seek clock and the projected target alike")
@@ -1297,7 +1238,7 @@ struct PlayerViewModelTests {
     /// committed out-of-buffer seek. The label says "a seek is in flight" outright.
     @Test("a committed seek's own buffering echo raises the seek-fetch scrim immediately, debounce skipped")
     func heldCommitRaisesTheSeekFetchScrimOnItsOwnBufferingBeat() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
             engine: engine
@@ -1324,7 +1265,7 @@ struct PlayerViewModelTests {
     /// engine's own label needs neither.
     @Test("a stale buffering beat with NO hold armed raises the seek-fetch scrim immediately")
     func uncommittedSeekRaisesTheScrimWithoutAHold() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(600))
@@ -1343,7 +1284,7 @@ struct PlayerViewModelTests {
     /// keeps the 400 ms debounce and a brief one never flashes the scrim.
     @Test("an observed contiguous buffering beat still goes through the 400 ms debounce")
     func observedBufferingBeatStillDebounces() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let clock = TestClock()
         let vm = makePlayerVM(clock: clock, resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1366,7 +1307,7 @@ struct PlayerViewModelTests {
     /// test stays as the OR arm beside the label.
     @Test("an observed buffering beat a jump away raises the seek-fetch scrim immediately")
     func observedBufferingBeatAfterAJumpRaisesTheScrim() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(600))
@@ -1387,7 +1328,7 @@ struct PlayerViewModelTests {
     @Test("a stale beat with no hold armed moves nothing; the next observed beat owns the bar")
     func staleBeatWithNoHoldIsDropped() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting,
                               resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1469,14 +1410,14 @@ struct PlayerViewModelTests {
 
     /// The no-hold route is not a safe place to relax the rule. A `.projected` beat with no
     /// hold armed is still a guess off a seek target — the VM's own watchdog drops a wedged
-    /// hold at 35s while VLC keeps extrapolating to its 15s abandon cap, and PiP/remote scrubs
+    /// hold at 35s while an engine may keep extrapolating, and PiP/remote scrubs
     /// project against seeks this VM never committed. Display-safe, so the bar follows it;
     /// never a resume point, because "how far the guess has run" is not a place anything
     /// played. `publish` used to write both here.
     @Test("a projected beat with no hold armed moves the bar but never the resume point")
     func projectedBeatWithNoHoldNeverMovesTheResumePoint() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting,
                               resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1630,7 +1571,7 @@ struct PlayerViewModelTests {
           arguments: [CMTime.invalid, CMTime.indefinite,
                                           CMTime.positiveInfinity, CMTime.negativeInfinity])
     func nonFinitePositionsAreDropped(position: CMTime) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(600))
@@ -1737,7 +1678,7 @@ struct PlayerViewModelTests {
 
     @Test("in-buffer direct play gets the same treatment: the target shows at commit, the first observed beat releases")
     func seekHoldOnDirectPlayInStreamSeek() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
             engine: engine
@@ -1760,8 +1701,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var engines: [FakePlaybackEngine] = []
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in PlayerFixtures.resolvedMultiTrackTranscode() },
-            engineFactory: { _, _ in
-                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            engineFactory: {
+                let engine = FakePlaybackEngine()
                 engines.append(engine)
                 return engine
             }
@@ -1847,7 +1788,7 @@ struct PlayerViewModelTests {
     /// highlight walks with a step or a swipe and hands back on a cancel, like the bar.
     @Test("the current chapter follows the virtual position")
     func currentChapterFollowsTheVirtualPosition() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: StubPlaybackReporting(), engine: engine,
                               resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 600, 1200],
@@ -1966,7 +1907,7 @@ struct PlayerViewModelTests {
     /// bar renders its indeterminate form with no fill to sweep.
     @Test("an unknown runtime has no delta, hold or not")
     func seekSpanNeedsAKnownRuntime() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(600, duration: .indefinite))
@@ -2131,7 +2072,7 @@ struct PlayerViewModelTests {
     /// `.projected` is the engine's estimate off its OWN seek target, which the seek-settle
     /// contract calls display-safe: the picture is at, or running from, it. So the flight stops
     /// hiding a jump at that beat — the concrete indicator follows the clock again instead of
-    /// claiming the video sat at A for the whole settle window (~5 s on a VLC re-anchor), and
+    /// claiming the video sat at A for the whole settle window (seconds on a transcode re-anchor), and
     /// the next scrub chains from where the picture really is.
     @Test("a projected beat lands the flight: the honest position is the clock again")
     func aProjectedBeatAdvancesTheFlightToLanding() async throws {
@@ -2167,7 +2108,7 @@ struct PlayerViewModelTests {
 
     @Test("scrub commit while paused on a transcode, far past the buffer: in-stream seek only, no reload, no resume")
     func commitSeekTranscodePausedStaysPaused() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolveCalls += 1; return PlayerFixtures.resolvedMultiTrackTranscode() },
@@ -2197,7 +2138,7 @@ struct PlayerViewModelTests {
     @Test("a reload resolve wedged past the deadline falls back to the still-mounted stream instead of a stuck scrim")
     func reanchorResolveDeadlineFallsBack() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var resolveCalls = 0
@@ -2249,7 +2190,7 @@ struct PlayerViewModelTests {
     @Test("an engine-reusing reload freezes the surface's last frame; the swapped-in session's first .playing beat releases it exactly once")
     func reloadFreezesSurfaceUntilFirstLiveBeat() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
@@ -2286,7 +2227,7 @@ struct PlayerViewModelTests {
     @Test("a PAUSED player's reload releases the held frame on the .paused beat — the re-paused session never emits .playing")
     func pausedReanchorReleasesFrozenFrameOnPausedBeat() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
@@ -2318,7 +2259,7 @@ struct PlayerViewModelTests {
     @Test("delivery re-fetches after a track switch — burn-in can flip a video-copy remux to a re-encode")
     func deliveryRefetchesOnTrackSwitch() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         // First session remuxes (video copy); the post-switch session re-encodes it.
         let deliveries = [
@@ -2362,7 +2303,7 @@ struct PlayerViewModelTests {
     @Test("transcode resumes by client seek: the asset carries the offset and a switch resumes at the live position (no origin double-count)")
     func transcodeResumeSeeksClientSide() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // Resolve resuming at 600s. Jellyfin's transcode is a full-timeline playlist
         // that ignores StartTimeTicks for the offset, so the engine must SEEK there.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
@@ -2405,8 +2346,8 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _ in resolved },
-            engineFactory: { _, _ in
-                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            engineFactory: {
+                let engine = FakePlaybackEngine()
                 createdEngines.append(engine)
                 return engine
             }
@@ -2427,236 +2368,16 @@ struct PlayerViewModelTests {
         #expect((vm.engine as? FakePlaybackEngine) === engineAfterStart)         // same instance, reloaded
         #expect(engineAfterStart.loadedAssets.count == 2)                        // start load + switch reload
         #expect(!engineAfterStart.calls.contains("teardown"))                    // never torn down across the swap
-        #expect(engineAfterStart.calls.contains("silence"))                      // frame frozen + audio killed at selection
-    }
-
-    /// libvlc instance arguments are fixed when the player is built, so the reload guard
-    /// has to compare them — but only for the engine that is actually built with them.
-    /// AVFoundation draws its own subtitles and the factory drops the arguments for it, so
-    /// a transcode reload must keep reusing the AVKit engine even across a restyle:
-    /// rebuilding would tear down the AVPlayer, and with it the held frame the reuse path
-    /// exists to preserve.
-    @Test("a transcode reload keeps its AVKit engine across a subtitle restyle",
-          arguments: [SubtitleFontDesign.sansSerif, .serif])
-    func transcodeReloadKeepsTheEngineAcrossARestyle(switchedTo design: SubtitleFontDesign) async throws {
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-
-        let style = Mutex(SubtitleStyle.standard.with { $0.fontDesign = .sansSerif })
-        nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
-        nonisolated(unsafe) var factoryOptions: [[String]?] = []
-        let vm = makePlayerVM(
-            reporting: StubPlaybackReporting(),
-            resolve: { _, _, _, _ in resolved },
-            engineFactory: { _, options in
-                factoryOptions.append(options)
-                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-                createdEngines.append(engine)
-                return engine
-            },
-            subtitleStyle: { style.withLock { $0 } }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        let engineAfterStart = try #require(vm.engine as? FakePlaybackEngine)
-        #expect(createdEngines.count == 1)
-        // Nothing VLC-shaped is handed to an engine that cannot read it.
-        #expect(factoryOptions.first ?? nil == nil)
-
-        createdEngines[0].push(.playing(100))
-        try await createdEngines[0].settle()
-
-        style.withLock { $0 = SubtitleStyle.standard.with { $0.fontDesign = design } }
-        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
-        await vm.selectAudioTrack(audio4)
-
-        #expect(createdEngines.count == 1)
-        #expect((vm.engine as? FakePlaybackEngine) === engineAfterStart)
-    }
-
-    /// A view model whose SECOND resolve answers with a direct-play VC-1 MKV. The server
-    /// picks the delivery per request, so a track switch's re-resolve can come back with a
-    /// stream the engine in hand cannot play — VC-1 routes to VLC, the transcode it
-    /// replaces ran on AVKit — and the reload must BUILD an engine instead of reloading
-    /// the live one. The rebuild branch every other reload test deliberately avoids.
-    private func makeEngineRebuildVM() -> (vm: PlayerViewModel, engines: EngineLedger) {
-        let ledger = EngineLedger()
-        // No server default subtitle: nothing may auto-apply between the two resolves the
-        // test counts.
-        let transcode = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
-        nonisolated(unsafe) var resolveCount = 0
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in
-                resolveCount += 1
-                return resolveCount == 1 ? transcode : PlayerFixtures.resolvedVC1MKV()
-            },
-            engineFactory: { id, _ in ledger.make(id) }
-        )
-        return (vm, ledger)
-    }
-
-    /// Drives `makeEngineRebuildVM` to the point of the switch: the session is playing on
-    /// the AVKit transcode engine and the VC-1 audio track is picked out, so the caller only
-    /// has to trigger the switch that rebuilds.
-    private func startEngineRebuildVM() async throws -> (
-        vm: PlayerViewModel, engines: EngineLedger,
-        outgoing: FakePlaybackEngine, switchTo: AudioTrack
-    ) {
-        let (vm, engines) = makeEngineRebuildVM()
-        await vm.start(item: PlayerFixtures.movieDetail())
-        let outgoing = try #require(vm.engine as? FakePlaybackEngine)
-        try #require(outgoing.id == .avKit)
-        outgoing.push(.playing(100))
-        try await outgoing.settle()
-        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
-        return (vm, engines, outgoing, audio4)
-    }
-
-    @Test("a reload that must change engines retires the outgoing engine")
-    func engineRebuildRetiresTheOutgoingEngine() async throws {
-        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
-        await vm.selectAudioTrack(audio4)
-
-        // A new engine, and the old one really retired: a bare reference swap would leave
-        // it decoding (VLC keeps its audio running), its progress task ticking and its
-        // delegate wired — two streams playing at once.
-        #expect(engines.count == 2)
-        let incoming = try #require(vm.engine as? FakePlaybackEngine)
-        #expect(incoming !== outgoing)
-        #expect(incoming.id == .vlcKit)
-        #expect(incoming.calls.contains("load"))
-        #expect(incoming.calls.contains("play"))
-        // The audio cut leads the swap and the teardown follows it — the whole point of
-        // splitting them: silence is owed to the user NOW, the teardown is owed to nobody.
-        await waitUntil { outgoing.calls.contains("teardown") }
-        let cut = try #require(outgoing.calls.firstIndex(of: "endAudio"))
-        let torn = try #require(outgoing.calls.firstIndex(of: "teardown"))
-        #expect(cut < torn)
-    }
-
-    /// The outgoing engine's audio must be dead before the replacement opens its own: two
-    /// decoders feeding one output is the audible defect a rebuild has to avoid, and it is
-    /// the ONLY part of retiring an engine the swap is allowed to wait for.
-    @Test("the outgoing engine's audio is cut before the incoming engine loads")
-    func rebuildCutsOutgoingAudioBeforeTheIncomingLoads() async throws {
-        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
-        outgoing.hold(.endAudio)
-
-        let switching = Task { await vm.selectAudioTrack(audio4) }
-        await waitUntil { outgoing.hasParked(.endAudio) }
-
-        // Parked INSIDE the swap: the cut is recorded, the replacement has not loaded, and
-        // the slot still holds the outgoing engine — never nil, so the video host stays
-        // mounted over the frozen frame for the whole rebuild.
-        #expect(outgoing.calls.contains("endAudio"))
-        #expect(vm.engine === outgoing)
-        #expect(!engines.live.calls.contains("load"))
-
-        outgoing.release(.endAudio)
-        await switching.value
-
-        let incoming = try #require(vm.engine as? FakePlaybackEngine)
-        #expect(incoming !== outgoing)
-        #expect(incoming.calls.first == "load")
-    }
-
-    /// The retirement is a tracked background task, not a step of the swap: the picture
-    /// comes back as soon as the replacement is loaded, however long VLC takes to wind the
-    /// old player down (multi-second on a parked SMB read). `stop()` is what pays that debt.
-    @Test("a parked teardown holds up neither the swap nor the view model — but stop() waits for it")
-    func aParkedTeardownDelaysOnlyTheDrain() async throws {
-        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
-        outgoing.hold(.teardown)
-
-        await vm.selectAudioTrack(audio4)
-
-        // The switch returned with the replacement live and playing…
-        #expect(engines.count == 2)
-        let incoming = try #require(vm.engine as? FakePlaybackEngine)
-        #expect(incoming !== outgoing)
-        #expect(incoming.calls.contains("play"))
-        // …while the outgoing teardown is still parked.
-        await waitUntil { outgoing.hasParked(.teardown) }
-        #expect(outgoing.hasParked(.teardown))
-
-        // Session end drains it: `stop()` cannot return while a retirement is outstanding,
-        // or a teardown would outlive the session that started it.
-        nonisolated(unsafe) var stopReturned = false
-        let stopping = Task { await vm.stop(); stopReturned = true }
-        for _ in 0..<50 { await Task.yield() }
-        #expect(stopReturned == false, "stop() returned with a teardown still in flight")
-
-        outgoing.release(.teardown)
-        await stopping.value
-        #expect(vm.engine == nil)
-        #expect(outgoing.calls.contains("teardown"))
-        #expect(incoming.calls.contains("teardown"))
-    }
-
-    /// The transport intent the user expressed DURING the rebuild owns the session that
-    /// comes out of it. The reload's own `play()` is mechanical — a track switch resumes
-    /// because it must — so a pause that landed while the engine was being replaced has to
-    /// survive it, or a lock-screen pause mid-switch comes back playing.
-    @Test("a pause issued during the rebuild is honored by the rebuilt engine")
-    func aPauseDuringTheRebuildSurvivesIt() async throws {
-        let (vm, _, outgoing, audio4) = try await startEngineRebuildVM()
-        outgoing.hold(.endAudio)
-
-        let switching = Task { await vm.selectAudioTrack(audio4) }
-        await waitUntil { outgoing.hasParked(.endAudio) }
-
-        // The lock screen's pause, landing inside the swap. It is accepted because the slot
-        // is never empty: a nil engine here makes `setPlaying` return without even recording
-        // the intent, and the rebuilt engine then comes up playing against it.
-        vm.setPlaying(false)
-        #expect(vm.desiredPlaying == false)
-
-        outgoing.release(.endAudio)
-        await switching.value
-
-        let incoming = try #require(vm.engine as? FakePlaybackEngine)
-        #expect(vm.desiredPlaying == false)
-        #expect(incoming.calls.last == "pause")
-    }
-
-    /// The race the identity guard in `handle(_:from:)` exists for: a beat already pulled
-    /// from the outgoing engine's stream, suspended on its hop to the view model while the
-    /// replacement is installed. Cancelling a subscription cannot recall a state already in
-    /// flight, so nothing but the guard stops the dead session from writing its clock (and
-    /// its phase) over the live one's.
-    @Test("a beat from the replaced engine never reaches the view model's state")
-    func replacedEngineBeatsAreIgnored() async throws {
-        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
-
-        // In flight before the switch, held between the stream and the consumer.
-        outgoing.hold(.beat)
-        let delivered = outgoing.deliveredBeats
-        outgoing.push(.playing(4_242))
-        await waitUntil { outgoing.hasParked(.beat) }
-
-        await vm.selectAudioTrack(audio4)
-        #expect(engines.count == 2)
-
-        // The new session owns the bar.
-        let incoming = try #require(vm.engine as? FakePlaybackEngine)
-        incoming.push(.playing(7))
-        try await incoming.settle()
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 7)
-
-        // Now let the replaced engine's beat land. `settle()` can't be the barrier here —
-        // the outgoing subscription is cancelled, so it never comes back for another
-        // element and its processed count can never advance again; delivery is what is
-        // observable, and the yields cover the handler's hop after it.
-        outgoing.release(.beat)
-        await waitUntil { outgoing.deliveredBeats > delivered }
-        for _ in 0..<50 { await Task.yield() }
-
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 7)
-        #expect(vm.phase == .playing)
+        let calls = engineAfterStart.calls
+        let startLoad = try #require(calls.firstIndex(of: "load"))
+        let reload = try #require(calls.lastIndex(of: "load"))
+        #expect(calls[startLoad..<reload].contains("pause"))                      // audio cut before the reload loads
     }
 
     @Test("transcode: subtitle selection is isolated — an explicit sub survives an audio switch; none stays none")
     func transcodeSubtitleIsolation() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // No server default subtitle: this test is about EXPLICIT selection
         // isolation, so nothing may be auto-applied at start.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
@@ -2697,7 +2418,7 @@ struct PlayerViewModelTests {
     @Test("transcode: picking a text subtitle fetches + loads the sidecar into the client renderer (no re-resolve); Off clears it")
     func transcodeSidecarSubtitle() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
 
@@ -2733,7 +2454,7 @@ struct PlayerViewModelTests {
     @Test("transcode: an .ass sidecar whose verbatim fetch fails falls back to the server's VTT conversion")
     func assSidecarFallsBackToVTTConversion() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         // The resolve hands out an ORIGINAL-format URL (authored styling preserved)…
         // No server default: the auto-activation on start() would otherwise run the
         // same fetch+fallback pair once before the explicit pick below.
@@ -2791,7 +2512,7 @@ struct PlayerViewModelTests {
             },
           ])
     func styleReachesConvertedTracksOnly(style: SubtitleStyle) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
         let converted = Self.convertedAppearance(style)
 
@@ -2808,7 +2529,7 @@ struct PlayerViewModelTests {
     /// given nothing for it.
     @Test("an authored sidecar loads and is never given a style override")
     func authoredSidecarTakesNoOverride() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?ApiKey=abc")!
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
             defaultSubtitleStreamIndex: nil, chineseSidecarURL: assURL
@@ -2852,7 +2573,7 @@ struct PlayerViewModelTests {
 
     @Test("direct play: an embedded TEXT pick installs the client renderer (the engine draws nothing)")
     func embeddedTextPickInstallsTheClientRenderer() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
         let srt = Data("1\n00:00:01,000 --> 00:00:03,000\nEmbedded line\n".utf8)
 
@@ -2867,7 +2588,7 @@ struct PlayerViewModelTests {
         // must win, so the text one carries a `.jellyfinStream` id and a sidecar URL.
         engine.push(.ready(duration: resolved.runtime!, tracks: TrackInventory(
             audio: [],
-            subtitles: [SubtitleTrack(id: .vlc("vlc-s0"), displayName: "Track 1",
+            subtitles: [SubtitleTrack(id: .avKitOption(0), displayName: "Track 1",
                                       languageCode: "en", isForced: false)]
         )))
         try await engine.settle()
@@ -2890,7 +2611,7 @@ struct PlayerViewModelTests {
 
     @Test("direct play: an IMAGE pick burns in server-side — no fetch, no client renderer")
     func embeddedImagePickDoesNotInstallARenderer() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
 
         nonisolated(unsafe) var resolveCount = 0
@@ -2919,7 +2640,7 @@ struct PlayerViewModelTests {
 
     @Test("selecting a new sidecar drops the previous track's cues before the fetch, not after")
     func activatingASidecarClearsTheOutgoingCuesImmediately() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
         let srt = Data("1\n00:00:01,000 --> 00:00:03,000\nEnglish line\n".utf8)
         // The SECOND track's fetch never lands. That window — a cold embedded stream
@@ -2962,7 +2683,7 @@ struct PlayerViewModelTests {
 
     @Test("re-selecting a track already fetched this session costs no second request")
     func sidecarBytesAreCachedForTheSession() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
         let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
 
@@ -3003,7 +2724,7 @@ struct PlayerViewModelTests {
         // This is the regression guard: if subtitleURLs isn't populated from resolved,
         // the lookup misses and no renderer is ever installed.
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         // The expected subtitle URL lives at resolved.subtitleStreamURLs[1].
         let expectedURL = try #require(resolved.subtitleStreamURLs[1])
@@ -3027,25 +2748,10 @@ struct PlayerViewModelTests {
         #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
     }
 
-    @Test("setSubtitleDelay forwards to the engine (VLC's live retime; AVKit's is a protocol no-op)")
-    func subtitleDelayForwardsToEngine() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = makePlayerVM(
-            reporting: reporting,
-            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
-            engine: engine
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        await vm.setSubtitleDelay(ms: 250)
-        #expect(engine.calls.contains("setSubtitleDelay(250)"))
-    }
-
     @Test("isPlaying tracks engine play/pause so the button can resume from pause")
     func isPlayingTracksPauseState() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3065,7 +2771,7 @@ struct PlayerViewModelTests {
     @Test("togglePlayPause flips isPlaying optimistically, before any engine beat")
     func togglePlayPauseIsOptimistic() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3090,7 +2796,7 @@ struct PlayerViewModelTests {
     @Test("spammed togglePlayPause coalesces — last intent wins at the engine")
     func togglePlayPauseSpamCoalesces() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3120,7 +2826,7 @@ struct PlayerViewModelTests {
     @Test("a scrub commit's transient beats never move what the transport surface shows")
     func scrubBeatsNeverMoveTheShownTransportState() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3133,7 +2839,7 @@ struct PlayerViewModelTests {
         await vm.commitSeek(to: CMTime(seconds: 100, preferredTimescale: 600))
         #expect(vm.desiredPlaying == true)
 
-        // wmv/VLC settle window: the drag's own `.paused` beat lands after the commit already
+        // Settle window: the drag's own `.paused` beat lands after the commit already
         // replayed play(), and the confirming `.playing` beat is up to ~5s out. The mirror
         // believes the stale beat; the shown state must not.
         engine.push(.paused(100, duration: resolved.runtime!))
@@ -3151,7 +2857,7 @@ struct PlayerViewModelTests {
     @Test("a remote (Now Playing) pause during a scrub commit shows immediately, not swallowed")
     func remoteCommandDuringScrubWins() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3179,7 +2885,7 @@ struct PlayerViewModelTests {
     /// inside the engine's lag window commanded the opposite of what the user asked for.
     @Test("togglePlayPause flips the user's intent, not the lagging engine mirror")
     func togglePlayPauseReadsIntentNotTheMirror() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3208,7 +2914,7 @@ struct PlayerViewModelTests {
     /// intent was still "playing" — so the press resumed instead of pausing.
     @Test("the remote toggle flips the user's intent, not the lagging Now Playing rate")
     func remoteToggleReadsIntentNotTheRate() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let nowPlaying = SpyNowPlaying()
         let vm = makePlayerVM(engine: engine, resolved: resolved, nowPlaying: nowPlaying)
@@ -3234,7 +2940,7 @@ struct PlayerViewModelTests {
 
     @Test("engine beats drive isPlaying but never the intent: the mirror lags, the intent doesn't")
     func engineBeatsNeverWriteIntent() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3263,7 +2969,7 @@ struct PlayerViewModelTests {
 
     @Test("scrub machinery pauses do NOT clear the intent: that's the whole point of surviving them")
     func scrubMachineryPauseKeepsIntent() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3281,7 +2987,7 @@ struct PlayerViewModelTests {
 
     @Test("a seek inside the engine's beat lag still resumes: intent outlives the stale isPlaying mirror")
     func commitSeekResumesAgainstStalePausedBeat() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3289,8 +2995,7 @@ struct PlayerViewModelTests {
         try await engine.settle()
 
         // First scrub: pause on the still frame, commit, resume. The engine's own beats lag
-        // that resume (VLC polls state every 500ms behind a seek-settlement gate; AVKit emits
-        // nothing until the re-buffer ends), so the drag's stale `.paused` lands AFTER the
+        // that resume (AVKit emits nothing until the re-buffer ends), so the drag's stale `.paused` lands AFTER the
         // commit already replayed play(); isPlaying reads false while playback is resuming.
         await vm.engine?.pause()
         await vm.commitSeek(to: CMTime(seconds: 100, preferredTimescale: 600))
@@ -3309,7 +3014,7 @@ struct PlayerViewModelTests {
 
     @Test("an explicit pause is honored across a stale .playing beat: a scrub there must NOT resume")
     func commitSeekHonorsExplicitPauseAgainstStalePlayingBeat() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3336,7 +3041,7 @@ struct PlayerViewModelTests {
 
     @Test("a reload's force-resume never registers as user intent: a paused track switch stays paused start to finish")
     func pausedReanchorNeverLeaksResumeIntent() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
@@ -3385,7 +3090,7 @@ struct PlayerViewModelTests {
 
     @Test("a natural end drops the intent: the next scrub can't resume a finished item")
     func endedBeatClearsIntent() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3403,7 +3108,7 @@ struct PlayerViewModelTests {
     /// Where a play/pause press lands relative to a scrub commit. Every one of these is a real
     /// window on device, and the commit is suspended across most of it: the coalescer fires
     /// ~400ms after the touch goes quiet, and the seek then parks for as long as the engine
-    /// takes — seconds on a transcode re-anchor or behind VLC's settle gate.
+    /// takes — seconds on a transcode re-anchor.
     enum PressPoint: CaseIterable {
         /// The finger is still down. A snapshot taken at finger-down is already stale here, and
         /// no counter of commands-since-dispatch can see it: the press happened BEFORE dispatch.
@@ -3423,7 +3128,7 @@ struct PlayerViewModelTests {
     @Test("the engine's transport agrees with the live intent however a press interleaves a scrub commit",
           arguments: PressPoint.allCases)
     func transportAgreesWithIntentAcrossACommit(at point: PressPoint) async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3466,7 +3171,7 @@ struct PlayerViewModelTests {
     @Test("a commit that lands under the next drag leaves the picture frozen until that drag ends",
           arguments: DragEnd.allCases)
     func aCommitUnderANewDragLeavesTheHoldToIt(end: DragEnd) async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3505,7 +3210,7 @@ struct PlayerViewModelTests {
     /// is driven end to end by `transportAgreesWithIntentAcrossACommit`.
     @Test("ending the scrub hold replays the LIVE intent, not the pre-scrub one")
     func endScrubHoldReplaysLiveIntent() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3548,7 +3253,7 @@ struct PlayerViewModelTests {
     /// picture, and nothing to heal it. Releasing the hold on every exit is what closes it.
     @Test("a Play pressed inside a paused scrub is honored when the scrub is cancelled")
     func playPressedInsideAPausedScrubSurvivesTheCancel() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3572,9 +3277,9 @@ struct PlayerViewModelTests {
 
     // MARK: - Exit: audio ends at the fence, and nothing after it may restart playback
 
-    @Test("beginExit ENDS audio rather than silencing it: silence leaves VLC's queued samples playing")
-    func beginExitEndsAudio() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+    @Test("beginExit pauses the engine on the spot")
+    func beginExitPausesTheEngine() async throws {
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3582,14 +3287,14 @@ struct PlayerViewModelTests {
         let before = engine.calls.count
         vm.beginExit()
         await waitUntil { engine.calls.count > before }
-        #expect(Array(engine.calls.dropFirst(before)) == ["endAudio"])
+        #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
     }
 
     /// The close button fences, then the presenter's `dismiss()` fences again through its
     /// exit handler. A session ends once.
     @Test("beginExit is idempotent: the presenter's second fence is inert")
     func beginExitIsIdempotent() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -3598,7 +3303,7 @@ struct PlayerViewModelTests {
         vm.beginExit()
         await waitUntil { engine.calls.count > before }
         await Task.yield()
-        #expect(Array(engine.calls.dropFirst(before)) == ["endAudio"])
+        #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
     }
 
     /// THE hole this closes: every scrub surface coalesces its commit (~400ms), so a drag
@@ -3609,7 +3314,7 @@ struct PlayerViewModelTests {
     @Test("a scrub commit landing after the exit fence never touches the engine",
           arguments: [true, false])
     func commitSeekIsFencedByExit(playing: Bool) async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3618,8 +3323,9 @@ struct PlayerViewModelTests {
 
         vm.setPlaying(playing)
         await vm.awaitTransportQuiescence()
+        let exitAt = engine.calls.count
         vm.beginExit()
-        await waitUntil { engine.calls.last == "endAudio" }
+        await waitUntil { engine.calls.dropFirst(exitAt).contains("pause") }
 
         let before = engine.calls.count
         await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
@@ -3635,7 +3341,7 @@ struct PlayerViewModelTests {
     /// catches that (no engine latch), so audio comes back for the rest of the slide-out.
     @Test("a commit suspended in its seek re-checks the fence before resuming")
     func commitSeekRechecksTheFenceAfterItsSeek() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3662,15 +3368,16 @@ struct PlayerViewModelTests {
     /// or on a transcode re-anchor a whole new encode, behind the dismissed player.
     @Test("a seek landing after the exit fence never touches the engine")
     func seekIsFencedByExit() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
+        let exitAt = engine.calls.count
         vm.beginExit()
-        await waitUntil { engine.calls.last == "endAudio" }
+        await waitUntil { engine.calls.dropFirst(exitAt).contains("pause") }
 
         let before = engine.calls.count
         let reanchored = await vm.seek(to: CMTime(seconds: 200, preferredTimescale: 600))
@@ -3683,7 +3390,7 @@ struct PlayerViewModelTests {
     /// the fence, not route around it.
     @Test("commitSeek inherits the exit fence")
     func commitSeekIsFencedByExit() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3691,8 +3398,9 @@ struct PlayerViewModelTests {
         try await engine.settle()
         #expect(vm.desiredPlaying == true)
 
+        let exitAt = engine.calls.count
         vm.beginExit()
-        await waitUntil { engine.calls.last == "endAudio" }
+        await waitUntil { engine.calls.dropFirst(exitAt).contains("pause") }
 
         let before = engine.calls.count
         await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
@@ -3706,15 +3414,16 @@ struct PlayerViewModelTests {
     @Test("a transport command landing after the exit fence never reaches the engine",
           arguments: [true, false])
     func setPlayingIsFencedByExit(playing: Bool) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
+        let exitAt = engine.calls.count
         vm.beginExit()
-        await waitUntil { engine.calls.last == "endAudio" }
+        await waitUntil { engine.calls.dropFirst(exitAt).contains("pause") }
 
         let before = engine.calls.count
         vm.setPlaying(playing)
@@ -3729,11 +3438,11 @@ struct PlayerViewModelTests {
     /// The other half of the race: the command arrives just BEFORE the fence, so its engine
     /// hop is already armed when the close button lands. `beginExit()` cancels it, and the
     /// task's own cancellation check sits ahead of the engine call. Ordering is deterministic
-    /// here: both tasks are enqueued on the MainActor, transport first, so "endAudio" landing
+    /// here: both tasks are enqueued on the MainActor, transport first, so the exit's "pause" landing
     /// proves the transport task already ran and chose to do nothing.
     @Test("a transport command armed just before the fence is cancelled by it")
     func armedTransportTaskIsCancelledByExit() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3745,21 +3454,20 @@ struct PlayerViewModelTests {
         let before = engine.calls.count
         vm.setPlaying(true)      // armed, not yet hopped
         vm.beginExit()           // same synchronous run: cancels it before it can
-        await waitUntil { engine.calls.last == "endAudio" }
-        #expect(Array(engine.calls.dropFirst(before)) == ["endAudio"])
+        await waitUntil { engine.calls.count > before }
+        #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
     }
 
     // MARK: - The exit freeze is terminal: no beat may uncover the closing vout
 
-    /// Beats keep coming after the fence. AVKit's default `endAudio()` funnels to `pause()`,
-    /// which yields a `.paused` beat synchronously; VLC's poll swallows the cancellation
-    /// `endAudio()` issues inside a `try?` sleep and runs one more tick. Either one used to
-    /// crossfade the exit still away mid-slide-out, onto a vout already closing under it: a
+    /// Beats keep coming after the fence. The exit's `pause()` yields a `.paused` beat
+    /// synchronously, and a progress tick already in flight
+    /// lands after it. Either one used to crossfade the exit still away mid-slide-out, onto a vout already closing under it: a
     /// visible cut to black.
     @Test("beats arriving after the exit fence never release the held frame",
           arguments: [true, false])
     func exitFreezeSurvivesLateBeats(playing: Bool) async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         nonisolated(unsafe) var freezeCalls = 0
@@ -3799,7 +3507,7 @@ struct PlayerViewModelTests {
     /// it right after it disarms the fence.
     @Test("a retry releases the frame the exit fence held through stop()")
     func retryReleasesHeldFrame() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved },
@@ -3825,10 +3533,10 @@ struct PlayerViewModelTests {
         #expect(unfreezeCalls == 1)
     }
 
-    @Test("buffered beat → bufferedFraction; nil beat (VLC) hides the layer; stop() clears it")
+    @Test("buffered beat → bufferedFraction; nil beat hides the layer; stop() clears it")
     func bufferedFractionTracksBeats() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -3841,7 +3549,7 @@ struct PlayerViewModelTests {
         let fraction = try #require(vm.bufferedFraction)
         #expect(abs(fraction - 0.5) < 0.001)
 
-        // A nil buffered beat (VLC path) must hide the layer, not freeze the last value.
+        // A nil buffered beat must hide the layer, not freeze the last value.
         engine.push(.paused(10, duration: duration))
         try await engine.settle()
         #expect(vm.bufferedFraction == nil)
@@ -3853,7 +3561,7 @@ struct PlayerViewModelTests {
     @Test("mid-stream stall: .buffering beats raise isStalled after the debounce; playing clears it edge-on")
     func stallDebounceLifecycle() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let clock = TestClock()
         let vm = makePlayerVM(reporting: reporting, clock: clock,
@@ -3909,7 +3617,7 @@ struct PlayerViewModelTests {
     @Test("transcode track switch closes the outgoing session before opening the next")
     func transcodeSwitchClosesOldSession() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
@@ -3939,7 +3647,7 @@ struct PlayerViewModelTests {
     @Test("transcode session pings its keepalive on the interval; stop() ends it; direct play never pings")
     func transcodeKeepalive() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let clock = TestClock()
         let vm = makePlayerVM(
@@ -3969,7 +3677,7 @@ struct PlayerViewModelTests {
             reporting: directReporting,
             clock: directClock,
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
-            engineFactory: { _, _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) }
+            engineFactory: { FakePlaybackEngine() }
         )
         await directVM.start(item: PlayerFixtures.movieDetail())
         #expect(!directClock.pendingSleeps.contains(SessionReporter.keepaliveInterval), "direct play armed a keepalive")
@@ -3980,7 +3688,7 @@ struct PlayerViewModelTests {
     @Test("a failed load kills the just-resolved encoding and stops its keepalive")
     func loadFailureTearsDownSessionLifecycle() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         engine.loadError = AppError.playback(.unsupportedFormat)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let clock = TestClock()
@@ -4063,7 +3771,7 @@ struct PlayerViewModelTests {
     @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")
     func audioTrackSelectionForwardsToEngine() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -4083,12 +3791,12 @@ struct PlayerViewModelTests {
     /// menu that claims otherwise.
     @Test("selectAudioTrack ignores a track the engine cannot decode")
     func unsupportedAudioTrackIsNotSelectable() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolvedVP9WebM())
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        let compatibility = AudioTrack(id: .vlc("1"), displayName: "English", languageCode: "en")
-        let trueHD = AudioTrack(id: .vlc("2"), displayName: "English", languageCode: "en",
+        let compatibility = AudioTrack(id: .avKitOption(0), displayName: "English", languageCode: "en")
+        let trueHD = AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en",
                                 detailLabel: "TrueHD · 7.1", isUnsupported: true)
         engine.push(.ready(
             duration: CMTime(seconds: 3600, preferredTimescale: 600),
@@ -4099,14 +3807,14 @@ struct PlayerViewModelTests {
         await vm.selectAudioTrack(compatibility)
         await vm.selectAudioTrack(trueHD)
 
-        #expect(vm.selectedAudioTrack?.id == .vlc("1"))
-        #expect(engine.selectedAudioTrackID == .vlc("1"))
+        #expect(vm.selectedAudioTrack?.id == .avKitOption(0))
+        #expect(engine.selectedAudioTrackID == .avKitOption(0))
     }
 
     @Test("selectSubtitleTrack nil deselects and forwards nil to engine")
     func subtitleTrackDeselect() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -4122,32 +3830,32 @@ struct PlayerViewModelTests {
         #expect(engine.selectedSubtitleTrackID == nil)
     }
 
-    @Test(".vlcKit engine tracks populate on .ready state")
-    func vlcEngineTrackStatePopulates() async throws {
-        let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makePlayerVM(engine: vlcEngine, resolved: PlayerFixtures.resolvedVP9WebM())
+    @Test("direct-play engine tracks populate on .ready state")
+    func directPlayEngineTrackStatePopulates() async throws {
+        let engine = FakePlaybackEngine()
+        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolvedVP9WebM())
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let inventory = TrackInventory(
-            audio: [AudioTrack(id: .vlc("vlc-a1"), displayName: "Deutsch", languageCode: "de")],
-            subtitles: [SubtitleTrack(id: .vlc("vlc-s1"), displayName: "ASS Sub", languageCode: "en", isForced: false)]
+            audio: [AudioTrack(id: .avKitOption(0), displayName: "Deutsch", languageCode: "de")],
+            subtitles: [SubtitleTrack(id: .avKitOption(0), displayName: "ASS Sub", languageCode: "en", isForced: false)]
         )
-        vlcEngine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
-        try await vlcEngine.settle()
+        engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
+        try await engine.settle()
 
         #expect(vm.availableAudioTracks.count == 1)
-        #expect(vm.availableAudioTracks[0].id == .vlc("vlc-a1"))
+        #expect(vm.availableAudioTracks[0].id == .avKitOption(0))
         #expect(vm.availableSubtitleTracks.count == 1)
     }
 
-    @Test("isPiPAvailable / isVideoAirPlayAvailable mirror the engine's capabilities")
-    func routeAvailabilityMirrorsCapabilities() async {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+    @Test("isPiPAvailable / isVideoAirPlayAvailable are on once an engine is loaded")
+    func routeAvailabilityFollowsTheEngine() async {
+        let engine = FakePlaybackEngine()
         let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
+        #expect(vm.isPiPAvailable == false)
+        #expect(vm.isVideoAirPlayAvailable == false)
         await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(vm.isPiPAvailable == engine.capabilities.supportsPiP)
-        #expect(vm.isVideoAirPlayAvailable == engine.capabilities.supportsVideoAirPlay)
-        // …and the fake's caps are the AVKit ones, so both flags read true here.
+        #expect(vm.engine != nil)
         #expect(vm.isPiPAvailable == true)
         #expect(vm.isVideoAirPlayAvailable == true)
     }
@@ -4155,7 +3863,7 @@ struct PlayerViewModelTests {
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
@@ -4176,7 +3884,7 @@ struct PlayerViewModelTests {
     @Test("transcode switch whose re-resolve fails reports stop exactly once — no double, no orphan")
     func transcodeSwitchResolveFailureReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var callCount = 0
@@ -4208,7 +3916,7 @@ struct PlayerViewModelTests {
     @Test("failed transcode switch falls back silently: playback resumes on the previous track, the failure is surfaced for retry")
     func transcodeSwitchFailureFallsBackSilently() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var callCount = 0
@@ -4248,7 +3956,7 @@ struct PlayerViewModelTests {
     @Test("a failed switch racing an exit abandons instead of resuming audio under the dismissed player")
     func transcodeSwitchFailureDuringExitAbandons() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         // The switch's re-resolve is where exit can race in: beginExit() lands while
@@ -4292,7 +4000,7 @@ struct PlayerViewModelTests {
     @Test("retryFailedTrackSwitch re-attempts the requested track and clears the failure on success")
     func retryFailedTrackSwitchReattempts() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var resolveCalls: [Int?] = []
@@ -4329,7 +4037,7 @@ struct PlayerViewModelTests {
     @Test("stop() clears a pending trackSwitchFailure")
     func stopClearsTrackSwitchFailure() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var callCount = 0
@@ -4357,9 +4065,7 @@ struct PlayerViewModelTests {
     @Test("a .failed state clears isPlaying")
     func failedStateClearsIsPlaying() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        // `.mkv` is outside ReactiveFallback's MP4-family set, so `.assetNotPlayable`
-        // stays terminal (no AVKit→VLC re-route) and we assert the real failed path.
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedTranscodedMKV()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -4380,7 +4086,7 @@ struct PlayerViewModelTests {
     /// wrong place. Same retryable scrim, honest sentence.
     @Test("a load timeout reads as a slow server, not a broken file")
     func loadTimeoutMapsToItsOwnMessage() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedTranscodedMKV()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -4395,7 +4101,7 @@ struct PlayerViewModelTests {
     @Test("start(itemID:) fetches the detail first, then plays it")
     func startByItemIDFetchesThenPlays() async {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         nonisolated(unsafe) var fetchedID: ItemID?
         let vm = makePlayerVM(
             reporting: reporting,
@@ -4411,7 +4117,7 @@ struct PlayerViewModelTests {
     @Test("start(itemID:) surfaces a fetch failure as .failed without resolving")
     func startByItemIDFetchFailure() async {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         nonisolated(unsafe) var didResolve = false
         let vm = makePlayerVM(
             reporting: reporting,
@@ -4428,7 +4134,7 @@ struct PlayerViewModelTests {
     @Test("exit during a slow resolve never builds or plays an engine")
     func exitDuringResolveNeverStartsPlayback() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
 
         // A resolve that parks until the test releases it — the exit lands mid-resolve,
         // exactly like dismissing the player while the PlaybackInfo call is in flight.
@@ -4442,7 +4148,7 @@ struct PlayerViewModelTests {
                 for await _ in gate { break }
                 return PlayerFixtures.resolved()
             },
-            engineFactory: { _, _ in engineBuilt = true; return engine }
+            engineFactory: { engineBuilt = true; return engine }
         )
 
         let startTask = Task { await vm.start(item: PlayerFixtures.movieDetail()) }
@@ -4462,7 +4168,7 @@ struct PlayerViewModelTests {
     @Test("stop() is idempotent — exit trigger + onDisappear backstop tear down once")
     func doubleStopTearsDownOnce() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -4482,7 +4188,7 @@ struct PlayerViewModelTests {
     @Test("retry() after a failed start disarms the exit fence and restarts playback")
     func retryDisarmsExitFence() async {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
 
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
@@ -4515,7 +4221,7 @@ struct PlayerViewModelTests {
         let fetches = CallRecorder<ItemID>()
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
-            engine: FakePlaybackEngine(id: .avKit, capabilities: .avKit),
+            engine: FakePlaybackEngine(),
             audioSession: GatedDeactivateAudioSession(gate: teardownGate),
             fetchDetail: { id in
                 fetches.append(id)
@@ -4550,7 +4256,7 @@ struct PlayerViewModelTests {
         @Test("PlayerViewModel publishes title/elapsed/rate to Now Playing on .playing")
         func vmPopulatesNowPlayingOnPlaying() async throws {
             let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let engine = FakePlaybackEngine()
             let resolved = PlayerFixtures.resolved()
             let nowPlaying = SpyNowPlaying()
             let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
@@ -4567,7 +4273,7 @@ struct PlayerViewModelTests {
         @Test("PlayerViewModel publishes a stopped rate to Now Playing on .paused")
         func vmSetsNowPlayingRateZeroOnPaused() async throws {
             let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let engine = FakePlaybackEngine()
             let resolved = PlayerFixtures.resolved()
             let nowPlaying = SpyNowPlaying()
             let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
@@ -4583,7 +4289,7 @@ struct PlayerViewModelTests {
         @Test("PlayerViewModel clears Now Playing on stop()")
         func vmClearsNowPlayingOnStop() async throws {
             let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let engine = FakePlaybackEngine()
             let resolved = PlayerFixtures.resolved()
             let nowPlaying = SpyNowPlaying()
             let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
@@ -4613,18 +4319,18 @@ struct PlayerViewModelTests {
             clock.advance(by: PlayerViewModel.backfillDelay)
         }
 
-        /// Records every `backfillThumbnail` invocation the VM drives — the `duration`/
-        /// `performsIO` arguments, plus whatever the test's own closure got back from calling
+        /// Records every `backfillThumbnail` invocation the VM drives — the `duration`
+        /// argument, plus whatever the test's own closure got back from calling
         /// the injected `captureFrame`. Actor-isolated: the VM calls in from its own low-priority
         /// backfill `Task`, off the MainActor test body.
         private actor BackfillRecorder {
-            typealias Invocation = (duration: Duration?, performsIO: Bool, data: Data?)
+            typealias Invocation = (duration: Duration?, data: Data?)
 
             private(set) var invocations: [Invocation] = []
             private var awaitingFirst: [CheckedContinuation<Invocation, Never>] = []
 
-            func record(duration: Duration?, performsIO: Bool, data: Data?) {
-                invocations.append((duration, performsIO, data))
+            func record(duration: Duration?, data: Data?) {
+                invocations.append((duration, data))
                 awaitingFirst.forEach { $0.resume(returning: invocations[0]) }
                 awaitingFirst = []
             }
@@ -4642,10 +4348,9 @@ struct PlayerViewModelTests {
         /// passed, plus whatever the VM's own capture closure returns, into `recorder`.
         private func recordingSink(
             into recorder: BackfillRecorder
-        ) -> @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void {
-            { duration, performsIO, captureFrame in
-                await recorder.record(
-                    duration: duration, performsIO: performsIO, data: await captureFrame())
+        ) -> @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void {
+            { duration, captureFrame in
+                await recorder.record(duration: duration, data: await captureFrame())
             }
         }
 
@@ -4659,7 +4364,7 @@ struct PlayerViewModelTests {
         /// predates.
         private func makeVM(
             engine: FakePlaybackEngine,
-            backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in }
+            backfillThumbnail: @escaping @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void = { _, _ in }
         ) -> PlayerViewModel {
             PlayerViewModel(
                 deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -4669,33 +4374,26 @@ struct PlayerViewModelTests {
                     Issue.record("SMB playback must not call the Jellyfin resolve")
                     throw AppError.playback(.unsupportedFormat)
                 },
-                engineFactory: { _, _ in engine },
+                engineFactory: { engine },
                 audioSession: NoopAudioSession(),
                 nowPlaying: SpyNowPlaying(),
                 subtitleFetch: { _ in .rejected },
                 smbResumeStore: SMBTestFixtures.inertResumeStore(),
-                backfillThumbnail: backfillThumbnail,
-                subtitleSurface: { PlayerFixtures.phoneSurface },
-                engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts
+                backfillThumbnail: backfillThumbnail
             )
         }
 
-        private func smbItem(hasTrustworthyDuration: Bool = true) -> SMBPlaybackItem {
+        private func smbItem() -> SMBPlaybackItem {
             SMBPlaybackItem(
                 itemID: ItemID(rawValue: "smb-backfill-item"),
-                url: URL(string: "smb://nas.local/Media/Movies/Backfill.mkv")!,
-                title: "Backfill",
-                vlcOptions: [],
-                hasTrustworthyDuration: hasTrustworthyDuration
+                url: URL(string: "http://127.0.0.1:8080/token/Backfill.mp4")!,
+                title: "Backfill"
             )
         }
 
         @Test("an SMB session's first .playing beat schedules exactly one backfill; a second .playing beat schedules none")
         func firstPlayingBeatSchedulesExactlyOneBackfill() async throws {
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-            // Flipped off the fake's default so the assertion below can't pass on `true == true`:
-            // the sink must report what THIS engine says, not the protocol default.
-            engine.captureFramePerformsIO = false
+            let engine = FakePlaybackEngine()
             let recorder = BackfillRecorder()
             let vm = makeVM(engine: engine, recorder: recorder)
 
@@ -4709,14 +4407,11 @@ struct PlayerViewModelTests {
 
             let invocations = await recorder.invocations
             #expect(invocations.count == 1)
-            // Threaded straight from `engine.captureFramePerformsIO`: the sink gates an I/O-issuing
-            // capture off non-LAN links, so a hardcoded value here would be a silent policy bypass.
-            #expect(invocations.first?.performsIO == false)
         }
 
         @Test("the engine's captured frame reaches the backfill sink's capture closure after the injected delay")
         func capturedFrameReachesSinkAfterDelay() async throws {
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let engine = FakePlaybackEngine()
             let frame = Data([0xAA, 0xBB, 0xCC])
             engine.captureFrameResult = frame
             let recorder = BackfillRecorder()
@@ -4735,11 +4430,10 @@ struct PlayerViewModelTests {
         /// Two independent protections, either of which alone would hold: `stop()` cancels the
         /// pending backfill `Task` outright, and it also nils the SMB session — which the task
         /// re-reads AFTER its sleep, so even a cancel that lost the race finds nothing to capture
-        /// for. (`tearDownEngine()`, which `stop()` also runs, cancels the task as well, so a
-        /// reactive engine rebuild can't burn the session's one shot either.)
+        /// for.
         @Test("stop() before the backfill delay fires prevents any store")
         func stopBeforeDelayPreventsStore() async throws {
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let engine = FakePlaybackEngine()
             let recorder = BackfillRecorder()
             let vm = makeVM(engine: engine, recorder: recorder)
 
@@ -4757,7 +4451,7 @@ struct PlayerViewModelTests {
 
         @Test("a non-SMB (Jellyfin) session never invokes the backfill sink")
         func nonSMBSessionNeverInvokesBackfill() async throws {
-            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let engine = FakePlaybackEngine()
             let resolved = PlayerFixtures.resolved()
             let recorder = BackfillRecorder()
             let vm = PlayerViewModel(
@@ -4765,14 +4459,12 @@ struct PlayerViewModelTests {
                 clock: clock,
                 playbackInfo: StubPlaybackReporting(),
                 resolve: { _, _, _, _ in resolved },
-                engineFactory: { _, _ in engine },
+                engineFactory: { engine },
                 audioSession: NoopAudioSession(),
                 nowPlaying: SpyNowPlaying(),
                 subtitleFetch: { _ in .rejected },
                 smbResumeStore: SMBTestFixtures.inertResumeStore(),
-                backfillThumbnail: recordingSink(into: recorder),
-                subtitleSurface: { PlayerFixtures.phoneSurface },
-                engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts
+                backfillThumbnail: recordingSink(into: recorder)
             )
 
             await vm.start(item: PlayerFixtures.movieDetail())
@@ -4784,16 +4476,14 @@ struct PlayerViewModelTests {
             #expect(await recorder.invocations.isEmpty)
         }
 
-        @Test("an untrustworthy duration is never carried into the backfill sink")
-        func untrustworthyDurationStoresNilDuration() async throws {
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        @Test("an unknown duration is never carried into the backfill sink")
+        func unknownDurationStoresNilDuration() async throws {
+            let engine = FakePlaybackEngine()
             let recorder = BackfillRecorder()
             let vm = makeVM(engine: engine, recorder: recorder)
 
-            await vm.start(smbItem: smbItem(hasTrustworthyDuration: false))
-            // Numeric, real-looking duration — proving the nil comes from the trust bit, not
-            // from `hasKnownDuration` being false too.
-            engine.push(.playing(1, duration: .seconds(6000)))
+            await vm.start(smbItem: smbItem())
+            engine.push(.playing(1, duration: .indefinite))
             try await engine.settle()
 
             try await runOutBackfillDelay()
@@ -4806,7 +4496,7 @@ struct PlayerViewModelTests {
 /// Who renders which subtitle stream on a Jellyfin DIRECT PLAY session. A text stream
 /// has a sidecar URL, so we fetch and draw it ourselves; an image stream has none, so
 /// the only thing that can draw it locally is the engine — and blinding the engine
-/// (`:no-spu`) to protect the sidecars would silently cost the user those tracks.
+/// (`engineSubtitlesDisabled`) to protect the sidecars would silently cost the user those tracks.
 @Suite("PlayerViewModel — direct-play subtitle ownership", .scaledTimeLimit())
 @MainActor
 struct DirectPlaySubtitleOwnershipTests {
@@ -4832,21 +4522,21 @@ struct DirectPlaySubtitleOwnershipTests {
 
     @Test("an image-only item keeps the ENGINE's row and leaves its SPU renderer on")
     func imageOnlyKeepsTheEngineRow() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
         let vm = try await startedVM(resolved, engine: engine)
 
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
         #expect(vm.availableSubtitleTracks.count == 1)
         let row = try #require(vm.availableSubtitleTracks.first)
-        #expect(row.id == .vlc("vlc-s2"))   // the engine draws it — locally, for free
+        #expect(row.id == .avKitOption(2))   // the engine draws it — locally, for free
         #expect(row.isBurnedIn == false)    // no server re-encode earned
         #expect(row.displayName == "English")   // the server's menu label, not the engine's "PGS"
     }
 
     @Test("a text-only item becomes a client-drawn sidecar row and blinds the engine")
     func textOnlyGoesToTheSidecar() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(text: [2: "eng"])
         let vm = try await startedVM(resolved, engine: engine)
 
@@ -4856,14 +4546,14 @@ struct DirectPlaySubtitleOwnershipTests {
 
     @Test("a mixed item routes each stream to the renderer that can actually draw it")
     func mixedRoutesPerStream() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             text: [2: "eng"], image: [3: "jpn"]
         )
         let vm = try await startedVM(resolved, engine: engine)
 
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
-        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .vlc("vlc-s3")])
+        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .avKitOption(3)])
         #expect(vm.availableSubtitleTracks.allSatisfy { !$0.isBurnedIn })
     }
 
@@ -4872,7 +4562,7 @@ struct DirectPlaySubtitleOwnershipTests {
     /// wrong — the alternative is offering the SRT's engine track under the PGS's name.
     @Test("an image stream the engine can't be matched to falls back to server burn-in")
     func unmatchedImageFallsBackToBurnIn() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             text: [2: "eng"], image: [3: "eng"]
         )
@@ -4884,27 +4574,27 @@ struct DirectPlaySubtitleOwnershipTests {
 
     @Test("the engine's own pick is adopted when the engine is what draws it")
     func enginePickIsAdoptedWhenTheEngineDraws() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
-        let vm = try await startedVM(resolved, engine: engine, selecting: .vlc("vlc-s2"))
+        let vm = try await startedVM(resolved, engine: engine, selecting: .avKitOption(2))
 
-        #expect(vm.selectedSubtitleTrack?.id == .vlc("vlc-s2"))
+        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(2))
         // Nothing was commanded at all — the engine's own pick stands. Matched on the
         // whole family of calls, not the one literal: a fake that reformats its log
         // would make a single-string negative pass forever.
         #expect(engine.calls.contains { $0.hasPrefix("setSubtitleTrack") } == false)
     }
 
-    /// The one shape `:no-spu` cannot cover: the item has an image sub, so the engine's
-    /// renderer stays on — and VLC then auto-selects a text track we are drawing
-    /// ourselves, painting a second copy under the overlay.
+    /// The one shape `engineSubtitlesDisabled` cannot cover: the item has an image sub, so the
+    /// engine's renderer stays on, and the engine then auto-selects a text track we are
+    /// drawing ourselves, painting a second copy under the overlay.
     @Test("the engine's pick of a stream WE draw is deselected, never adopted")
     func enginePickOfAClientDrawnStreamIsDeselected() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             text: [2: "eng"], image: [3: "jpn"]
         )
-        let vm = try await startedVM(resolved, engine: engine, selecting: .vlc("vlc-s2"))
+        let vm = try await startedVM(resolved, engine: engine, selecting: .avKitOption(2))
 
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(engine.calls.contains("setSubtitleTrack(nil)"))
@@ -4915,14 +4605,14 @@ struct DirectPlaySubtitleOwnershipTests {
     /// found nothing and a PGS default was silently dropped on every first play.
     @Test("a server default that points at an engine-rendered image sub is selected")
     func imageDefaultSelectsTheEngineRow() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             image: [2: "eng"], defaultSubtitleStreamIndex: 2
         )
         let vm = try await startedVM(resolved, engine: engine)
 
-        #expect(vm.selectedSubtitleTrack?.id == .vlc("vlc-s2"))
-        #expect(engine.selectedSubtitleTrackID == .vlc("vlc-s2"))
+        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(2))
+        #expect(engine.selectedSubtitleTrackID == .avKitOption(2))
     }
 
     /// Burn-in stays opt-in. The engine can't be joined to this image stream (two
@@ -4930,7 +4620,7 @@ struct DirectPlaySubtitleOwnershipTests {
     /// a preference must never trigger on its own.
     @Test("a server default that only server burn-in can deliver is left alone")
     func burnInDefaultIsNotAutoApplied() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             text: [2: "eng"], image: [3: "eng"], defaultSubtitleStreamIndex: 3
         )
@@ -4943,7 +4633,7 @@ struct DirectPlaySubtitleOwnershipTests {
     /// The sidecar half of the same join, so the fix can't be read as "engine rows only".
     @Test("a server default that points at a client-drawn text sub still fetches it")
     func textDefaultStillGoesToTheSidecar() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             text: [2: "eng"], image: [3: "jpn"], defaultSubtitleStreamIndex: 2
         )
@@ -4955,25 +4645,6 @@ struct DirectPlaySubtitleOwnershipTests {
         #expect(engine.calls.contains("setSubtitleTrack(nil)"))
     }
 
-    /// The engine-facing font knobs follow the user's design. Both are libvlc MEDIA
-    /// options, fixed for the life of the decoder — hence sampled once, at asset build.
-    @Test("the asset carries the user's subtitle design", arguments: SubtitleFontDesign.allCases)
-    func assetCarriesTheFontDesign(design: SubtitleFontDesign) async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in resolved }, engine: engine,
-            subtitleStyle: { .standard.with { $0.fontDesign = design } }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.subtitleFontFamily == PlayerFixtures.engineSubtitleFonts(design.bundleDesign).family)
-        // Whatever directory it names, it is the one built for THIS design (or the
-        // bundle fallback, which is design-agnostic) — never the other design's.
-        let directory = try #require(asset.subtitleFontsDirectory)
-        #expect(directory.lastPathComponent != (design == .serif ? "sans" : "serif"))
-    }
 }
 
 /// The sidecar fetch can take seconds (a cold embedded Jellyfin stream is extracted by
@@ -4999,7 +4670,7 @@ struct SidecarFetchIndicatorTests {
 
     @Test("arming is synchronous — the state is set with no await in between")
     func armingIsSynchronous() async throws {
-        let vm = try await startedVM(FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit))
+        let vm = try await startedVM(FakePlaybackEngine())
         let track = try row(vm, .jellyfinStream(2))
 
         vm.armSubtitleFetchIndicator(for: track)
@@ -5009,7 +4680,7 @@ struct SidecarFetchIndicatorTests {
 
     @Test("nothing is armed for Off or for a burn-in pick")
     func nothingArmedForOffOrBurnIn() async throws {
-        let vm = try await startedVM(FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit))
+        let vm = try await startedVM(FakePlaybackEngine())
 
         vm.armSubtitleFetchIndicator(for: nil)
         #expect(vm.loadingSubtitleTrackID == nil)
@@ -5020,7 +4691,7 @@ struct SidecarFetchIndicatorTests {
 
     @Test("a re-pick of an already-fetched track shows nothing — it is instant")
     func cachedPickDoesNotArm() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = try await startedVM(engine)
         let track = try row(vm, .jellyfinStream(2))
 
@@ -5038,7 +4709,7 @@ struct SidecarFetchIndicatorTests {
     /// observed from outside the call.
     @Test("an in-flight fetch shows as loading with no renderer installed yet")
     func inFlightFetchShowsAsLoading() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
         let fetchEntered = AsyncStream<Void>.makeStream()
         let vm = makePlayerVM(
@@ -5070,7 +4741,7 @@ struct SidecarFetchIndicatorTests {
     /// pick) and take the loading slot for itself.
     @Test("a pick made mid-fetch cancels the first fetch and takes the loading slot")
     func secondPickCancelsTheInFlightFetch() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
         let slowEntered = AsyncStream<Void>.makeStream()
         let slowCancelled = AsyncStream<Void>.makeStream()
@@ -5117,7 +4788,7 @@ struct SidecarFetchIndicatorTests {
 
     @Test("the indicator clears once the fetch resolves")
     func indicatorClearsWhenTheFetchLands() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = try await startedVM(engine)
         let track = try row(vm, .jellyfinStream(2))
 
@@ -5128,40 +4799,6 @@ struct SidecarFetchIndicatorTests {
         await vm.debugAwaitSubtitleFetch()
 
         #expect(vm.loadingSubtitleTrackID == nil)
-    }
-}
-
-/// The subtitle-delay nudge is the USER's intent for an ITEM; the engine's copy is
-/// scoped to the input `load()` just replaced. So the view model holds it and re-pushes
-/// it, and an episode change starts level.
-@Suite("PlayerViewModel — subtitle delay ownership", .scaledTimeLimit())
-@MainActor
-struct SubtitleDelayOwnershipTests {
-
-    @Test("a same-item reload re-applies the delay onto the fresh input")
-    func reloadReappliesTheDelay() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = makePlayerVM(resolve: { _, _, _, _ in resolved }, engine: engine)
-        await vm.start(item: PlayerFixtures.movieDetail())
-        await vm.setSubtitleDelay(ms: -2000)
-        #expect(vm.subtitleDelayMs == -2000)
-
-        // A transcode audio switch reloads the SAME item on the reused engine.
-        await vm.selectAudioTrack(try #require(vm.availableAudioTracks.last))
-
-        #expect(engine.calls.filter { $0 == "setSubtitleDelay(-2000)" }.count == 2)
-    }
-
-    @Test("a fresh session never pushes a delay the user didn't ask for")
-    func freshSessionPushesNothing() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = makePlayerVM(resolve: { _, _, _, _ in resolved }, engine: engine)
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        #expect(vm.subtitleDelayMs == 0)
-        #expect(engine.calls.contains { $0.hasPrefix("setSubtitleDelay") } == false)
     }
 }
 
@@ -5251,7 +4888,7 @@ struct PlayerAccentLifecycleTests {
 
     @Test("a second start clears the previous item's hue before the new fetch can answer")
     func aSecondStartClearsTheAccentFirst() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let artwork = try tealArtwork()
         let gate = ArtworkGate()
         let vm = makeVM(engine: engine) { item in
@@ -5274,7 +4911,7 @@ struct PlayerAccentLifecycleTests {
 
     @Test("a fetch that answers after the next item started cannot paint its bar")
     func aSupersededFetchCannotWrite() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let artwork = try tealArtwork()
         let gate = ArtworkGate()
         let vm = makeVM(engine: engine) { item in
@@ -5295,7 +4932,7 @@ struct PlayerAccentLifecycleTests {
 
     @Test("stop() takes the accent with it")
     func stopClearsTheAccent() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let artwork = try tealArtwork()
         let vm = makeVM(engine: engine) { _ in artwork }
 
@@ -5313,7 +4950,7 @@ struct PlayerAccentLifecycleTests {
         nil, Data(), Data("<html>404</html>".utf8),
     ] as [Data?])
     func undecodableArtworkLeavesTheBarWhite(payload: Data?) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(engine: engine) { _ in payload }
 
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))

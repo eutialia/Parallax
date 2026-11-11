@@ -2,9 +2,7 @@ import Foundation
 
 /// Bounds a *mid-playback* stall, the sibling of `LoadWatchdog` (which bounds the *load*). Without
 /// it, a network death after the first frame strands the player forever on the buffering scrim:
-/// AVKit sits in `.waitingToPlayAtSpecifiedRate` retrying a dead socket with no timeout, and VLC's
-/// `player.isPlaying` reflects intent (not frames) so its poll keeps emitting `.playing` over a
-/// frozen clock. The receiving end has always existed — `PlaybackError.networkStalled` maps to the
+/// AVKit sits in `.waitingToPlayAtSpecifiedRate` retrying a dead socket with no timeout. The receiving end has always existed — `PlaybackError.networkStalled` maps to the
 /// "The stream stalled and didn't recover…" copy — but nothing ever emitted it. This is that emitter.
 ///
 /// Usage: `arm()` on the first `.buffering` beat (a mid-stream stall — network underrun, seek past

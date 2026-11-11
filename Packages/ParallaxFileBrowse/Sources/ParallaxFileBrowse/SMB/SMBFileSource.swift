@@ -9,10 +9,9 @@ public struct SMBFileSource: Sendable {
 
     private static let logger = Log.custom(category: "SMBFileSource")
 
-    // Extensions recognised as playable media — a libVLC-decodable ALLOWLIST (not a blocklist),
-    // so non-media siblings and temp-suffix partials (.part/.crdownload/.!qB/.aria2) never reach
-    // the grid. Widened past the Phase 2 spec §3a core to the legacy/less-common containers libVLC
-    // still decodes (RealMedia via RV40+Cook, Ogg/Theora, DVD VOB, AVCHD .mts, ASF, MPEG-2 ES).
+    // Extensions the browser shows as media: an ALLOWLIST (not a blocklist), so non-media
+    // siblings and temp-suffix partials (.part/.crdownload/.!qB/.aria2) never reach the grid.
+    // Whether a listed file plays is decided at playback by the probe, not here.
     private static let mediaExtensions: Set<String> = [
         "mkv", "webm",
         "mp4", "m4v", "mov", "3gp",
@@ -116,6 +115,13 @@ public struct SMBFileSource: Sendable {
     public static func mapListError(_ error: Error, share: String, path: String) -> AppError {
         let ns = error as NSError
         logger.error("SMB list failed [share=\(share, privacy: .public) path=\(path, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
+        return classify(error)
+    }
+
+    /// Maps a file read or stat failure to a typed `AppError`, classified as `mapListError` does.
+    public static func mapReadError(_ error: Error, share: String, path: String) -> AppError {
+        let ns = error as NSError
+        logger.error("SMB read failed [share=\(share, privacy: .public) path=\(path, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
         return classify(error)
     }
 

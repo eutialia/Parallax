@@ -44,7 +44,7 @@ struct PlayerViewModelSegmentTests {
 
     @Test("an intro segment surfaces a Skip prompt; skipActiveSegment seeks to its end")
     func skipIntroSeeksToEnd() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let intro = MediaSegment(id: "intro", kind: .intro, start: .seconds(0), end: .seconds(90))
         let vm = episodeVM(engine: engine, segments: [intro])
 
@@ -62,7 +62,7 @@ struct PlayerViewModelSegmentTests {
 
     @Test("the prompt clears once the playhead leaves the segment")
     func promptClearsAfterSegment() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let intro = MediaSegment(id: "intro", kind: .intro, start: .seconds(0), end: .seconds(90))
         let vm = episodeVM(engine: engine, segments: [intro])
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
@@ -80,7 +80,7 @@ struct PlayerViewModelSegmentTests {
 
     @Test("a dismissed Skip button shows again once the playhead has left the segment and come back")
     func dismissedPromptRearmsOnReentry() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let intro = MediaSegment(id: "intro", kind: .intro, start: .seconds(0), end: .seconds(90))
         let vm = episodeVM(engine: engine, segments: [intro])
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
@@ -104,7 +104,7 @@ struct PlayerViewModelSegmentTests {
           arguments: OutroAdjacency.allCases)
     fileprivate func outroPromptGatesOnNextEpisode(adjacency: OutroAdjacency) async throws {
         let outro = MediaSegment(id: "outro", kind: .outro, start: .seconds(1700), end: .seconds(1800))
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let engine = FakePlaybackEngine()
         let vm = episodeVM(
             engine: engine,
             segments: [outro],
@@ -139,7 +139,7 @@ struct PlayerViewModelSegmentTests {
     ) -> PlayerViewModel {
         makePlayerVM(
             resolve: { id, _, _, _ in resolvedIDs(id); return PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { id, _ in engines.make(id) },
+            engineFactory: { engines.make() },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: adjacent
         )

@@ -7,8 +7,6 @@ import ParallaxPlaybackTestSupport
 @Suite("DeviceProfileBuilder")
 struct DeviceProfileBuilderTests {
 
-    // MARK: — The VLC tier is what AVPlayer leaves over
-
     static let withoutAV1 = AVPlayerSupport(
         containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: [.aac, .ac3, .eac3]
     )
@@ -22,22 +20,6 @@ struct DeviceProfileBuilderTests {
     func avPlayerSupportPropagates(support: AVPlayerSupport) async {
         let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: support))
         #expect(await builder.build().avPlayer == support)
-    }
-
-    /// The VLC tier rides the wire profile so servers direct-play VLC-only sources
-    /// instead of transcoding them, and must never claim what AVPlayer plays: an
-    /// h264/hevc VLC tier would lose HDR/DV/Atmos on premium MKV content.
-    @Test("build() serializes the libvlc declaration minus AVPlayer's support as the VLC tier")
-    func softwareTierIsVLCMinusAVPlayer() async {
-        let without = await DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: Self.withoutAV1)).build()
-        #expect(without.softwareVideoCodecs == [.av1, .mpeg2video, .vc1, .vp9])
-        #expect(without.softwareAudioCodecs == [.dts, .flac, .mp3, .opus])
-        #expect(without.softwareContainers == [.asf, .avi, .flac, .mkv, .mp3, .mpegps, .ts, .webm])
-
-        let with = await DeviceProfileBuilder(probe: FakeCapabilityProbe(avPlayer: Self.withAV1)).build()
-        #expect(with.softwareVideoCodecs == [.mpeg2video, .vc1, .vp9])
-        #expect(with.softwareAudioCodecs == [.dts, .mp3])
-        #expect(with.softwareContainers == [.asf, .avi, .flac, .mkv, .mp3, .mpegps, .ts, .webm])
     }
 
     @Test("build() declares a 4K UHD ceiling")

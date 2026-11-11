@@ -50,7 +50,7 @@ private let keyDiscriminatorCases: [KeyDiscriminatorCase] = [
 struct SMBThumbnailCacheTests {
 
     /// Smallest valid PNG: a 1×1 transparent image. Lets a test assert the cache round-trips the
-    /// exact bytes without depending on VLC.
+    /// exact bytes without depending on a decoder.
     private static let onePixelPNG: [UInt8] = [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
         0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR length + type

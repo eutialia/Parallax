@@ -142,16 +142,6 @@ struct Acknowledgement: Identifiable, Hashable {
             url: "notofonts.github.io"
         ),
         Acknowledgement(
-            name: "VLCKit",
-            // Vendored as a prebuilt binary framework rather than resolved through SPM, so
-            // it has no Package.resolved identity — the credit is unconditional.
-            packageIdentities: [],
-            role: "Alternate playback engine, © VideoLAN",
-            licenseName: "LGPL-2.1",
-            license: .lgpl21,
-            url: "code.videolan.org/videolan/VLCKit"
-        ),
-        Acknowledgement(
             name: "Jellyfin icon",
             packageIdentities: [],
             role: "“Works with Jellyfin” glyph, © Jellyfin contributors, used unmodified",

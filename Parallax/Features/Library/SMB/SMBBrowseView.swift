@@ -5,7 +5,6 @@ import ParallaxJellyfin
 import ParallaxFeatures
 #if DEBUG
 import ParallaxPlayback  // preview-only: builds a real MediaArtworkProvider for the stub grid
-import ParallaxPlaybackVLC
 #endif
 
 extension View {
@@ -462,8 +461,7 @@ private struct SMBBrowseGridPreview: View {
                     share: "Media",
                     parentPath: "Anime",
                     artworkProvider: MediaArtworkProvider(
-                        thumbnailer: VLCThumbnailer(),
-                        avThumbnailer: AVThumbnailer(),
+                        thumbnailer: AVThumbnailer(),
                         serverStore: ServerStore(
                             settings: SettingsStore(defaults: .standard),
                             keychain: Keychain(service: "preview"),

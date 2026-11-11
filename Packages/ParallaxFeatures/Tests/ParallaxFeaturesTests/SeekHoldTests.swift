@@ -35,8 +35,8 @@ struct SeekHoldTests {
     /// `.projected` is the engine guessing forward off its own target, `.stale` is the engine's
     /// clock still reading the pre-seek position — so both hold. `.observed` is the engine's own
     /// clock with no seek outstanding, so it releases even when it landed nowhere near the
-    /// request: AVKit's load-time resume lands on its segment's first frame and a VLC hold that gave up republishes
-    /// a clamped position, and pinning the bar at an unreachable target over video that is
+    /// request: AVKit's load-time resume lands on its segment's first frame and a hold that gave up
+    /// republishes a clamped position, and pinning the bar at an unreachable target over video that is
     /// demonstrably playing elsewhere is the worse lie.
     ///
     /// Two axes the old heuristic had are simply GONE from the signature, which is the point:

@@ -13,10 +13,8 @@ import ParallaxSubtitles
 @testable import ParallaxCore
 
 /// SMB direct-play entry: `PlayerViewModel.start(smbItem:)` builds a `PlayableAsset`
-/// straight from a local SMB file — no Jellyfin resolve, no DeviceProfile, no
-/// playSessionID, no progress reporting. The libVLC `smb://` path is the validated
-/// primary (the spike passed), so the asset routes to VLCKit via `hints.scheme == "smb"`
-/// and carries the credential options verbatim in `vlcOptions`.
+/// straight from a resolved SMB file, served over the local bridge: no Jellyfin resolve,
+/// no DeviceProfile, no playSessionID, no progress reporting.
 @Suite("PlayerViewModel SMB start", .scaledTimeLimit())
 @MainActor
 struct SMBPlaybackStartTests {
@@ -31,8 +29,6 @@ struct SMBPlaybackStartTests {
         // NOT `SMBResumeStore.shared`: that one reads and writes the real `UserDefaults.standard`
         // domain, so every test here that drives a `.playing` beat was writing live app state.
         smbResumeStore: SMBResumeStore? = nil,
-        subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
-        observeLibraryOptions: @escaping @MainActor @Sendable ([String]?) -> Void = { _ in },
         clock: TestClock = TestClock()
     ) -> PlayerViewModel {
         return PlayerViewModel(
@@ -43,41 +39,34 @@ struct SMBPlaybackStartTests {
                 Issue.record("SMB playback must not call the Jellyfin resolve")
                 throw AppError.playback(.unsupportedFormat)
             },
-            engineFactory: { _, options in observeLibraryOptions(options); return engine },
+            engineFactory: { engine },
             audioSession: audioSession,
             nowPlaying: SpyNowPlaying(),
             subtitleFetch: subtitleFetch,
-            smbResumeStore: smbResumeStore ?? SMBTestFixtures.inertResumeStore(),
-            subtitleStyle: subtitleStyle,
-            subtitleSurface: { PlayerFixtures.phoneSurface },
-            engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts
+            smbResumeStore: smbResumeStore ?? SMBTestFixtures.inertResumeStore()
         )
     }
 
     private func smbItem(
-        url: String = "smb://nas.local/Media/Movies/Example.mkv",
+        url: String = "http://127.0.0.1:8080/token/Example.mp4",
         title: String = "Example",
         itemID: ItemID = ItemID(rawValue: "smb-test-item"),
-        vlcOptions: [String] = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"],
         subtitleURLs: [Int: URL] = [:],
-        subtitleLabels: [Int: String] = [:],
-        hasTrustworthyDuration: Bool = true
+        subtitleLabels: [Int: String] = [:]
     ) -> SMBPlaybackItem {
         SMBPlaybackItem(
             itemID: itemID,
             url: URL(string: url)!,
             title: title,
-            vlcOptions: vlcOptions,
             subtitleURLs: subtitleURLs,
-            subtitleLabels: subtitleLabels,
-            hasTrustworthyDuration: hasTrustworthyDuration
+            subtitleLabels: subtitleLabels
         )
     }
 
     @Test("start(smbItem:) surfaces both labeled sidecars in the subtitle menu with the resolver's labels")
     func startSurfacesLabeledSidecarsInMenu() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         let en = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
@@ -103,7 +92,7 @@ struct SMBPlaybackStartTests {
     @Test("start(smbItem:) surfaces every renderable sidecar (ASS included) and hides formats the renderer can't ingest")
     func startFiltersSidecarFormatsByRenderability() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         let srt = URL(string: "smb://nas.local/Media/Movies/x.srt")!
@@ -128,7 +117,7 @@ struct SMBPlaybackStartTests {
     @Test("selecting an SMB .srt sidecar fetches + loads the client renderer as SRT")
     func selectingSRTSidecarLoadsRenderer() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
 
         // A minimal single-cue SRT blob with comma timing — the format tag proves the
         // extension routed the data down the renderer's SRT ingest, not the VTT one.
@@ -155,83 +144,24 @@ struct SMBPlaybackStartTests {
     @Test("SMB: an EMBEDDED pick still goes to the engine, and the asset keeps engine subtitles on")
     func smbEmbeddedSubtitleStaysWithTheEngine() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         await vm.start(smbItem: smbItem())
         let asset = try #require(engine.loadedAssets.first)
         #expect(asset.engineSubtitlesDisabled == false)
-        // The bundled Noto faces, for VLC's own text renderers — in the user's design.
-        #expect(asset.subtitleFontsDirectory?.path == "/engine-fonts/sans")
-        #expect(asset.subtitleFontFamily == "Engine sans")
 
-        let embedded = SubtitleTrack(id: .vlc("vlc-s0"), displayName: "English",
+        let embedded = SubtitleTrack(id: .avKitOption(0), displayName: "English",
                                      languageCode: "en", isForced: false)
         engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600),
                            tracks: TrackInventory(audio: [], subtitles: [embedded])))
         try await engine.settle()
 
-        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .vlc("vlc-s0") })
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .avKitOption(0) })
         await vm.selectSubtitleTrack(track)
 
-        #expect(engine.selectedSubtitleTrackID == .vlc("vlc-s0"))
+        #expect(engine.selectedSubtitleTrackID == .avKitOption(0))
         #expect(vm.subtitleRenderer == nil)   // nothing client-side draws an embedded SMB track
-    }
-
-    /// VLC draws SMB embedded text itself, so the design has to reach it through the
-    /// asset — the client renderer's live style push never runs for those tracks.
-    /// Both knobs are libvlc MEDIA options, read once when the decoder is built.
-    @Test("SMB: the asset's font directory and family follow the user's design")
-    func smbAssetFollowsTheFontDesign() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine,
-                        subtitleStyle: { .standard.with { $0.fontDesign = .serif } })
-
-        await vm.start(smbItem: smbItem())
-
-        let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.subtitleFontFamily == "Engine serif")
-        #expect(asset.subtitleFontsDirectory?.path == "/engine-fonts/serif")
-    }
-
-    /// The style is read once per asset, so a preference that lands mid-construction can't
-    /// split the font directory, the family and the freetype look across two designs.
-    @Test("SMB: the asset's fonts and text style come from one sample of the user's style")
-    func smbAssetSamplesTheStyleOnce() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        var samples = 0
-        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine, subtitleStyle: {
-            samples += 1
-            return .standard.with { $0.fontDesign = samples.isMultiple(of: 2) ? .sansSerif : .serif }
-        })
-
-        await vm.start(smbItem: smbItem())
-
-        let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.subtitleFontsDirectory?.path == "/engine-fonts/serif")
-        #expect(asset.subtitleFontFamily == "Engine serif")
-        #expect(asset.subtitleTextStyle?.style.fontDesign == .serif)
-    }
-
-    /// The whole point of the instance-argument move: VLC's freetype renderer belongs to
-    /// the video output, whose variables inherit from the libvlc INSTANCE — so the family
-    /// and the look have to be arguments the player is BUILT with. A media option here is
-    /// read by nobody, which is how the renderer sat on its own `Helvetica Neue` default.
-    @Test("SMB: the subtitle look reaches the engine as libvlc instance arguments")
-    func smbSubtitleLookRidesInstanceArguments() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        nonisolated(unsafe) var handed: [String]?
-        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine,
-                        observeLibraryOptions: { handed = $0 })
-
-        await vm.start(smbItem: smbItem())
-
-        let options = try #require(handed)
-        #expect(options.contains("--freetype-font=Engine sans"))
-        #expect(options.contains { $0.hasPrefix("--freetype-rel-fontsize=") })
-        // The credentials this item carries are MEDIA options and must not be promoted to
-        // instance arguments, where they would outlive the input.
-        #expect(options.contains { $0.contains("smb-pwd") } == false)
     }
 
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.
@@ -240,22 +170,18 @@ struct SMBPlaybackStartTests {
         func bump() -> Int { count += 1; return count }
     }
 
-    @Test("builds a VLC smb:// asset carrying the credential options, then loads + plays")
+    @Test("builds an asset on the item's bridge URL, then loads + plays")
     func startBuildsSMBAssetAndPlays() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
-        let creds = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"]
-        await vm.start(smbItem: smbItem(vlcOptions: creds))
+        let item = smbItem()
+        await vm.start(smbItem: item)
 
-        // Exactly one asset loaded, routed at smb, carrying the credential options.
         #expect(engine.loadedAssets.count == 1)
         let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.hints.scheme == "smb")
-        #expect(asset.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
-        #expect(asset.vlcOptions == creds)
-        #expect(asset.headers == nil)              // no Jellyfin auth headers on the SMB path
+        #expect(asset.url == item.url)
         #expect(engine.calls.contains("load"))
         #expect(engine.calls.contains("play"))
 
@@ -270,7 +196,7 @@ struct SMBPlaybackStartTests {
     @Test("a .ready beat publishes the engine inventory verbatim — no server subs appended (resolved == nil)")
     func readyPublishesEngineInventoryWithoutServerSubs() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         await vm.start(smbItem: smbItem())
@@ -279,23 +205,23 @@ struct SMBPlaybackStartTests {
         // `.ready` must take the direct-play path (resolved?.method != .transcode is
         // true), publish the engine's own tracks, and append ZERO external subs
         // (resolved.map(externalSubtitleTracks) ?? [] → []).
-        let audio = AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en")
-        let sub = SubtitleTrack(id: .vlc("s1"), displayName: "English", languageCode: "en", isForced: false)
+        let audio = AudioTrack(id: .avKitOption(0), displayName: "English", languageCode: "en")
+        let sub = SubtitleTrack(id: .avKitOption(0), displayName: "English", languageCode: "en", isForced: false)
         engine.push(.ready(
             duration: CMTime(seconds: 6000, preferredTimescale: 1),
             tracks: TrackInventory(audio: [audio], subtitles: [sub])
         ))
         try await engine.settle()
 
-        #expect(vm.availableAudioTracks.map(\.id) == [.vlc("a1")])
+        #expect(vm.availableAudioTracks.map(\.id) == [.avKitOption(0)])
         // Exactly the engine's one sub — no Jellyfin sidecar tracks appended on SMB.
-        #expect(vm.availableSubtitleTracks.map(\.id) == [.vlc("s1")])
+        #expect(vm.availableSubtitleTracks.map(\.id) == [.avKitOption(0)])
     }
 
     @Test("no Jellyfin reporting fires on the SMB path — resolved stays nil end to end")
     func smbPathNeverReports() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         await vm.start(smbItem: smbItem())
@@ -319,7 +245,7 @@ struct SMBPlaybackStartTests {
     func stopTearsDownCleanly() async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
             let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let engine = FakePlaybackEngine()
             let srt = Data("1\n00:00:01,000 --> 00:00:04,000\nHello world\n".utf8)
             let subURL = URL(string: "file:///tmp/Example.en.srt")!
             let vm = makeVM(
@@ -349,29 +275,27 @@ struct SMBPlaybackStartTests {
         }
     }
 
-    // MARK: - Local resume vs an untrusted (estimated) duration
+    // MARK: - Local resume vs an unknown duration
 
-    /// One position/duration shape, two verdicts, decided solely by whether the duration can be
-    /// trusted. 5900s of a 6000s runtime is 98.3% — past the store's completion fraction, so it's
-    /// the shape that clears a finished film AND the shape that would silently wipe real progress on
-    /// an incomplete file, where VLCKitEngine synthesizes the "duration" from its read-rate estimate.
+    /// One position, two verdicts, decided solely by whether the stream knows its length. 5900s of
+    /// a 6000s runtime is 98.3%, past the store's completion fraction, so it clears a finished film;
+    /// with no length there is no fraction, and the position must survive.
     @Test(
-        "the completion-clear rule applies only to a duration the file can actually vouch for",
+        "the completion-clear rule applies only to a known duration",
         arguments: [
-            // (hasTrustworthyDuration, expected resume seconds after stop)
             (false, Double?.some(5_900)),
             (true, Double?.none),
         ]
     )
-    func completionClearHonoursDurationTrust(trustworthy: Bool, expectedResume: Double?) async throws {
+    func completionClearNeedsAKnownDuration(knownDuration: Bool, expectedResume: Double?) async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
             let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let engine = FakePlaybackEngine()
             let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
-            let id = ItemID(rawValue: "smb-duration-trust-\(trustworthy)")
+            let id = ItemID(rawValue: "smb-known-duration-\(knownDuration)")
 
-            await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: trustworthy))
-            engine.push(.playing(5_900, duration: .seconds(6_000)))
+            await vm.start(smbItem: smbItem(itemID: id))
+            engine.push(.playing(5_900, duration: knownDuration ? .seconds(6_000) : .indefinite))
             try await engine.settle()
 
             // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
@@ -398,7 +322,7 @@ struct SMBPlaybackStartTests {
         let writes = PositionLog()
         let store = SMBResumeStore(defaults: RecordingDefaults(suiteName: suiteName, log: writes)!)
         let clock = TestClock()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine, smbResumeStore: store, clock: clock)
         let id = ItemID(rawValue: "smb-resume-throttle")
         await vm.start(smbItem: smbItem(itemID: id))
@@ -420,7 +344,7 @@ struct SMBPlaybackStartTests {
     func throttledSaveNeverOutrunsEndedClear() async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
             let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let engine = FakePlaybackEngine()
             let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
             let id = ItemID(rawValue: "smb-save-vs-clear")
 
@@ -442,21 +366,17 @@ struct SMBPlaybackStartTests {
     @Test("resolving start: the closure's item is loaded + played, no Jellyfin reporting")
     func resolvingStartLoadsResolvedItem() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
-        let creds = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"]
-        let resolved = smbItem(vlcOptions: creds)
+        let resolved = smbItem()
         await vm.start(resolvingSMB: { resolved })
 
         // Same assertions as startBuildsSMBAssetAndPlays: the resolve closure's item
-        // is the one the engine loaded + played, routed at smb with the creds verbatim.
+        // is the one the engine loaded + played.
         #expect(engine.loadedAssets.count == 1)
         let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.hints.scheme == "smb")
-        #expect(asset.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
-        #expect(asset.vlcOptions == creds)
-        #expect(asset.headers == nil)
+        #expect(asset.url == resolved.url)
         #expect(engine.calls.contains("load"))
         #expect(engine.calls.contains("play"))
 
@@ -473,7 +393,7 @@ struct SMBPlaybackStartTests {
     @Test("resolving start: a resolve that throws an AppError lands on the failure scrim; the engine never loads")
     func resolvingStartSurfacesAppErrorOnFailureScrim() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         let thrown = AppError.source(.notFound)
@@ -493,7 +413,7 @@ struct SMBPlaybackStartTests {
     @Test("retry() replays the SMB resolve closure — Try again is live on the SMB path")
     func retryReplaysSMBResolve() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         let attempts = ResolveAttempts()
@@ -523,17 +443,16 @@ struct SMBPlaybackStartTests {
     @Test("resolving start: an exit racing the resolve reaps the bridge cleanup (no orphan)")
     func resolvingStartExitRaceReapsBridge() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let engine = FakePlaybackEngine()
         let vm = makeVM(reporting: reporting, engine: engine)
 
         let spy = CleanupSpy()
         let base = smbItem()
-        // A bridge-route item: cleanup holds a LIVE bridge the session must reap on exit.
+        // The cleanup holds a LIVE bridge the session must reap on exit.
         let resolvedItem = SMBPlaybackItem(
             itemID: base.itemID,
             url: base.url,
             title: base.title,
-            vlcOptions: base.vlcOptions,
             cleanup: { await spy.invoke() }
         )
 

@@ -2,16 +2,13 @@ import UIKit
 
 /// A video surface that can pin a still of its current content over itself.
 ///
-/// Both engines need it, for the same reason and at different moments: the frame on screen
-/// has to survive the player's own decode surface going away. AVKit's `replaceCurrentItem`
-/// makes no hold-the-last-frame guarantee across a track-switch reload (device-observed: a
-/// subtitle toggle held the frame, a scrub re-anchor flushed to black on the same code path,
-/// AVFoundation race), and VLC's exit cut STOPS the player to kill queued audio (see
-/// `VLCKitEngine.endAudio()`), which closes the vout and takes the picture with it, right
-/// as the card starts sliding out.
+/// The frame on screen has to survive the player's own decode surface going away. AVKit's
+/// `replaceCurrentItem` makes no hold-the-last-frame guarantee across a track-switch reload
+/// (device-observed: a subtitle toggle held the frame, a scrub re-anchor flushed to black on
+/// the same code path, AVFoundation race).
 ///
-/// A render-server snapshot is what makes the hold deterministic in both cases; the video
-/// layer's own contents are not something either framework promises to leave behind.
+/// A render-server snapshot is what makes the hold deterministic; the video layer's own
+/// contents are not something AVFoundation promises to leave behind.
 class FreezableVideoView: UIView {
 
     private var frozenFrame: UIView?

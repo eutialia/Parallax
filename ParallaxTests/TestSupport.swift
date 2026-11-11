@@ -6,7 +6,7 @@ import ParallaxFeatures
 @testable import Parallax
 
 extension Tag {
-    /// Tests that stand up real machinery (a loopback HTTP server, a libvlc decode) rather than a
+    /// Tests that stand up real machinery (a loopback HTTP server, a real decode) rather than a
     /// fake. Slow and environment-dependent by nature, so a fast unit run can exclude them with
     /// `--skip-tag integration`.
     @Tag static var integration: Self

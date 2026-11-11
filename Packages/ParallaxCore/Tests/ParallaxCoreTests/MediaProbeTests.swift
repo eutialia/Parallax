@@ -136,8 +136,8 @@ struct MediaProbeTests {
         #expect(result.audioCodecs == .known([expected]))
     }
 
-    /// An unmapped fourcc must read as `.unknown`, not `.none`: the selector routes unknown to
-    /// VLC, whereas "no video at all" would let it assume AVKit can cope.
+    /// An unmapped fourcc must read as `.unknown`, not `.none`: direct play refuses unknown,
+    /// whereas "no video at all" would let it assume AVPlayer can cope.
     @Test("an unmapped video fourcc reports unknown, not none")
     func unknownVideoFourccReportsUnknown() async throws {
         let result = try await probe(Fixture.mp4(traks: [
@@ -294,7 +294,7 @@ struct MediaProbeTests {
         #expect(result.videoCodec == .known(.h264))
     }
 
-    /// Past the 64 MiB cap the codecs degrade to `.unknown` (→ VLC) rather than pulling an
+    /// Past the 64 MiB cap the codecs degrade to `.unknown` rather than pulling an
     /// unbounded read over the LAN.
     @Test("a moov past the byte cap degrades to unknown instead of being read")
     func oversizedMoovDegradesToUnknown() async throws {
@@ -732,18 +732,6 @@ struct MediaProbeTests {
         let result = try await probe(data)
         #expect(result.avPlayerHazards.contains(.interlacedVideo))
         #expect(result.avPlayerHazards.contains(.decodeOrderTimestamps))
-    }
-}
-
-@Suite("ProbedCodec")
-struct ProbedCodecTests {
-    /// `.none` ("the container carries no such stream") and `.unknown` ("it does, but we can't
-    /// name the codec") must stay distinguishable — the selector routes them differently.
-    @Test("knownValue unwraps only the known case")
-    func knownValue() {
-        #expect(ProbedCodec.known(VideoCodec.h264).knownValue == .h264)
-        #expect(ProbedCodec<VideoCodec>.unknown.knownValue == nil)
-        #expect(ProbedCodec<VideoCodec>.none.knownValue == nil)
     }
 }
 

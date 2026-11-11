@@ -7,8 +7,7 @@ import Foundation
 /// corrupt the URL. A name like `Episode#1.mkv` or `Show?.mkv` would otherwise have its
 /// `#`/`?` parsed by `URL(string:)` as a fragment/query, silently TRUNCATING the path at the
 /// delimiter (spaces, brackets and Unicode happen to auto-encode and survive, but `#`/`?` do
-/// not). libVLC's RFC-3986 MRL parser decodes the encoding back to the literal path when it
-/// opens the file — proven by the fact that auto-encoded spaces (`%20`) already play.
+/// not). `parse` decodes the encoding back to the literal path before the file is opened.
 public enum SMBURL {
     /// Percent-encoding makes the construction TOTAL: every character that could break the parse
     /// is escaped first, so `URL(string:)` always succeeds and neither builder below is failable.

@@ -234,8 +234,7 @@ enum JellyfinFixtures {
 
     // MARK: - Capabilities
 
-    /// The AVKit-only tier every URL/profile suite starts from. `software*` default to empty so a
-    /// caller opts INTO the VLC tier explicitly — the discriminating variable in those suites.
+    /// The capabilities every URL/profile suite starts from.
     static func caps(
         avPlayer: AVPlayerSupport = AVPlayerSupport(
             containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc], audioCodecs: [.aac, .ac3, .eac3]
@@ -243,20 +242,14 @@ enum JellyfinFixtures {
         hdr: HDRSupport = .none,
         maxResolution: Resolution = .uhd4K,
         maxBitrate: Bitrate = .megabits(120),
-        subtitleFormats: [SubtitleFormat] = [.vtt, .srt],
-        vlcVideoCodecs: Set<VideoCodec> = [],
-        vlcAudioCodecs: Set<AudioCodec> = [],
-        vlcContainers: Set<Container> = []
+        subtitleFormats: [SubtitleFormat] = [.vtt, .srt]
     ) -> DeviceCapabilities {
         DeviceCapabilities(
             avPlayer: avPlayer,
             hdr: hdr,
             maxResolution: maxResolution,
             maxBitrate: maxBitrate,
-            preferredSubtitleFormats: subtitleFormats,
-            vlcVideoCodecs: vlcVideoCodecs,
-            vlcAudioCodecs: vlcAudioCodecs,
-            vlcContainers: vlcContainers
+            preferredSubtitleFormats: subtitleFormats
         )
     }
 

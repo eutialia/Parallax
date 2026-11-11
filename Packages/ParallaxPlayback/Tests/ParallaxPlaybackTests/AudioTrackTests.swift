@@ -9,7 +9,7 @@ import ParallaxPlayback
 struct AudioTrackTests {
 
     private func track(detail: String?) -> AudioTrack {
-        AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en", detailLabel: detail)
+        AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en", detailLabel: detail)
     }
 
     @Test("takes the layout half of a codec · channels detail line", arguments: [
@@ -22,11 +22,11 @@ struct AudioTrackTests {
         #expect(track(detail: detail).channelLabel == expected)
     }
 
-    /// Nil where the chip must fall back to the language name alone: the VLC inventory
-    /// and direct-play paths have no server metadata, so there is no detail line — and a
+    /// Nil where the chip must fall back to the language name alone: the direct-play
+    /// path has no server metadata, so there is no detail line — and a
     /// codec-only line carries no layout to show.
     @Test("nil when there is no layout to show", arguments: [
-        String?.none,          // VLC inventory / direct-play: no server metadata
+        String?.none,          // direct-play: no server metadata
         "TrueHD",              // codec only, no separator
         "",                    // present but empty
         "TrueHD · ",           // separator with an empty layout half
@@ -47,7 +47,7 @@ struct AudioTrackTests {
     /// rendition; they default to "delivered as-is" (Direct Play).
     @Test("a plainly-constructed track is not marked as a transcode")
     func defaultsToDirectPlay() {
-        let plain = AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en")
+        let plain = AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en")
         #expect(plain.isTranscode == false)
         #expect(plain.transcodeTarget == nil)
         #expect(plain.detailLabel == nil)

@@ -13,11 +13,9 @@ public struct AudioTrack: Sendable, Hashable {
     public let isTranscode: Bool
     /// The delivered codec when transcoding, e.g. "AAC". Nil when not transcoding.
     public let transcodeTarget: String?
-    /// True when the engine knows the shipped decoder binary cannot decode this
-    /// track's codec — picking it would play silence, not audio. The engine sets it
-    /// while building the inventory (see `VLCKitEngine.undecodableAudioFourccs`);
-    /// the UI must show such a track as unavailable and never offer it for
-    /// selection, and automatic language matching must skip it.
+    /// True when this device cannot decode the track's codec, so picking it would play
+    /// silence. The UI shows such a track as unavailable and never offers it for selection,
+    /// and automatic language matching skips it.
     public let isUnsupported: Bool
 
     public init(
@@ -40,8 +38,8 @@ public struct AudioTrack: Sendable, Hashable {
 
     /// Channel layout only ("7.1"), pulled from `detailLabel`'s "codec · channels" so
     /// the player's audio chip can read "English 7.1" — channels without the codec the
-    /// menu detail line already carries. Nil when detail is absent (VLC inventory /
-    /// direct-play) or codec-only, so the chip falls back to the language name alone.
+    /// menu detail line already carries. Nil when detail is absent (direct-play)
+    /// or codec-only, so the chip falls back to the language name alone.
     public var channelLabel: String? {
         guard let detailLabel else { return nil }
         let parts = detailLabel.split(separator: "·").map { $0.trimmingCharacters(in: .whitespaces) }

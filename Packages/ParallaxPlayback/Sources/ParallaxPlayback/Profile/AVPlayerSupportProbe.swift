@@ -34,7 +34,7 @@ public enum AVPlayerSupportProbe {
         )
     }
 
-    /// File containers AVPlayer opens directly; the rest are VLC's alone.
+    /// File containers AVPlayer opens directly; the rest are unplayable.
     private static func mimeType(_ container: Container) -> String? {
         switch container {
         case .mp4: "video/mp4"

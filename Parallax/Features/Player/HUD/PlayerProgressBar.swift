@@ -43,7 +43,7 @@ struct PlayerProgressBar: View {
     /// 0...1 fraction the buffer extends to — the spec's middle layer (track
     /// `white 0.20` → buffered `white 0.36` → played `#fff`). Seeks inside it are
     /// instant (no server round-trip), so it doubles as the scrub affordance.
-    /// Nil hides the layer (VLC path, or nothing buffered around the playhead).
+    /// Nil hides the layer (nothing buffered around the playhead).
     var buffered: Double? = nil
     /// The in-flight seek (`PlayerViewModel.seekSpan`) — the A→B stretch `ScrubDeltaPulse`
     /// sweeps and the concrete indicator crosses while the engine is still landing, plus the
@@ -137,10 +137,9 @@ struct PlayerProgressBar: View {
                     }
                     // No played fill / handle without a known runtime — there's no fraction to
                     // show and nothing to grab. The dim track + live elapsed label carry it.
-                    // NOTE: when the VLC read-rate estimate lands (~3s into incomplete media),
-                    // `indeterminate` flips false and these elements insert with no transition — a
-                    // one-time pop, accepted (a crossfade here fights the normal↔scrub morph and the
-                    // reserved-geometry invariant, and the estimate makes the flip a once-per-item event).
+                    // When the duration lands, `indeterminate` flips false and these elements
+                    // insert with no transition: a one-time pop, accepted (a crossfade here fights
+                    // the normal↔scrub morph and the reserved-geometry invariant).
                     if !indeterminate {
                         ScrubIndicators(concrete: concrete?.unitClamped,
                                         flight: flight,

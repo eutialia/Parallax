@@ -4,10 +4,10 @@ import OSLog
 import ParallaxCore
 
 /// A localhost/LAN HTTP/1.1 range server fronting one `RandomAccessReading`, so `AVPlayer`
-/// can stream an SMB-hosted file it otherwise can't open (`AVPlayer` speaks HTTP, not SMB).
+/// can stream a file it cannot open where it lives (`AVPlayer` speaks HTTP, not SMB).
 ///
-/// The bridge serves exactly one file for the life of the session. Access control is a
-/// 128-bit random path token — there is no other auth, so the URL must never be persisted
+/// The server serves exactly one file for the life of the session. Access control is a
+/// 128-bit random path token. There is no other auth, so the URL must never be persisted
 /// or shared. `stop()` tears the whole thing down.
 ///
 /// Concurrency: an `actor` owning the `NWListener` and the set of live `NWConnection`s.
@@ -16,9 +16,9 @@ import ParallaxCore
 /// all mutable state (`lifecycle`, `connections`) is touched only under actor
 /// isolation. The shared `reader` serialises its own access, so multiple simultaneous
 /// connections (AVPlayer probes with concurrent range requests) are independent.
-public actor SMBHTTPBridge {
+public actor LocalMediaServer {
 
-    private static let logger = Log.custom(category: "SMBHTTPBridge")
+    private static let logger = Log.custom(category: "LocalMediaServer")
 
     private let reader: any RandomAccessReading
     private let contentType: String
@@ -34,7 +34,7 @@ public actor SMBHTTPBridge {
     /// layer is degraded they can sit there for seconds. A Swift concurrency cooperative thread
     /// must never host a call like that — the pool is only as wide as the core count, so a couple
     /// of stuck lanes stall every unrelated task in the process.
-    private let queue = DispatchQueue(label: "com.lhdev.parallax.smb-http-bridge")
+    private let queue = DispatchQueue(label: "com.lhdev.parallax.local-media-server")
 
     private enum Lifecycle {
         case idle
@@ -55,11 +55,11 @@ public actor SMBHTTPBridge {
         if case .stopped = lifecycle { true } else { false }
     }
 
-    /// Session diagnostics: what this bridge actually cost the share. `bytesRead` counts
+    /// Session diagnostics: what this server actually cost the source. `bytesRead` counts
     /// every byte pulled from `reader` on behalf of a client — charged at READ time, so a
     /// chunk the client reset before the send still counts (that's exactly the waste the
-    /// number exists to expose). `connections` counts accepted client connections (libvlc's
-    /// probe pattern opens many per session).
+    /// number exists to expose). `connections` counts accepted client connections (a
+    /// player's probe pattern can open many per session).
     public struct Stats: Sendable {
         public let bytesRead: UInt64
         public let connections: Int
@@ -77,8 +77,8 @@ public actor SMBHTTPBridge {
     /// of a literal that a retune would silently stop exercising.
     static let chunkSize = 2 * 1024 * 1024
     /// First-chunk size per response. Chunks DOUBLE per consumed chunk up to `chunkSize`
-    /// (see `streamBody`): a seeky prober (libvlc's http input walking a Matroska header →
-    /// cues → target cluster opens, reads a little, and RESETS the connection per hop)
+    /// (see `streamBody`): a seeky prober (one walking a container header to its index
+    /// and then to the target sample opens, reads a little, and RESETS the connection per hop)
     /// wastes at most this much already-read SMB data per abort, instead of a full 2 MiB
     /// chunk per hop — over a VPN that waste dwarfed the useful reads. A well-behaved long
     /// stream (AVPlayer playback) reaches the 2 MiB ceiling within four sends, so steady
@@ -121,8 +121,8 @@ public actor SMBHTTPBridge {
     /// one URL serves both. Pass `.loopback` for on-device-only clients (see `AddressScope`).
     public func start(scope: AddressScope = .lan) async throws -> URL {
         switch lifecycle {
-        case .stopped: throw BridgeError.stopped
-        case .starting, .listening: throw BridgeError.alreadyStarted
+        case .stopped: throw ServerError.stopped
+        case .starting, .listening: throw ServerError.alreadyStarted
         case .idle: lifecycle = .starting
         }
         do {
@@ -133,7 +133,7 @@ public actor SMBHTTPBridge {
             // A `stop()` that landed while the listener was being built found nothing to cancel.
             guard case .starting = lifecycle else {
                 await offPool { listener.cancel() }
-                throw BridgeError.stopped
+                throw ServerError.stopped
             }
             lifecycle = .listening(listener)
 
@@ -155,7 +155,7 @@ public actor SMBHTTPBridge {
                     case .failed(let error):
                         readyGuard.once { continuation.resume(throwing: error) }
                     case .cancelled:
-                        readyGuard.once { continuation.resume(throwing: BridgeError.stopped) }
+                        readyGuard.once { continuation.resume(throwing: ServerError.stopped) }
                     default:
                         break
                     }
@@ -163,14 +163,14 @@ public actor SMBHTTPBridge {
                 queue.async { listener.start(queue: queue) }
             }
 
-            guard let port = listener.port else { throw BridgeError.noPort }
+            guard let port = listener.port else { throw ServerError.noPort }
             let host: String = switch scope {
             // `getifaddrs` is another syscall that stays off the cooperative pool.
             case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
             case .loopback: "127.0.0.1"
             }
             guard let url = URL(string: "http://\(host):\(port.rawValue)\(expectedPath)") else {
-                throw BridgeError.noPort
+                throw ServerError.noPort
             }
             return url
         } catch {
@@ -224,7 +224,7 @@ public actor SMBHTTPBridge {
         connections[ObjectIdentifier(connection)] = connection
         connection.stateUpdateHandler = { state in
             // A failed connection parks its pending completions until cancelled, and the serve
-            // loop awaiting them holds the bridge.
+            // loop awaiting them holds the server.
             if case .failed = state { connection.cancel() }
         }
         Task {
@@ -425,7 +425,7 @@ public actor SMBHTTPBridge {
     /// Streams `[start, start+length)` in chunks that grow from `initialChunkSize` to
     /// `chunkSize` (doubling per consumed chunk — see `initialChunkSize` for why). The next
     /// `reader.read` is issued only after the previous `connection.send` completes (`send`
-    /// awaits its continuation), so the bridge never buffers more than one chunk —
+    /// awaits its continuation), so the server never buffers more than one chunk —
     /// TCP/receiver backpressure gates the reader, and an aborted connection surfaces as a
     /// failed send BEFORE the next (bigger) read is charged to the share.
     private func streamBody(_ connection: NWConnection, start: UInt64, length: UInt64) async throws {
@@ -478,7 +478,7 @@ public actor SMBHTTPBridge {
         return Data(head.utf8)
     }
 
-    enum BridgeError: Error, Sendable, Equatable {
+    enum ServerError: Error, Sendable, Equatable {
         case stopped
         case alreadyStarted
         case noPort
@@ -486,7 +486,7 @@ public actor SMBHTTPBridge {
 }
 
 /// Single-shot latch for the `start()` readiness continuation. The `NWListener` state handler
-/// runs only on the bridge's serial callback queue, so this needs no lock — `@unchecked
+/// runs only on the server's serial callback queue, so this needs no lock — `@unchecked
 /// Sendable` is honest: mutation is externally serialised.
 private final class ReadyGuard: @unchecked Sendable {
     private var fired = false

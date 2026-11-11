@@ -45,7 +45,7 @@ struct PlayerScenarios {
         var ended = false
         let app = world.app
         let mounting = Task {
-            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { _ in }
+            await app.runPlayer(for: request) { _ in }
             ended = true
         }
         defer { mounting.cancel() }
@@ -233,7 +233,7 @@ struct PlayerScenarios {
         let request = try #require(world.app.playback.request)
         let app = world.app
         let mounted = Task {
-            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { _ in }
+            await app.runPlayer(for: request) { _ in }
         }
         try await world.until { world.engines.count == 1 && world.engine.calls.contains("play") }
         try await world.streamPlays(at: .seconds(600), of: .seconds(170 * 60))
@@ -241,7 +241,7 @@ struct PlayerScenarios {
         mounted.cancel()
         await mounted.value
 
-        #expect(world.engine.calls.filter { ["endAudio", "teardown"].contains($0) } == ["endAudio", "teardown"])
+        #expect(world.engine.calls.filter { ["play", "pause", "teardown"].contains($0) }.suffix(2) == ["pause", "teardown"])
         #expect(world.audioSession.calls == [.activate, .deactivate])
         #expect(den.playbackReports.last == FakeJellyfinServer.PlaybackReport(.stopped, "Heat", at: 600))
     }
@@ -275,7 +275,7 @@ struct PlayerScenarios {
         ])
     }
 
-    /// The next pick used to open on a fixed 600 ms grace, and a VLC teardown can run for
+    /// The next pick used to open on a fixed 600 ms grace, and an engine teardown can run for
     /// seconds; the old session's audio deactivation then landed on the new player's audio.
     @Test("a pick made while the closed player's engine is still tearing down opens once that teardown ends")
     func nextPickWaitsForTheClosedEngine() async throws {
@@ -568,7 +568,7 @@ struct PlayerScenarios {
         var player: PlayerViewModel?
         let app = world.app
         let mounting = Task {
-            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { player = $0 }
+            await app.runPlayer(for: request) { player = $0 }
         }
         try await world.until { den.heldResponseCount == 1 && player?.nextEpisode?.name == "Severance S1E2" }
 
@@ -610,25 +610,19 @@ struct PlayerScenarios {
         #expect(player.phase == .playing)
     }
 
-    @Test("a film AVKit can't decode falls back to VLC at the same spot and plays")
-    func undecodableFilmFallsBackToVLC() async throws {
+    @Test("a film AVKit can't decode stops on the error, on the one engine it opened with")
+    func undecodableFilmShowsTheError() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films", minutes: 170)
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         let session = try await world.session(on: den)
         world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: session)
         let player = try await world.openPlayer()
-        #expect(world.engine.id == .avKit)
         try await world.streamPlays(at: .seconds(300), of: .seconds(170 * 60))
-        let url = try #require(world.engine.loadedAssets.last?.url)
 
         world.streamFailsToDecode()
 
-        try await world.until { world.engines.count == 2 && world.engine.calls.contains("play") }
-        #expect(world.engine.id == .vlcKit)
-        #expect(world.engine.loadedAssets.last?.url == url)
-        #expect(world.engine.loadedAssets.last?.startTime == .seconds(300))
-        try await world.streamPlays(at: .seconds(301), of: .seconds(170 * 60))
-        #expect(player.phase == .playing)
+        try await world.until { player.phase == .failed(.playback(.decodeFailed)) }
+        #expect(world.engines.count == 1)
     }
 
     @Test("choosing an external subtitle fetches it from the server and puts it on screen")
@@ -834,14 +828,13 @@ struct PlayerScenarios {
         #expect(player.selectedSubtitleTrack == nil)
     }
 
-    @Test("an AV1 MP4 on the share plays in AVKit where AVPlayer plays AV1, and in VLC where it does not",
-          arguments: [
-            ([.h264, .hevc, .av1], .avKit),
-            ([.h264, .hevc], .vlcKit),
-          ] as [(Set<VideoCodec>, PlaybackEngineID)])
-    func smbAV1FilmFollowsTheDevicesAV1Support(videoCodecs: Set<VideoCodec>, engine: PlaybackEngineID) async throws {
+    @Test("an AV1 MP4 on the share plays where AVPlayer plays AV1, and is refused as unsupported where it does not",
+          arguments: [true, false])
+    func smbAV1FilmFollowsTheDevicesAV1Support(deviceDecodesAV1: Bool) async throws {
         let avPlayer = AVPlayerSupport(
-            containers: [.mp4, .mov, .hls], videoCodecs: videoCodecs, audioCodecs: [.aac, .ac3, .eac3]
+            containers: [.mp4, .mov, .hls],
+            videoCodecs: deviceDecodesAV1 ? [.h264, .hevc, .av1] : [.h264, .hevc],
+            audioCodecs: [.aac, .ac3, .eac3]
         )
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")], avPlayer: avPlayer)
         try await world.playSMBFilm(named: "Dune.mp4", contents: ISOBMFFFixtures.mp4(traks: [
@@ -849,9 +842,14 @@ struct PlayerScenarios {
             ISOBMFFFixtures.trak(stsdEntries: ["mp4a"], handler: "soun"),
         ]))
 
-        try await world.openPlayer()
-
-        #expect(world.engine.id == engine)
+        if deviceDecodesAV1 {
+            try await world.openPlayer()
+            #expect(world.engine.loadedAssets.last?.url.lastPathComponent == "Dune.mp4")
+        } else {
+            let player = try await world.openPlayerToItsError()
+            #expect(player.phase == .failed(.playback(.unsupportedFormat)))
+            #expect(world.engines.count == 0)
+        }
     }
 
     @Test("an SMB film's position survives a relaunch, and playing it again resumes there")

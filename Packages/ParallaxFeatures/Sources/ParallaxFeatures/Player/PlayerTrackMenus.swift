@@ -12,9 +12,8 @@ enum PlayerTrackMenus {
     /// **Jellyfin: the row's renderer decides its id, per stream.**
     /// `PlaybackInfoService` builds a sidecar URL for every TEXT stream — embedded
     /// ones included — so those become `.jellyfinStream` rows, fetched and drawn by
-    /// our own libass, taking the user's settings and looking identical on both
-    /// engines. An IMAGE stream has no sidecar, so it keeps the ENGINE's inventory row
-    /// (`.vlc`/`.avKitOption`, joined to the server's metadata by
+    /// our own libass, taking the user's settings. An IMAGE stream has no sidecar, so
+    /// it keeps the ENGINE's inventory row (`.avKitOption`, joined to the server's metadata by
     /// `JellyfinTrackMatcher`) and the engine draws the bitmaps locally, for free.
     /// Only an image stream the engine can't be matched to falls back to a server
     /// burn-in pick — a full re-encode, so it is the last resort, not the default.
@@ -30,8 +29,7 @@ enum PlayerTrackMenus {
         let streams = resolved?.mediaStreams.filter { $0.kind == .subtitle } ?? []
         guard let resolved, !streams.isEmpty else {
             return DirectPlaySubtitleMenu(
-                tracks: engineTracks.map(normalizedEmbeddedSubtitle)
-                    + (resolved.map(externalSubtitleTracks) ?? smbExternals),
+                tracks: engineTracks + (resolved.map(externalSubtitleTracks) ?? smbExternals),
                 rowIDsByStream: [:]
             )
         }
@@ -60,7 +58,7 @@ enum PlayerTrackMenus {
 
     /// The direct-play menu plus the join a *server preference* needs.
     ///
-    /// A row's id names its RENDERER (`.jellyfinStream` for one we draw, `.vlc` /
+    /// A row's id names its RENDERER (`.jellyfinStream` for one we draw,
     /// `.avKitOption` for one the engine draws), so nothing in the row itself says
     /// which server stream it came from. `rowIDsByStream` is that answer, recorded
     /// where the rows are built rather than re-derived later — a second derivation
@@ -130,11 +128,10 @@ enum PlayerTrackMenus {
     /// External (sidecar) text subtitles from the server, as direct-play menu entries
     /// with `.jellyfinStream` ids. All sidecar text renders client-side
     /// (`SubtitleOverlayView`, fed by `loadSidecarSubtitle`, requesting ass/ssa/srt
-    /// verbatim so authored styling survives) rather than through the engine — VLC
-    /// can't shape sidecar text on iOS, and embedded subs already come from the
-    /// engine's own inventory. Image subs are excluded here by policy: they go
-    /// through server burn-in. Labels come from the server, so they read "English"
-    /// etc. instead of VLC's generic "Track N".
+    /// verbatim so authored styling survives) rather than through the engine, whose
+    /// inventory already carries the embedded subs. Image subs are excluded here by
+    /// policy: they go through server burn-in. Labels come from the server, so they
+    /// read "English" etc. instead of a generic "Track N".
     static func externalSubtitleTracks(from resolved: ResolvedPlayback) -> [SubtitleTrack] {
         resolved.mediaStreams
             .filter { $0.kind == .subtitle && $0.isExternal && !$0.isImageSubtitle }
@@ -203,55 +200,6 @@ enum PlayerTrackMenus {
                 isSDH: track.isSDH
             )
         }
-    }
-
-    /// VLC's untitled-track fallback names, lowercased → the format name for the
-    /// detail line. An MKV subtitle track with no authored title surfaces from
-    /// libvlc as its codec description ("ASS", "SubRip", "UTF-8"…) — not a name a
-    /// person picks a track by. When the track carries a language, swap in the
-    /// localized language name (the same tier the Jellyfin path's `menuLabel`
-    /// uses) and demote the format to the detail line. Authored titles ("Full
-    /// Subs - [Japanese]") never match this table and pass through verbatim.
-    static let embeddedFormatFallbackNames: [String: String] = [
-        "ass": "ASS", "ssa": "SSA", "srt": "SRT", "subrip": "SRT",
-        "utf-8": "SRT", "utf8": "SRT", "vtt": "VTT", "webvtt": "VTT",
-        "pgs": "PGS", "hdmv pgs": "PGS", "vobsub": "VobSub",
-        "dvd subtitles": "VobSub", "dvb subtitles": "DVB",
-        "tx3g": "Timed Text", "mov_text": "Timed Text", "t.140": "Timed Text",
-        "microdvd": "SUB",
-    ]
-
-    /// Display normalization for ENGINE-inventoried (embedded) subtitle tracks —
-    /// the engine reports raw container metadata; naming policy lives here.
-    /// Only rewrites tracks whose name is a codec-fallback (table above) or a
-    /// generic "Track N"/"Subtitle N" AND that carry a language code; everything
-    /// else — authored titles, or fallbacks with no language to name — is kept.
-    static func normalizedEmbeddedSubtitle(_ track: SubtitleTrack) -> SubtitleTrack {
-        let lowered = track.displayName
-            .trimmingCharacters(in: .whitespaces)
-            .lowercased()
-        let format = Self.embeddedFormatFallbackNames[lowered]
-        let isGenericNumbered = ["track", "subtitle"].contains { prefix in
-            guard lowered.hasPrefix(prefix) else { return false }
-            let rest = lowered.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
-            return !rest.isEmpty && rest.allSatisfy(\.isNumber)
-        }
-        guard format != nil || isGenericNumbered,
-              let language = TrackDisplay.languageName(track.languageCode) else {
-            return track
-        }
-        return SubtitleTrack(
-            id: track.id,
-            displayName: language,
-            languageCode: track.languageCode,
-            isForced: track.isForced,
-            // An engine track that already carries a detail (AVKit tracks matched to
-            // Jellyfin streams) keeps it — only VLC's nil gets the derived one.
-            detailLabel: track.detailLabel ?? format.map { "\($0) · Embedded" } ?? "Embedded",
-            isExternal: track.isExternal,
-            isSDH: track.isSDH,
-            isBurnedIn: track.isBurnedIn
-        )
     }
 
     /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id

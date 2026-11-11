@@ -4,66 +4,18 @@ import Synchronization
 import ParallaxCore
 import ParallaxPlayback
 
-// MARK: — PlaybackHints
-
-extension PlaybackHints {
-    /// The AVKit-happy baseline (`https` + `mp4` + `h264` + `aac`, no subtitles) that
-    /// every routing / cache-depth / load test varies exactly one axis of.
-    ///
-    /// One builder for the whole target: the routing matrix, the VLC cache-depth table
-    /// and the engine-load fixtures all used to rebuild these same four fields inline.
-    public static func fixture(
-        scheme: String? = "https",
-        container: Container? = .mp4,
-        video: VideoCodec? = .h264,
-        audio: [AudioCodec] = [.aac],
-        subtitles: [SubtitleFormat] = [],
-        fileSizeBytes: Int64? = nil
-    ) -> PlaybackHints {
-        PlaybackHints(
-            scheme: scheme,
-            container: container,
-            videoCodec: video,
-            audioCodecs: audio,
-            subtitleFormats: subtitles,
-            fileSizeBytes: fileSizeBytes
-        )
-    }
-
-    /// Hints carrying no signal at all — the "server transcoded it, we know nothing"
-    /// shape the selector must still route.
-    public static let unknown = PlaybackHints.fixture(
-        scheme: nil, container: nil, video: nil, audio: []
-    )
-}
-
 // MARK: — PlayableAsset
 
 extension PlayableAsset {
-    /// A loadable asset over the AVKit-happy hint baseline.
     public static func fixture(
         url: URL = URL(string: "https://example.com/stream.mp4")!,
-        headers: [String: String]? = nil,
-        hints: PlaybackHints = .fixture(),
         startTime: CMTime? = nil,
-        subtitleFontsDirectory: URL? = nil,
-        subtitleFontFamily: String? = nil,
-        subtitleTextStyle: EngineSubtitleTextStyle? = nil,
-        engineSubtitlesDisabled: Bool = false,
-        vlcOptions: [String]? = nil,
-        vlcLibraryOptions: [String]? = nil
+        engineSubtitlesDisabled: Bool = false
     ) -> PlayableAsset {
         PlayableAsset(
             url: url,
-            headers: headers,
-            hints: hints,
             startTime: startTime,
-            subtitleFontsDirectory: subtitleFontsDirectory,
-            subtitleFontFamily: subtitleFontFamily,
-            subtitleTextStyle: subtitleTextStyle,
-            engineSubtitlesDisabled: engineSubtitlesDisabled,
-            vlcOptions: vlcOptions,
-            vlcLibraryOptions: vlcLibraryOptions
+            engineSubtitlesDisabled: engineSubtitlesDisabled
         )
     }
 }

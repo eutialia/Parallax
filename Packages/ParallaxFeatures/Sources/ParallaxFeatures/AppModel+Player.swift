@@ -12,21 +12,17 @@ extension AppModel {
     /// `install` receives the model before playback starts, so the view renders the loading
     /// phase from the first beat. A request dismissed while the player was being built never
     /// starts.
-    ///
-    /// `subtitleSurface` is sampled once per session, at asset construction, for the engine's
-    /// subtitle sizing.
     public func runPlayer(
         for request: PlaybackPresenter.Request,
-        subtitleSurface: @escaping @MainActor () -> SubtitleSurface,
         install: (PlayerViewModel) -> Void
     ) async {
         let hold = playback.holdDevice()
         defer { playback.releaseDevice(hold) }
         let vm = switch request.target {
         case .smb(let item, let ref):
-            makeSMBPlayer(item: item, ref: ref, subtitleSurface: subtitleSurface)
+            makeSMBPlayer(item: item, ref: ref)
         case .detail(_, let session, _), .itemID(_, let session, _):
-            await makeJellyfinPlayer(session: session, subtitleSurface: subtitleSurface)
+            await makeJellyfinPlayer(session: session)
         }
         guard !Task.isCancelled, playback.request?.id == request.id else { return }
         // The dismissals that never reach the player's own close button (the tvOS cover
@@ -56,10 +52,10 @@ extension AppModel {
 
     /// A server-less player reporting to no one, which resolves the file under the veil.
     private func makeSMBPlayer(
-        item: Item, ref: SMBServerRef, subtitleSurface: @escaping @MainActor () -> SubtitleSurface
+        item: Item, ref: SMBServerRef
     ) -> PlayerViewModel {
-        // Sidecar subtitle URLs are `smb://` on BOTH SMB routes (the bridge serves only the video
-        // file), which an HTTP fetch can't open — route the SMB scheme through the resolver
+        // Sidecar subtitle URLs are `smb://` (the local server serves only the video file),
+        // which an HTTP fetch can't open — route the SMB scheme through the resolver
         // (Keychain stays out of the player) and everything else over HTTP.
         let resolver = services.smbPlaybackResolver
         let session = services.urlSession
@@ -87,15 +83,9 @@ extension AppModel {
             // SMB-only: live-session frame grab → `MediaArtworkProvider` cache. Duration is
             // threaded from the player at call time (~8s in); the WAN I/O skip and the cache-key
             // recipe both stay inside the provider.
-            backfillThumbnail: { duration, captureFramePerformsIO, captureFrame in
-                await artworkProvider.backfillThumbnail(
-                    item: item, ref: ref, duration: duration,
-                    captureFramePerformsIO: captureFramePerformsIO, captureFrame: captureFrame
-                )
+            backfillThumbnail: { duration, captureFrame in
+                await artworkProvider.backfillThumbnail(item: item, ref: ref, duration: duration, captureFrame: captureFrame)
             },
-            subtitleStyle: subtitleStyleProvider,
-            subtitleSurface: subtitleSurface,
-            engineSubtitleFonts: services.engineSubtitleFonts,
             prepareDisplay: services.prepareDisplay
         )
     }
@@ -103,7 +93,7 @@ extension AppModel {
     /// The per-session factories (playback info, library repo) are resolved here, once the
     /// session exists, so nothing captures them before.
     private func makeJellyfinPlayer(
-        session: Session, subtitleSurface: @escaping @MainActor () -> SubtitleSurface
+        session: Session
     ) async -> PlayerViewModel {
         let info = await services.playbackInfoFactory(session)
         let repo = await services.jellyfinLibraryRepoFactory(session)
@@ -126,9 +116,6 @@ extension AppModel {
             fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
             fetchDelivery: { await info.transcodingDelivery(playSessionID: $0) },
             smbResumeStore: services.smbResumeStore,
-            subtitleStyle: subtitleStyleProvider,
-            subtitleSurface: subtitleSurface,
-            engineSubtitleFonts: services.engineSubtitleFonts,
             prepareDisplay: services.prepareDisplay,
             // Poster bytes for the scrub bar's accent hue. Through the session's own image
             // pipeline, not a bare URLSession: the image endpoints reject anonymous reads on an
@@ -146,14 +133,6 @@ extension AppModel {
                                                maxWidth: ArtworkAccent.thumbnailMaxPixel)
             }
         )
-    }
-
-    /// Read at asset construction for the ENGINE-facing knobs only (VLC's libass directory,
-    /// freetype family, and the `--freetype-*` look an embedded SRT renders with). A closure,
-    /// not a value: `SubtitlePreferences` loads its persisted style asynchronously, so a value
-    /// read when the player was built could still be the pre-load default.
-    private var subtitleStyleProvider: @MainActor () -> SubtitleStyle {
-        { [subtitlePreferences] in subtitlePreferences.style }
     }
 
     /// URLSession does not throw on HTTP 4xx/5xx — it returns the error body. Without the status

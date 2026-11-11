@@ -94,8 +94,8 @@ struct SMBBrowseScenarios {
     @Test("tapping a film asks the player to play it, resolved to a bridged URL that carries no credentials")
     func tappingAFilmPlaysTheResolvedItem() async throws {
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
-        world.nas.setFolder([Self.file("Heat.mkv"), Self.file("Heat.en.srt")], share: "Media", path: "Movies")
-        world.nas.setContents(AppWorld.mkvBytes)
+        world.nas.setFolder([Self.file("Heat.mp4"), Self.file("Heat.en.srt")], share: "Media", path: "Movies")
+        world.nas.setContents(AppWorld.mp4Bytes)
         let movies = await world.openSMBFolder(AppWorld.smbRef, share: "Media", path: "Movies")
         try await world.until { !movies.isLoading }
 
@@ -109,12 +109,9 @@ struct SMBBrowseScenarios {
         #expect(ref == AppWorld.smbRef)
         let resolved = try await world.app.services.smbPlaybackResolver.resolve(item, ref: ref)
         #expect(resolved.url.scheme == "http")
-        #expect(resolved.url.lastPathComponent == "Heat.mkv")
+        #expect(resolved.url.lastPathComponent == "Heat.mp4")
         #expect(!resolved.url.absoluteString.contains("hunter2"))
-        #expect(resolved.vlcOptions == [])
-        #expect(resolved.hints.scheme == "smb")
-        #expect(resolved.hints.container == .mkv)
         #expect(resolved.subtitleURLs.values.map(\.absoluteString) == ["smb://nas.local/Media/Movies/Heat.en.srt"])
-        await resolved.cleanup?()
+        await resolved.cleanup()
     }
 }

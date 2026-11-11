@@ -605,7 +605,7 @@ struct TrackMenuPanel<Content: View>: View {
                 ),
                 // The undecodable case: shown, dimmed, unpickable, and it says why.
                 AudioTrack(
-                    id: .vlc("4"),
+                    id: .avKitOption(4),
                     displayName: "Japanese",
                     languageCode: "jpn",
                     detailLabel: "TrueHD · 7.1",

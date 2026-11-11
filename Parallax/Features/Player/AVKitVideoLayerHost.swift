@@ -46,8 +46,7 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     /// A UIView whose backing layer IS an AVPlayerLayer (auto-sizes; no frame sync).
-    /// Freeze/unfreeze come from `FreezableVideoView`, shared with the VLC host, which
-    /// needs the same hold when its exit cut stops the player.
+    /// Freeze/unfreeze come from `FreezableVideoView`.
     final class PlayerLayerView: FreezableVideoView {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
         var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }

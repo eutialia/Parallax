@@ -3,13 +3,13 @@ import Testing
 import ParallaxTestScaling
 import ParallaxCore
 import ParallaxCoreTestSupport
-@testable import ParallaxFileBrowse
+@testable import ParallaxPlayback
 
 /// `.serialized` caps what this suite costs at any one instant: run in parallel it stands up ~21
 /// listeners and sockets at once, plus the two multi-chunk fixtures, which a 2-core CI runner
 /// cannot absorb. One bridge at a time still exercises every path — nothing here tests concurrency.
-@Suite("SMBHTTPBridge", .serialized, .scaledTimeLimit(minutes: 3))
-struct SMBHTTPBridgeTests {
+@Suite("LocalMediaServer", .serialized, .scaledTimeLimit(minutes: 3))
+struct LocalMediaServerTests {
 
     /// `byte[i] == i % 251`, so any slice is verifiable by index alone. Filled in place: the
     /// `map`-into-`Data` this replaces built a whole intermediate array first, which at
@@ -29,20 +29,20 @@ struct SMBHTTPBridgeTests {
     /// Strictly larger than one chunk, so a full-body fetch walks the streamBody loop several
     /// times. Derived from the production ceiling: widening `chunkSize` must not silently stop
     /// exercising the multi-chunk path.
-    private static let multiChunkSize = SMBHTTPBridge.chunkSize * 5 / 2
+    private static let multiChunkSize = LocalMediaServer.chunkSize * 5 / 2
     /// Must outrun what loopback socket buffers absorb, or the bridge finishes sending and idles in
     /// `receive` instead of parking a `send`. Measured against the unfixed handler: 512 KiB passes
     /// (no stall), 1,000,000 bytes fails. Two ceiling chunks leaves a wide margin over that edge.
-    private static let stalledSize = SMBHTTPBridge.chunkSize * 2
+    private static let stalledSize = LocalMediaServer.chunkSize * 2
 
     /// Runs `body` against a started bridge and always stops it. Swift has no async `defer`, and the
     /// fire-and-forget `Task { await bridge.stop() }` this replaces let listeners outlive their test.
     private func withBridge(
-        size: Int = SMBHTTPBridgeTests.smallSize,
-        _ body: (SMBHTTPBridge, URL, Data) async throws -> Void
+        size: Int = LocalMediaServerTests.smallSize,
+        _ body: (LocalMediaServer, URL, Data) async throws -> Void
     ) async throws {
         let data = Self.fixture(size)
-        let bridge = SMBHTTPBridge(reader: InMemoryRandomAccessReader(data: data),
+        let bridge = LocalMediaServer(reader: InMemoryRandomAccessReader(data: data),
                                    fileName: "video.mp4", contentType: "video/mp4")
         let url: URL
         do {
@@ -150,8 +150,8 @@ struct SMBHTTPBridgeTests {
         try await withBridge(size: Self.multiChunkSize) { _, url, data in
             // Straddles the ceiling by design: one chunk cannot serve it, so streamBody must
             // iterate. Anchored to the production chunk size rather than a literal byte count.
-            let start = SMBHTTPBridge.chunkSize / 2
-            let end = start + SMBHTTPBridge.chunkSize + 7
+            let start = LocalMediaServer.chunkSize / 2
+            let end = start + LocalMediaServer.chunkSize + 7
             var request = URLRequest(url: url)
             request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
             let (body, response) = try await ephemeralHTTPSession().data(for: request)
@@ -267,7 +267,7 @@ struct SMBHTTPBridgeTests {
     @Test("stop() refuses new connections")
     func stopRefusesNewConnections() async throws {
         let data = Self.fixture(1024)
-        let bridge = SMBHTTPBridge(reader: InMemoryRandomAccessReader(data: data),
+        let bridge = LocalMediaServer(reader: InMemoryRandomAccessReader(data: data),
                                    fileName: "video.mp4", contentType: "video/mp4")
         let url = try await bridge.start(scope: .loopback)
         await bridge.stop()
@@ -281,16 +281,16 @@ struct SMBHTTPBridgeTests {
 
     @Test("start() is single-shot, and a stopped bridge can never be restarted")
     func startIsSingleShotAndStopIsPermanent() async throws {
-        let bridge = SMBHTTPBridge(reader: InMemoryRandomAccessReader(data: Self.fixture(16)),
+        let bridge = LocalMediaServer(reader: InMemoryRandomAccessReader(data: Self.fixture(16)),
                                    fileName: "video.mp4", contentType: "video/mp4")
         _ = try await bridge.start(scope: .loopback)
 
-        await #expect(throws: SMBHTTPBridge.BridgeError.alreadyStarted) { _ = try await bridge.start(scope: .loopback) }
+        await #expect(throws: LocalMediaServer.ServerError.alreadyStarted) { _ = try await bridge.start(scope: .loopback) }
 
         await bridge.stop()
         await bridge.stop()   // idempotent
 
-        await #expect(throws: SMBHTTPBridge.BridgeError.stopped) { _ = try await bridge.start(scope: .loopback) }
+        await #expect(throws: LocalMediaServer.ServerError.stopped) { _ = try await bridge.start(scope: .loopback) }
     }
 
     @Test("A bridge whose clients reset mid-download is freed once it stops")
@@ -341,7 +341,7 @@ struct SMBHTTPBridgeTests {
         try await withBridge { _, url, _ in
             // Never terminated, and larger than the cap, so the reader gives up on it.
             var head = Data("GET \(url.path) HTTP/1.1\r\n".utf8)
-            head.append(Data("X-Filler: \(String(repeating: "a", count: SMBHTTPBridge.maxHeadBytes))\r\n".utf8))
+            head.append(Data("X-Filler: \(String(repeating: "a", count: LocalMediaServer.maxHeadBytes))\r\n".utf8))
             let response = try await rawHTTPExchange(with: url, sending: head)
             #expect(response.isEmpty)
         }
@@ -383,5 +383,5 @@ private final class QuietPoll: @unchecked Sendable {
 }
 
 private final class WeakBridge: @unchecked Sendable {
-    weak var bridge: SMBHTTPBridge?
+    weak var bridge: LocalMediaServer?
 }

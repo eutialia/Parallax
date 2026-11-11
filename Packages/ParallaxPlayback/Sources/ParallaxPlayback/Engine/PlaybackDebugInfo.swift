@@ -5,9 +5,8 @@ import Foundation
 /// `ResolvedPlayback` metadata: on a transcode the source may be 4K HEVC while
 /// the engine decodes a 1080p H.264 HLS variant — this reports the latter.
 ///
-/// Every field is optional / empty where the engine can't report it (VLC has no
-/// HLS access log; AVKit has no subtitle-delay control), so the HUD shows "—"
-/// rather than a wrong value.
+/// Every field is optional / empty where the engine can't report it, so the HUD
+/// shows "—" rather than a wrong value.
 public struct PlaybackDebugInfo: Sendable, Equatable {
     /// Actual decoded frame size.
     public var presentationWidth: Int?
@@ -41,9 +40,6 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     public var legibleOptions: [String]
     /// nil = no subtitle is active right now.
     public var selectedLegible: String?
-    /// Current subtitle timing offset in milliseconds (VLC). nil where the engine
-    /// has no such control (AVKit). Positive = subtitles delayed vs audio.
-    public var subtitleDelayMs: Int?
     /// The transport's raw truth, e.g. "playing", "paused", "waiting (minimize
     /// stalls)" — the discriminator for a silent never-starting stall (AVKit
     /// `timeControlStatus` + `reasonForWaitingToPlay`).
@@ -83,7 +79,6 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
         selectedAudible: String? = nil,
         legibleOptions: [String] = [],
         selectedLegible: String? = nil,
-        subtitleDelayMs: Int? = nil,
         transportState: String? = nil,
         stallCount: Int? = nil,
         bytesTransferred: Int64? = nil,
@@ -103,7 +98,6 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
         self.selectedAudible = selectedAudible
         self.legibleOptions = legibleOptions
         self.selectedLegible = selectedLegible
-        self.subtitleDelayMs = subtitleDelayMs
         self.transportState = transportState
         self.stallCount = stallCount
         self.bytesTransferred = bytesTransferred

@@ -15,11 +15,6 @@ private struct SMBSessionState {
     /// The playing item's identity — the `SMBResumeStore` key progress beats persist under.
     /// Set from `SMBPlaybackItem.itemID` in `start(smbItem:)`.
     var itemID: ItemID
-    /// Whether `currentDuration` is a real container length rather than VLCKitEngine's
-    /// read-rate estimate for an incomplete file. Gates the store's ≥95%-complete clear OFF
-    /// when false — an estimate must never wipe real progress. Reset with the whole session,
-    /// so a later Jellyfin/SMB session can't inherit a stale false. (`hasTrustworthyDuration`.)
-    var hasTrustworthyDuration: Bool
     /// When a resume position was last persisted, on `PlayerViewModel.elapsed` — throttles the
     /// `.playing`/`.paused` beat writes to one per ~10s, mirroring the Jellyfin progress-report
     /// cadence. Nil until the first write, which always goes out.
@@ -63,7 +58,7 @@ public final class PlayerViewModel {
 
     /// What `.loading` is covering.
     private enum Cover {
-        /// Nothing of this item is on screen yet: a first play, an episode handoff, a reroute.
+        /// Nothing of this item is on screen yet: a first play or an episode handoff.
         case cold
         /// An engine-reusing reload over a live frame, and the intent it honors. It ends where
         /// the phase leaves `.loading` — on the NEW session's first live beat, several hundred
@@ -98,27 +93,15 @@ public final class PlayerViewModel {
         if case .loading = surface { return }
         surface = .loading(.cold)
     }
-    /// The engine this session is driving. Read-only here: `engineSlot` owns the
-    /// lifetime, and every build/retire goes through it, so "never nil between the first
-    /// `loadAndPlay` and `stop()`" is an invariant one type enforces rather than a rule
-    /// four call sites remember. Observable through the slot — a view reading this reads
-    /// `EngineSlot.current`, so a swap re-renders the host exactly as a stored property
-    /// would.
+    /// The engine this session is driving, nil before the first `loadAndPlay` and after
+    /// `stop()`. Read-only here: `engineSlot` owns the lifetime. A view reading this reads
+    /// `EngineSlot.current`, so it observes the slot.
     public var engine: (any PlaybackEngine)? { engineSlot.current }
 
     private let engineSlot = EngineSlot()
 
-    /// The libvlc instance arguments `engine` was BUILT with, so `loadAndPlay` can tell a
-    /// reusable engine from a stale one. Instance-scoped options are fixed at construction
-    /// (`VLCKitEngine.init(libraryOptions:)`), and every VLC asset now carries some — the
-    /// subtitle look moved there — so "reuse only when the asset has none" would never reuse
-    /// again and every episode change would rebuild the player. Tracked here rather than on
-    /// the `PlaybackEngine` protocol: it is an app-side reuse policy, and AVKit has no such
-    /// concept. Only ever read next to a live `engine` (the reuse test binds one first), and
-    /// rewritten by every construction, so a teardown has nothing to clear here.
-    private var engineLibraryOptions: [String]?
-    public var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
-    public var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
+    public var isPiPAvailable: Bool { engine != nil }
+    public var isVideoAirPlayAvailable: Bool { engine != nil }
 
     /// PiP start action, pushed up from the AVKit video host (`onPiPReady`) once its PiP
     /// controller is ready. Nil until a host mounts, so `startPiP()` is a safe no-op in tests.
@@ -135,8 +118,7 @@ public final class PlayerViewModel {
     /// ordinary beats never call into the host.
     ///
     /// `beginExit()` freezes too and never unfreezes: the engine stops under the surface
-    /// to end audio (VLC closes its vout with it), and the still is what the card slides
-    /// out on. Both hosts wire it for that reason.
+    /// to end audio, and the still is what the card slides out on.
     public var freezeSurfaceAction: (@MainActor () -> Void)?
     public var unfreezeSurfaceAction: (@MainActor () -> Void)?
     private var surfaceFrozen = false
@@ -146,11 +128,9 @@ public final class PlayerViewModel {
         freezeSurfaceAction?()
     }
     /// The exit fence lives HERE, not at the call sites, because the exit freeze has to
-    /// survive beats that arrive after it: AVKit's default `endAudio()` funnels to
-    /// `pause()`, which emits a `.paused` beat synchronously, and VLC's poll swallows its
-    /// own cancellation in a `try?` sleep for one more tick. Either would crossfade the
-    /// still away mid-slide-out, onto a vout that is already closing: a visible cut to
-    /// black. `stop()` is fenced by the same flag; the one path that comes back
+    /// survive beats that arrive after it: the exit's `pause()` emits a `.paused` beat
+    /// synchronously. That beat would crossfade the
+    /// still away mid-slide-out: a visible cut to black. `stop()` is fenced by the same flag; the one path that comes back
     /// (`retry()`/`replacePlayback` → `resetForReplay`) releases the frame itself, right
     /// after it disarms the fence and before the fresh `start`.
     private func unfreezeVideoSurface() {
@@ -215,7 +195,7 @@ public final class PlayerViewModel {
         currentDuration.isNumeric && CMTimeGetSeconds(currentDuration) > 0
     }
     /// Absolute media time the contiguous buffer around the playhead extends to
-    /// (from the engine's beats). Nil when the engine doesn't report it (VLC) or
+    /// (from the engine's beats). Nil when no loaded range contains the playhead or
     /// while a (re)load is buffering fresh.
     private(set) var bufferedTo: CMTime?
 
@@ -293,8 +273,7 @@ public final class PlayerViewModel {
                         delta: SeekDelta(from: from.unitClamped, to: to.unitClamped))
     }
     /// Whether the ENGINE is actively playing (vs paused): a mirror driven by its beats,
-    /// so it necessarily LAGS: VLC polls its transport every 500ms behind a seek-settlement
-    /// gate (measured at ~5s on wmv/SMB), AVKit emits nothing until a re-buffer ends.
+    /// so it necessarily LAGS: AVKit emits nothing until a re-buffer ends.
     ///
     /// NO user-facing surface reads it. Every transport surface (the play/pause glyph, the
     /// tvOS paused overlay, the chrome auto-hide timers) reads `desiredPlaying` instead:
@@ -315,7 +294,7 @@ public final class PlayerViewModel {
     /// Every scrub surface captures its resume intent from HERE. Capturing `isPlaying`
     /// instead was the bug: a second scrub inside the mirror's lag window read `false`, so its
     /// commit seeked without resuming and playback stuck on the pause the scrub itself had
-    /// issued (usually from the second scrub after playback starts, both engines, all platforms).
+    /// issued (usually from the second scrub after playback starts, all platforms).
     public private(set) var desiredPlaying: Bool = false
 
     // MARK: - Player chrome (P4)
@@ -462,21 +441,6 @@ public final class PlayerViewModel {
     /// User-selected playback speed (1.0 = normal). Drives the speed chip.
     public private(set) var playbackRate: Float = 1
 
-    /// The user's subtitle-delay nudge (ms) for the item being played. The ENGINE's
-    /// copy is input-scoped and reset by every `load()`, so the intent lives here —
-    /// per item, like the pick itself — and `loadAndPlay` re-applies it after a
-    /// same-item reload (transcode swap, track switch). Cleared when the item changes
-    /// (`replacePlayback`); a retry of the same item keeps it, like `playbackRate`.
-    private(set) var subtitleDelayMs = 0
-
-    /// The just-loaded asset itself — kept so a reactive AVKit→VLC re-route
-    /// (`attemptReactiveFallback`) can rebuild it (same url/headers/hints/vlcOptions,
-    /// forced onto VLCKit) and so `ReactiveFallback.shouldReroute` can read its container
-    /// back off `hints`, without threading a duplicate copy through every play path.
-    /// Set at the top of `loadAndPlay` (every play path funnels through there); cleared
-    /// with the rest of the per-session state in `stop()`.
-    private var currentAsset: PlayableAsset?
-
     /// The engine session this view model is driving — `engine.load()`'s return value, and
     /// the ONE thing `handle` checks a beat against. An engine is reloadable in place, so the
     /// engine's own identity cannot answer "is this beat about the media I am playing now?":
@@ -484,7 +448,7 @@ public final class PlayerViewModel {
     /// media's callbacks stay live for seconds after the reload arms (a status KVO enqueued on
     /// the run loop, an inventory load mid-await, an armed watchdog).
     ///
-    /// It replaces the flags this view model used to raise around a reload and a reroute. Those
+    /// It replaces the flags this view model used to raise around a reload. Those
     /// were read where a beat is CONSUMED while being cleared on the reload's own timeline, so a
     /// beat the dying session published while a flag was up could take its MainActor turn after
     /// the flag came down and be honored as the live session's — on a reload that beat is a
@@ -512,17 +476,6 @@ public final class PlayerViewModel {
         /// never persisted.
         var awaitsFirstLiveBeat: Bool
     }
-
-    /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
-    /// `stop()` can cancel it — closing the window where `retry()`/`resetForReplay` tear
-    /// the session down while a pending hop is still in flight and would otherwise build
-    /// a VLC engine for a session that's already gone. Kept once it has run: it is also the
-    /// session's one-shot latch.
-    private var reactiveFallbackTask: Task<Void, Never>?
-    /// THIS session has already spent its single re-route, so a second terminal failure (on
-    /// VLC, or on a second MP4 defect) falls through to the normal error scrim instead of
-    /// retrying forever.
-    private var didReactivelyReroute: Bool { reactiveFallbackTask != nil }
 
     /// The debug overlay's session diagnostics: the startup metric and the transcode delivery.
     /// See `SessionDiagnostics`.
@@ -612,7 +565,7 @@ public final class PlayerViewModel {
     /// Optimistic transport toggle from the play/pause button and the remote (headset, Now
     /// Playing) toggle command. Flips to the opposite of the user's INTENT (`desiredPlaying`),
     /// never the engine mirror or the Now Playing rate: inside the mirror's lag window
-    /// (wmv/VLC settles for seconds) both can still read the pre-command value, so toggling
+    /// both can still read the pre-command value, so toggling
     /// off them did the exact opposite of what the press asked for.
     public func togglePlayPause() {
         setPlaying(!desiredPlaying)
@@ -637,9 +590,8 @@ public final class PlayerViewModel {
         guard engine != nil else { return }
         // Same exit fence the scrub/seek surfaces carry: a Now Playing or lock-screen play
         // command can land inside the dismiss animation (the remote commands stay registered
-        // until `stop()` clears them), and on AVKit nothing downstream would stop it from
-        // resuming audible playback under a player that is already sliding away. VLC is only
-        // saved by its own engine latch; the fence is what makes both paths behave.
+        // until `stop()` clears them), and nothing downstream would stop it from
+        // resuming audible playback under a player that is already sliding away.
         guard !isExiting else { return }
         desiredPlaying = playing
         isPlaying = playing
@@ -682,7 +634,7 @@ public final class PlayerViewModel {
     /// is the only voice still alive at the engine no matter which surface issued the command —
     /// a press, a scrub commit's reconcile, a still-frame hold's release. Two writers awaiting
     /// their own `play()`/`pause()` on separate unstructured tasks have no ordering at all: the
-    /// slow one (VLC's settle gate, an AVPlayer rate flip on a transcode) can land after the fast
+    /// slow one (an AVPlayer rate flip on a transcode) can land after the fast
     /// one and leave the engine playing under a paused glyph, which nothing self-heals because
     /// every transport surface draws from intent.
     ///
@@ -691,9 +643,8 @@ public final class PlayerViewModel {
     private func commandTransport(_ playing: Bool) {
         transportTask?.cancel()
         transportTask = Task {
-            // Re-read the engine at execution time: a pending command after stop() — or after a
-            // track switch rebuilt it — must no-op or reach the LIVE engine, never the instance
-            // the caller happened to be holding before its await.
+            // Re-read the engine at execution time: a pending command after stop() must no-op,
+            // never reach the instance the caller happened to be holding before its await.
             guard !Task.isCancelled, let engine else { return }
             // A transport command must not reach an engine mid-reload: the item under it is
             // being replaced, and commanding through that window is the seek-wedge class.
@@ -736,7 +687,7 @@ public final class PlayerViewModel {
     /// The Jellyfin play session's reports, encode kill and keepalive. See `SessionReporter`.
     private let reporter: SessionReporter
     private let resolve: ResolveCall
-    private let engineFactory: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
+    private let engineFactory: @MainActor @Sendable () -> any PlaybackEngine
     private let audioSession: AudioSessionLease
     /// Fetches an item's full detail (`ItemDetail`) from its id — used by the
     /// direct-play entry `start(itemID:)`. Defaulted so existing `start(item:)`
@@ -923,10 +874,10 @@ public final class PlayerViewModel {
     /// The SMB resolve closure for the current local session (nil for Jellyfin), kept so
     /// `retry()` can replay the SMB path — which sets neither `playingItem` nor `pendingItemID`.
     private var smbResolve: (() async throws -> SMBPlaybackItem)?
-    /// Tears down the SMB HTTP bridge + its reader when the current session ends (bridge route
-    /// only; nil on the VLC route and every Jellyfin session). An orphaned bridge holds an SMB
-    /// connection and a LAN-reachable file URL, so it must die with the session — invoked +
-    /// nil'd in `stop()`, `tearDownEngine()`, and every `start(smbItem:)` failure catch.
+    /// Stops the SMB delivery and releases its reader when the current session ends (nil on
+    /// every Jellyfin session). An orphaned delivery holds an SMB connection and a
+    /// LAN-reachable file URL, so it must die with the session: `tearDownSMBBridge()` runs
+    /// and clears it.
     private var smbCleanup: (@Sendable () async -> Void)?
     /// The active SMB/local session's resume-tracking state, folded into one value so the
     /// "reset the trust bit wherever the item id clears" invariant is STRUCTURAL: clearing
@@ -977,18 +928,12 @@ public final class PlayerViewModel {
     /// resolve left the scrim up forever (tvOS field report, 2026-07-20).
     static let reloadResolveDeadline: Duration = .seconds(15)
 
-    /// SMB-only thumbnail backfill sink: `(duration, engine.captureFramePerformsIO, captureFrame)
-    /// → Void`. Default no-op so the Jellyfin construction site (and every test fixture) compiles
-    /// unchanged; the SMB player (`AppModel.runPlayer`) wires it to `MediaArtworkProvider.backfillThumbnail`,
-    /// which uses the `Bool` to skip an I/O-issuing capture on a non-LAN link. The duration is
-    /// sampled at call time (~8s into playback), not at schedule time.
-    private let backfillThumbnail: @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void
+    /// SMB only: hands `MediaArtworkProvider` a frame grabbed from the live session, with the
+    /// duration sampled at call time. A no-op on Jellyfin.
+    private let backfillThumbnail: @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void
 
     /// Delay before the SMB thumbnail backfill grabs its frame — see `scheduleThumbnailBackfill()`.
     static let backfillDelay: Duration = .seconds(8)
-
-    /// Builds what the engine loads, from a resolved stream or an SMB file.
-    private let assets: PlayerAssetFactory
 
     /// Asks the display to match the content about to play (tvOS: HDR and frame rate) and
     /// waits for it to settle. A no-op where the display has no modes to switch.
@@ -999,7 +944,7 @@ public final class PlayerViewModel {
         clock: any Clock<Duration>,
         playbackInfo: any PlaybackReporting,
         resolve: @escaping ResolveCall,
-        engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
+        engineFactory: @escaping @MainActor @Sendable () -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
         nowPlaying: any NowPlayingUpdating,
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
@@ -1011,10 +956,7 @@ public final class PlayerViewModel {
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
         smbResumeStore: SMBResumeStore,
-        backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in },
-        subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
-        subtitleSurface: @escaping @MainActor () -> SubtitleSurface,
-        engineSubtitleFonts: @escaping @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts,
+        backfillThumbnail: @escaping @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void = { _, _ in },
         prepareDisplay: @escaping @MainActor (any PlaybackEngine) async -> Void = { _ in },
         fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
     ) {
@@ -1035,11 +977,6 @@ public final class PlayerViewModel {
         self.diagnostics = SessionDiagnostics(clock: clock, fetchDelivery: fetchDelivery)
         self.smbResumeStore = smbResumeStore
         self.backfillThumbnail = backfillThumbnail
-        self.assets = PlayerAssetFactory(
-            subtitleStyle: subtitleStyle,
-            subtitleSurface: subtitleSurface,
-            engineSubtitleFonts: engineSubtitleFonts
-        )
         self.prepareDisplay = prepareDisplay
         self.accent = PlayerAccent(fetchArtwork: fetchArtwork)
         sidecar.onFailed = { [weak self] streamIndex in
@@ -1179,10 +1116,6 @@ public final class PlayerViewModel {
     private func replacePlayback(with id: ItemID) async {
         guard !succession.isAdvancing, !isExiting else { return }
         await succession.advance {
-            // A delay nudge belongs to the item it was tuned against — the next episode
-            // has its own muxing and starts level. (A retry of the SAME item goes through
-            // `resetForReplay` directly and keeps it, like `playbackRate`.)
-            subtitleDelayMs = 0
             await replay(origin: .advance) { await self.start(itemID: id) }
         }
     }
@@ -1328,15 +1261,15 @@ public final class PlayerViewModel {
         // reads only the Jellyfin playingItem/pendingItemID, which this path never sets).
         smbResolve = resolve
         do {
-            let item = try await diagnostics.timingResolve(route: { .smb(bridged: $0.isBridged) }, resolve)
+            let item = try await diagnostics.timingResolve(route: { _ in .smb }, resolve)
             // Superseded during the resolve: `smbCleanup` is the replacement's slot now, so this
             // bridge is reaped here, and nothing of this start is written.
             guard isNewestStart(generation) else {
-                await item.cleanup?()
+                await item.cleanup()
                 return
             }
             // Stash the bridge cleanup BEFORE the exit fence below: `resolve()` already
-            // started the bridge (bridge route), and `checkStillActive()` throws when a
+            // started the bridge, and `checkStillActive()` throws when a
             // dismissal landed in the resolve window (the common exit case). Stashing here
             // means the live bridge is reachable — the `stop()` backstop (`runPlayer` always
             // runs it) reads this property — instead of being dropped un-reaped. `start(smbItem:)`
@@ -1362,17 +1295,14 @@ public final class PlayerViewModel {
         }
     }
 
-    /// SMB/local direct-play entry: play a local file by building a `PlayableAsset`
-    /// DIRECTLY — no Jellyfin network resolve, no `DeviceProfile`, no
-    /// `mediaSourceID`/`playSessionID`, no progress reporting. The caller (Task 11)
-    /// pre-resolves everything (the `smb://` URL, credential options from the Keychain,
-    /// sibling subtitle URLs), so the VM stays decoupled from the SMB layer.
+    /// SMB entry: play a file by building a `PlayableAsset` directly, with no Jellyfin
+    /// resolve, no `mediaSourceID`/`playSessionID` and no progress reporting. The caller
+    /// resolves everything first (the local delivery URL, sibling subtitle URLs), so the VM
+    /// stays decoupled from the SMB layer.
     ///
     /// `resolved` deliberately stays nil: the beat handler's `if let resolved`
     /// blocks then skip all Jellyfin reporting, so a local session never reports
-    /// progress to a server it has none of. The libVLC `smb://` path is the
-    /// validated primary (the spike passed), so the asset routes to VLCKit via
-    /// `hints.scheme == "smb"`.
+    /// progress to a server it has none of.
     func start(smbItem: SMBPlaybackItem) async {
         await start(smbItem: smbItem, generation: sessionGeneration)
     }
@@ -1393,10 +1323,8 @@ public final class PlayerViewModel {
         // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
         smbCleanup = smbItem.cleanup
         // The local-resume session: progress beats + stop()'s final write persist positions
-        // under `itemID` (exactly where the resolver's startTime came from);
-        // `hasTrustworthyDuration` gates the store's 95%-complete clear (see the type doc).
-        smbSession = SMBSessionState(itemID: smbItem.itemID,
-                                     hasTrustworthyDuration: smbItem.hasTrustworthyDuration)
+        // under `itemID` (exactly where the resolver's startTime came from).
+        smbSession = SMBSessionState(itemID: smbItem.itemID)
         do {
             do {
                 try await audioSession.activate()
@@ -1418,10 +1346,8 @@ public final class PlayerViewModel {
                 urls: smbItem.subtitleURLs, labels: smbItem.subtitleLabels
             )
             availableSubtitleTracks = smbExternalSubtitleTracks
-            let asset = assets.asset(for: smbItem)
-            let support = await deviceProfileBuilder.build().avPlayer
-            try await loadAndPlay(asset, route: .select(support), reusingEngine: false,
-                                  generation: generation)
+            let asset = PlayerAssetFactory.asset(for: smbItem)
+            try await loadAndPlay(asset, reusingEngine: false, generation: generation)
         } catch {
             // Superseded: the bridge slot, the audio session and the phase are the replacement's.
             guard isNewestStart(generation) else { return }
@@ -1443,8 +1369,7 @@ public final class PlayerViewModel {
     }
 
     /// Invokes + clears the SMB bridge cleanup exactly once. Nil'ing before the await makes it
-    /// idempotent against the racing `stop()`/`tearDownEngine()` sites; a no-op on Jellyfin and
-    /// VLC-route sessions (`smbCleanup` is nil).
+    /// idempotent against the racing `stop()`/`tearDownEngine()` sites; a no-op on Jellyfin.
     private func tearDownSMBBridge() async {
         if let cleanup = smbCleanup {
             smbCleanup = nil
@@ -1454,18 +1379,14 @@ public final class PlayerViewModel {
 
     /// Persists the current SMB position at most every ~10s — the local mirror of the
     /// Jellyfin progress-report cadence, shared by the `.playing` and `.paused` beat arms.
-    /// The duration only rides along when it's both real (`hasKnownDuration`) AND TRUSTED
-    /// (`session.hasTrustworthyDuration`): an incomplete file can play with a NUMERIC but
-    /// ESTIMATED length (VLCKitEngine's fileSize×time/readBytes guess), and the store's
-    /// 95%-finished rule must never clear real progress against that guess. Fire-and-forget
-    /// into the store actor so a beat never blocks on UserDefaults.
+    /// Fire-and-forget into the store actor so a beat never blocks on UserDefaults.
     private func saveSMBResumeThrottled() {
         guard let session = smbSession else { return }
         let now = elapsed()
         if let last = session.lastResumeWrite, now - last < .seconds(10) { return }
         smbSession?.lastResumeWrite = now
         let position = currentPosition
-        let duration = (hasKnownDuration && session.hasTrustworthyDuration) ? currentDuration : nil
+        let duration = hasKnownDuration ? currentDuration : nil
         let itemID = session.itemID
         let previous = session.resumeSaveTask
         smbSession?.resumeSaveTask = Task {
@@ -1507,17 +1428,10 @@ public final class PlayerViewModel {
             try? await clock.sleep(for: Self.backfillDelay)
             guard !Task.isCancelled, let self else { return }
             guard let session = self.smbSession, let engine = self.engine else { return }
-            // Duration sampled NOW (not at schedule time): playback has progressed ~8s, and
-            // VLC may have only just resolved a real length. Same gate as the resume store
-            // (`saveSMBResumeThrottled`): the duration only rides along when it's both real
-            // (`hasKnownDuration`) AND TRUSTED (`session.hasTrustworthyDuration`) — an
-            // incomplete file can play with a NUMERIC but ESTIMATED length
-            // (VLCKitEngine's fileSize×time/readBytes guess), and that must never ride along
-            // as a bogus sidecar.
-            let duration: Duration? = (self.hasKnownDuration && session.hasTrustworthyDuration)
+            let duration: Duration? = self.hasKnownDuration
                 ? .seconds(CMTimeGetSeconds(self.currentDuration))
                 : nil
-            await self.backfillThumbnail(duration, engine.captureFramePerformsIO) { [weak engine] in
+            await self.backfillThumbnail(duration) { [weak engine] in
                 await engine?.captureFrame()
             }
         }
@@ -1596,8 +1510,8 @@ public final class PlayerViewModel {
             availableSubtitleTracks = PlayerTrackMenus.externalSubtitleTracks(from: resolved)
         }
 
-        let asset = assets.asset(for: resolved)
-        try await loadAndPlay(asset, route: .select(caps.avPlayer), reusingEngine: reusingEngine,
+        let asset = PlayerAssetFactory.asset(for: resolved)
+        try await loadAndPlay(asset, reusingEngine: reusingEngine,
                               superseding: superseding, generation: generation)
     }
 
@@ -1659,78 +1573,33 @@ public final class PlayerViewModel {
         }
     }
 
-    /// How `loadAndPlay` picks the engine: routed by the probed support, or pinned to VLCKit
-    /// by the reactive fallback's retry (`attemptReactiveFallback`), which EngineSelector
-    /// never sees.
-    private enum EngineRoute: Equatable {
-        case select(AVPlayerSupport)
-        case vlcFallback
-    }
-
-    /// Select the engine for `asset`, (re)build or reuse it, load, fence, and play —
+    /// (Re)build or reuse the engine for `asset`, load, fence, and play —
     /// the shared tail of every play path. `beginPlayback` (Jellyfin) and
     /// `start(smbItem:)` (SMB) both end here, so the engine lifecycle (subscription,
     /// Now Playing wiring, tvOS display-mode match, load-failure teardown, rate
     /// re-apply) lives in exactly one place.
     private func loadAndPlay(
         _ asset: PlayableAsset,
-        route: EngineRoute,
         reusingEngine: Bool,
         superseding: PlaybackSessionID? = nil,
         generation: Int
     ) async throws {
-        // Recorded up front (before the engine even attempts the load) so a reactive
-        // fallback (`attemptReactiveFallback`) can rebuild this exact asset off it
-        // without threading a duplicate copy through every play path.
-        currentAsset = asset
-        let id = switch route {
-        case .select(let support): EngineSelector.select(hints: asset.hints, support: support)
-        case .vlcFallback: PlaybackEngineID.vlcKit
-        }
-        // Who owns `desiredPlaying`. Only a FRESH session — the user opening an item —
-        // makes starting playback the intent to play. A reload (`reusingEngine`: the
-        // transcode track switch) and the reactive
-        // AVKit->VLC reroute (`.vlcFallback`) are mechanical: they resume because the
-        // decoder has to be told to run, not because anyone asked. Those inherit the
-        // standing intent, and the engine they come up on is commanded from it below —
-        // so a lock-screen pause issued while the engine was being rebuilt survives the
-        // rebuild instead of being overwritten by it.
-        let isFreshSession = !reusingEngine && route != .vlcFallback
+        // Only a fresh session, the user opening an item, makes starting playback the intent
+        // to play. A reload resumes because the decoder has to be told to run, so it inherits
+        // the standing intent: a lock-screen pause issued mid-reload survives it.
+        let isFreshSession = !reusingEngine
 
-        // Reuse the live engine when a transcode track switch keeps the same engine
-        // type: reloading the asset on the existing AVPlayer keeps its video layer
-        // mounted, so the surface holds the last frame through the swap instead of
-        // tearing down to black. A fresh play (or an engine-type change) builds a new
-        // engine and wires up its state subscription + Now Playing handlers. Also
-        // excluded when the new asset's libvlc INSTANCE arguments differ from the ones the
-        // existing engine was built with — those are fixed at construction
-        // (VLCKitEngine.init), so reusing would silently keep serving the OLD ones. Equality
-        // and not mere presence: every VLC asset carries the subtitle look here now, and a
-        // presence test would retire engine reuse entirely.
-        //
-        // Computed for the engine being BUILT, which is what makes the comparison honest:
-        // the factory's AVKit branch drops these (AVFoundation draws its own subtitles), so
-        // an AVKit engine is never built with them and must not be retired over them — a
-        // mid-session subtitle restyle would otherwise tear down the AVPlayer, and with it
-        // the held frame that transcode track switches exist to preserve.
-        let libraryOptions = id == .vlcKit ? asset.vlcInstanceArguments : nil
         let engine: any PlaybackEngine
         let rebuilt: Bool
-        if reusingEngine, let existing = self.engine, existing.id == id,
-           libraryOptions == engineLibraryOptions {
+        // Reloading on the live AVPlayer keeps its video layer mounted, so the surface holds
+        // the last frame through a transcode track switch.
+        if reusingEngine, let existing = self.engine {
             engine = existing
             rebuilt = false
         } else {
             rebuilt = true
-            // The replacement is built BEFORE the outgoing engine is retired, and the slot
-            // installs it in the same tick the old one leaves: the host view stays mounted
-            // over the frozen frame, and `attachIfNeeded` re-points the drawable in place.
-            // `EngineSlot.swap` cuts the outgoing audio on the spot (two decoders feeding
-            // one output is the audible defect) and moves only the slow half — the
-            // teardown — off this path, into a retirement `stop()` drains.
-            engine = engineFactory(id, libraryOptions)
-            await engineSlot.swap(to: engine)
-            engineLibraryOptions = libraryOptions
+            engine = engineFactory()
+            engineSlot.install(engine)
             subscribe(to: engine)
             nowPlaying.configure(
                 // Transport-preserving: a paused lock-screen scrub must not come back
@@ -1763,7 +1632,7 @@ public final class PlayerViewModel {
                 """
                 playback session \(superseding?.description ?? self.activeSession?.id.description ?? "none", privacy: .public) → \
                 \(opened.description, privacy: .public) \
-                origin=\(isFreshSession ? "fresh" : (reusingEngine ? "reload" : "reroute"), privacy: .public) \
+                origin=\(isFreshSession ? "fresh" : "reload", privacy: .public) \
                 engine=\(rebuilt ? "rebuilt" : "reused", privacy: .public) \
                 at=\(CMTimeGetSeconds(asset.startTime ?? .zero), format: .fixed(precision: 1), privacy: .public)s \
                 load=\(SessionDiagnostics.millis(self.elapsed() - loadStart), privacy: .public)ms \
@@ -1805,34 +1674,24 @@ public final class PlayerViewModel {
         }
         // Stopwatch anchor: recorded at dispatch with the engine that will play, consumed by this
         // session's first `.playing` beat in `handle(_:)` — see `startupMillis`.
-        diagnostics.armStartupClock(engine: id)
+        diagnostics.armStartupClock()
         if isFreshSession { desiredPlaying = true }
         // Starting a stream supersedes any transport command still queued on the channel: a
         // pause armed before this load must not land on the engine it is about to start.
         transportTask?.cancel()
         await engine.play()
-        // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
-        // survives an engine rebuild (track switch / first play after a speed change).
-        // Guarded on identity: a reactive reroute can interleave and tear this engine
-        // down while the await above was suspended, and setRate must not reach a
-        // torn-down engine.
+        // A freshly-built engine starts at 1.0×, so the chosen speed is applied again.
+        // Guarded on identity: a stop can interleave and tear this engine down while the
+        // await above was suspended, and setRate must not reach a torn-down engine.
         if playbackRate != 1, self.engine === engine {
             await engine.setRate(playbackRate)
         }
-        // Same shape for the subtitle delay: `load()` resets the engine's copy (it is
-        // input-scoped and belongs to the media that was just replaced), so the intent
-        // this view model holds for the item has to be re-pushed onto the fresh input.
-        if subtitleDelayMs != 0, self.engine === engine {
-            await engine.setSubtitleDelay(milliseconds: subtitleDelayMs)
-        }
-        // The rebuilt engine is commanded from the standing intent, not from the load's
-        // own mechanical `play()`: a pause issued while the engine was being replaced
-        // (lock screen, Now Playing, the transport button) landed on the OUTGOING engine,
-        // and without this the replacement comes up playing against it.
-        // Rebuilds only: a REUSED engine belongs to a reload, whose transport the drain
-        // reconciles from intent once the run has settled — this line runs before that
-        // settle, and on the VLCKit route a `pause()` here also races the detached
-        // resume-seek `play()` spawns, so a paused chapter jump could land off-target.
+        // A pause issued while the `play()` above was in flight (lock screen, Now Playing,
+        // the transport button) travels on its own task and has no ordering against it, so
+        // the new engine is commanded from the standing intent once more.
+        // New engines only: a REUSED engine belongs to a reload, whose transport the drain
+        // reconciles from intent once the run has settled, and this line runs before that
+        // settle.
         if rebuilt, !desiredPlaying, self.engine === engine {
             await engine.pause()
         }
@@ -1849,11 +1708,8 @@ public final class PlayerViewModel {
     private func tearDownEngine() async {
         diagnostics.reset()
         // The backfill is a ONE-SHOT per SMB session, armed on the first `.playing` beat and
-        // sitting on a multi-second delay. A reactive engine rebuild (AVKit → VLC) mid-delay would
-        // otherwise let it fire against an engine being torn down and burn the session's only
-        // attempt; cancelling and re-arming lets the rebuilt engine's next `.playing` beat schedule
-        // a clean one. The SMB session itself survives a rebuild, so the gate has to be reset here
-        // too (`clearSMBSession` only runs when the session really ends).
+        // sitting on a multi-second delay. Left armed, it would fire against an engine being
+        // torn down and burn the session's only attempt.
         thumbnailBackfillTask?.cancel()
         thumbnailBackfillTask = nil
         stateTask?.cancel()
@@ -1871,11 +1727,9 @@ public final class PlayerViewModel {
     /// in-flight `start()` resuming in between can't slip past a checkpoint and build/play
     /// an engine for a player that's already going away. Then, in order: hold the last
     /// frame (the surface freeze survives the engine stopping under it, so the card slides
-    /// out on a frame instead of black), and end audio on the spot. `endAudio()`, not
-    /// `silence()`, because VLC's silence is a decode-side gain that leaves the ~1-2s
-    /// already queued in the audio output playing for the whole dismissal. The
-    /// engine call is unstructured on purpose: no caller's cancellation may cut the audio
-    /// kill short.
+    /// out on a frame instead of black), and pause on the spot, because the engine lives on
+    /// for the whole close animation and its audio must not. The engine call is unstructured
+    /// on purpose: no caller's cancellation may cut the pause short.
     ///
     /// Idempotent, because the close button fences here AND the presenter fences again on
     /// `dismiss()`, and a session only ends once. Terminal: it closes the player for good.
@@ -1898,7 +1752,7 @@ public final class PlayerViewModel {
         transportTask?.cancel()
         transportTask = nil
         let engine = engine
-        Task { await engine?.endAudio() }
+        Task { await engine?.pause() }
     }
 
     /// The destination a coalesced seek burst has accumulated, nil when none is pending. A surface
@@ -1951,7 +1805,7 @@ public final class PlayerViewModel {
     /// `releasingDevice` runs before the teardown's network reports, once nothing of this player
     /// can reach the audio session again: the replay it cut short has returned, since a failed
     /// start ends its audio only after its own network call; the teardown has drained the engines
-    /// (VLC's teardown deactivates the session too) and deactivated audio; and no call is in flight.
+    /// and deactivated audio; and no call is in flight.
     func close(releasingDevice: @escaping @MainActor () -> Void) async {
         beginExit()
         let replay = replaying
@@ -1987,25 +1841,19 @@ public final class PlayerViewModel {
         // resume it was about to honor — the Jellyfin analog of reportStoppedIfNeeded's
         // open-session gate. Nil after: the session is over.
         if let session = smbSession {
-            // Capture before clearing — the terminal write below needs the id + trust bit.
+            // Captured before clearing: the terminal write below needs the id.
             let itemID = session.itemID
-            let trusted = session.hasTrustworthyDuration
-            // Clears the session (id + trust + throttle clock) and awaits a stale throttled
+            // Clears the session (id + throttle clock) and awaits a stale throttled
             // save so it can't outrun this terminal write.
             await clearSMBSession()
             if CMTimeGetSeconds(currentPosition) > 0 {
                 await smbResumeStore.save(
                     position: currentPosition,
-                    duration: (hasKnownDuration && trusted) ? currentDuration : nil,
+                    duration: hasKnownDuration ? currentDuration : nil,
                     for: itemID
                 )
             }
         }
-        // Closes the retry()/resetForReplay window where a pending reactive-fallback
-        // hop outlives its session: without this, a hop scheduled just before a
-        // restart could build a VLC engine for the NEW session's state.
-        reactiveFallbackTask?.cancel()
-        reactiveFallbackTask = nil
         transportTask?.cancel()
         transportTask = nil
         nowPlaying.clear()
@@ -2064,7 +1912,6 @@ public final class PlayerViewModel {
         stall.clear()
         isPlaying = false
         desiredPlaying = false
-        currentAsset = nil
         // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
         // stop()→start(); zeroing it would silently drop the user's chosen speed on
         // the fresh engine (beginPlayback's re-apply guard would see 1.0×). A real
@@ -2246,7 +2093,7 @@ public final class PlayerViewModel {
         // A `.jellyfinStream` id is an external/sidecar text sub we render ourselves
         // (transcode: every text sub; direct-play: the external ones) — fetch + draw it
         // via SubtitleOverlayView with the engine's own subtitle held off. An embedded
-        // direct-play track carries a `.vlc`/`.avKitOption` id the engine renders; `nil`
+        // direct-play track carries an `.avKitOption` id the engine renders; `nil`
         // is Off.
         if let track, let index = track.id.jellyfinStreamIndex {
             // Leaving an active burn-in forces the reload-then-activate path, and must wait
@@ -2309,11 +2156,10 @@ public final class PlayerViewModel {
 
     /// Activate a client-rendered sidecar subtitle: the app draws it via
     /// `SubtitleOverlayView`, so the ENGINE must not also render one. Deselecting the
-    /// engine subtitle is mandatory on EVERY external pick — VLC auto-selects an embedded
-    /// default and keeps discovering text tracks as the demux runs, so a stray embedded
-    /// sub would otherwise render THROUGH the overlay. The server-preferred initial pick
-    /// used to skip this deselect — that was the double-subtitle bug. Harmless no-op on
-    /// the transcode/AVKit path, which has no in-manifest text track to deselect.
+    /// engine subtitle is mandatory on EVERY external pick: AVFoundation auto-selects an
+    /// embedded default through its media selection criteria, so a stray embedded sub
+    /// would otherwise render THROUGH the overlay. Harmless no-op on the transcode path,
+    /// which has no in-manifest text track to deselect.
     private func activateSidecarSubtitle(_ track: SubtitleTrack, index: Int) async {
         // The deselect is the one await between the pick and every write below it, and the
         // drain's generation fences sit OUTSIDE `settle` — so a session handoff landing here
@@ -2429,7 +2275,7 @@ public final class PlayerViewModel {
         guard !row.isBurnedIn else { return }
         if let sidecarIndex = row.id.jellyfinStreamIndex {
             // A sidecar default is an EXPLICIT server preference, so it overrides the
-            // engine's own auto-pick. VLC selects a default/forced embedded sub on its own, and the
+            // engine's own auto-pick. The engine selects a default/forced embedded sub on its own, and the
             // `.ready` inventory seed above adopts it into `selectedSubtitleTrack`; gating this
             // branch on `selectedSubtitleTrack == nil` (as it used to) let that embedded pick win
             // the race and strand the external default while the embedded one rendered THROUGH the
@@ -2563,8 +2409,8 @@ public final class PlayerViewModel {
     /// That last part reads `desiredPlaying` HERE, at the point of use, and takes no `resume`
     /// parameter — a snapshot taken when the gesture started carries no information the live
     /// value doesn't, only staleness. The window is long: a seek merged into a track-switch
-    /// reload waits out `reloadTranscode`, and any seek can sit for seconds behind VLC's
-    /// settle gate. Anything that moves the intent inside it — a Select on the tvOS floor, a
+    /// reload waits out `reloadTranscode`, and any seek can sit for seconds behind the
+    /// engine's own fetch. Anything that moves the intent inside it — a Select on the tvOS floor, a
     /// lock-screen or headphone press, a terminal beat, a failed track switch falling back —
     /// owns the transport, and a replayed snapshot would command the engine behind its back
     /// with nothing to self-heal it, because every transport surface draws from intent.
@@ -2880,21 +2726,19 @@ public final class PlayerViewModel {
         let closingPlaySession = resolved?.playSessionID
 
         // Freeze the current frame at the moment of the swap — the frosted cover
-        // frosts over it while the new transcode buffers, and silencing stops the
-        // outgoing audio instead of letting it play on under the cover (`silence()`,
-        // not `pause()`: VLC's pause can lag behind a blocked input read while audio
-        // keeps draining; the next `play()` restores audio — including the no-reload
-        // fallback resume after a failed switch). The snapshot
+        // frosts over it while the new transcode buffers, and the pause stops the outgoing
+        // audio from playing on under the cover; the next `play()` restores it, including
+        // the no-reload fallback resume after a failed switch. The snapshot
         // (not the layer) is what actually holds the frame: `replaceCurrentItem` can
         // flush AVPlayerLayer to black (see `AVKitVideoLayerHost.onFreezeReady`).
-        // Taken BEFORE the silence's await so the frame on screen is the live one.
+        // Taken BEFORE the pause's await so the frame on screen is the live one.
         freezeVideoSurface()
         // Every write below belongs to THIS session, and every await before them can
         // resume in one that replaced it: a reload parked across an episode handoff used
         // to raise the reload scrim over playing video and re-arm PlaybackStart on a
         // session that had already reported it. Fenced by the same `catch` the load is.
         do {
-            await engine?.silence()
+            await engine?.pause()
             try checkStillActive(generation: generation)
             // A reload over a live frame, not a cold start: every scrim and gate reads the
             // difference off the cover.
@@ -3080,8 +2924,8 @@ public final class PlayerViewModel {
     /// `PositionProvenance` cuts:
     ///  • `.stale` — the engine's clock, still behind its own seek. Written nowhere: it is the
     ///    pre-seek position, and showing it is the scrub snap-back itself.
-    ///  • `.projected` — the engine's forward estimate off the committed target (VLC's
-    ///    extrapolation while libvlc's clock catches up, either engine's target echo). Written
+    ///  • `.projected` — the engine's forward estimate off the committed target (its
+    ///    pre-seek target echo). Written
     ///    to `currentPosition` ONLY: the picture really is running from the target, so the bar
     ///    must advance with it instead of freezing for the whole hold. Not to `lastPosition`
     ///    — the resume point stays the committed target until an observed clock confirms one,
@@ -3111,7 +2955,7 @@ public final class PlayerViewModel {
     /// mid-reload has to resume where the user seeked to.
     private func publish(position: CMTime, provenance: PositionProvenance) {
         // An invalid/indefinite CMTime is not a position (AVPlayer before the item's duration
-        // resolves, VLC between media). Dropped HERE, ahead of the hold, so no route reaches
+        // resolves). Dropped HERE, ahead of the hold, so no route reaches
         // `currentPosition` with a NaN the bar's fraction, the remaining-time label and the
         // resume point would all inherit.
         guard CMTimeGetSeconds(position).isFinite else { return }
@@ -3139,7 +2983,7 @@ public final class PlayerViewModel {
                 // `.projected` is display-safe by contract: the picture is at, or running from,
                 // this position. So the flight has stopped hiding a jump — the honest position
                 // is the published clock again, and the concrete indicator stops claiming the
-                // video sits at A for the whole (multi-second, on a VLC reload) settle.
+                // video sits at A for the whole (multi-second, on a reload) settle.
                 if flight?.stage == .committed { flight?.progress = .landing }
             }
         case .release:
@@ -3258,8 +3102,9 @@ public final class PlayerViewModel {
                         // The engine auto-selected a stream WE draw client-side — its
                         // menu row carries a `.jellyfinStream` id, so no row matches.
                         // Left alone it would paint a second copy under our overlay
-                        // (the double-subtitle bug, in the one shape `:no-spu` can't
-                        // cover: an item with image subs keeps the SPU renderer on).
+                        // (the double-subtitle bug, in the one shape
+                        // `engineSubtitlesDisabled` can't cover: an item with image subs
+                        // keeps engine subtitle rendering on).
                         await engine?.setSubtitleTrack(nil)
                     }
                 }
@@ -3320,8 +3165,7 @@ public final class PlayerViewModel {
             // and both are needed:
             //
             //  • The LABEL. A beat that is not `.observed` is the engine saying its own seek is
-            //    unresolved — VLC's starvation scrim pinned at the target, AVKit's fetch under
-            //    an open window. This covers a commit of ours without consulting the hold, and
+            //    unresolved: AVKit's fetch under an open window. This covers a commit of ours without consulting the hold, and
             //    a seek we never issued but the engine did know about.
             //  • The JUMP. AVKit's PiP and `AVPlayerViewController` scrub the AVPlayer
             //    DIRECTLY, never through `seek(to:)`, so `inFlightSeeks` stays 0 and the
@@ -3381,34 +3225,6 @@ public final class PlayerViewModel {
                 Task { [weak self] in await self?.replacePlayback(with: advanceTarget) }
             }
         case .failed(let error):
-            // Some MP4-family files pass the SMB pre-flight probe (or arrive as an
-            // ordinary Jellyfin direct-play stream) but fail at DECODE time — a damaged
-            // bitstream or an open-GOP cut the probe can't see. AVKit surfaces that as
-            // this same terminal `.failed`, mid-load or mid-playback. One reactive
-            // re-route to VLCKit per session, on the same asset — see
-            // `attemptReactiveFallback`. Every other failure (a VLC failure, a second
-            // MP4 failure, an HLS transcode) falls through to the ordinary error scrim.
-            if let asset = currentAsset, let engine,
-               ReactiveFallback.shouldReroute(
-                   currentEngine: engine.id,
-                   container: asset.hints.container,
-                   alreadyRerouted: didReactivelyReroute,
-                   error: error
-               ) {
-                // Set before spawning the hop: the UI must not sit on `.playing` (or
-                // any other stale phase) until the hop actually runs the retry.
-                coverLoading()
-                // Unstructured hop (same shape as `.ended` above): this handler runs
-                // INSIDE `stateTask`'s await loop, and the fallback cancels `stateTask` —
-                // awaited inline, that self-cancellation trips the retry's own
-                // `Task.checkCancellation()` and the fallback dies silently, leaving the
-                // loading scrim up forever. Stored so `stop()` can cancel a hop that
-                // outlives its session (the retry()/resetForReplay window), and stored HERE,
-                // not in the fallback, because it is the latch: a second `.failed` beat
-                // arriving before the hop runs must not schedule a second retry.
-                reactiveFallbackTask = Task { [weak self] in await self?.attemptReactiveFallback(from: asset) }
-                return
-            }
             isPlaying = false
             desiredPlaying = false    // nothing left to resume; a terminal beat ends the intent too
             stall.clear()
@@ -3418,64 +3234,6 @@ public final class PlayerViewModel {
             // this session's.
             unfreezeVideoSurface()
             surface = .failed(Self.map(error))
-        }
-    }
-
-    /// Reactive AVKit→VLC fallback: rebuilds `asset` (same url/headers/hints/vlcOptions —
-    /// nothing about the SOURCE changes, only the engine) forced onto VLCKit, resuming
-    /// from the current position if playback had progressed past the original start.
-    /// `ReactiveFallback.shouldReroute` already gated this to exactly once per session
-    /// (`didReactivelyReroute`) and to an AVKit failure on an MP4-family container.
-    ///
-    /// The failed AVKit engine is retired by the rebuild itself (`EngineSlot.swap`), not
-    /// ahead of it: only the engine object and its state subscription die, never the SMB
-    /// bridge or the Jellyfin encode job (`tearDownEngine` would reap both), because the
-    /// retry reuses the exact same URL and still needs them alive. Mirrors the ordinary
-    /// mid-session `.failed` handling (no `audioSession.deactivate()`): the session isn't
-    /// over, VLC is just trying next.
-    private func attemptReactiveFallback(from asset: PlayableAsset) async {
-        // Exit can race the failure beat: beginExit()/stop() lands while this async
-        // handler is running. Building a fresh VLC engine and starting audio under an
-        // already-dismissing player would resurrect it after the fact — stop() owns the
-        // teardown, so just walk away (mirrors fallBackAfterFailedSwitch's exit guard).
-        guard !isExiting else { return }
-        // `didReactivelyReroute` was already latched by the `.failed` handler that
-        // scheduled this hop — before the hop, so a burst of failure beats can't
-        // schedule twice.
-        isPlaying = false
-        stall.clear()
-        unfreezeVideoSurface()
-        coverLoading()
-        // Engine-namespaced state, cleared exactly like a session boundary: the VLC leg
-        // inventories its own tracks from scratch, and `didApplyPreferredTracks = false`
-        // lets it re-apply the server-preferred picks on its own first `.ready`.
-        availableAudioTracks = []
-        availableSubtitleTracks = []
-        subtitleRowIDsByStream = [:]
-        selectedAudioTrack = nil
-        selectedSubtitleTrack = nil
-        landedSubtitle = nil
-        didApplyPreferredTracks = false
-
-        let resumeAt = CMTimeGetSeconds(currentPosition) > 0 ? currentPosition : asset.startTime
-        let retryAsset = asset.replacingStartTime(resumeAt)
-
-        // The failed AVKit engine is NOT retired here: `loadAndPlay` takes the rebuild
-        // branch (the retry is forced onto VLCKit) and the slot swaps it out — cutting
-        // its audio, keeping the video host mounted, and tearing it down behind the
-        // reroute instead of in front of it.
-        guard !Task.isCancelled, !isExiting else { return }
-
-        do {
-            try await loadAndPlay(retryAsset, route: .vlcFallback, reusingEngine: false,
-                                  generation: sessionGeneration)
-        } catch is CancellationError {
-            // Exit raced the retry — stop() owns the real teardown.
-        } catch let error as AppError {
-            surface = .failed(error)
-        } catch {
-            Log.playback.error("reactive VLC fallback failed (unmapped): \(error.networkDiagnostic)")
-            surface = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
         }
     }
 
@@ -3548,9 +3306,6 @@ extension PlayerViewModel {
         sidecar.debugEffectiveStyleOverride(for: format)
     }
 
-    /// The active engine's id, for the HUD's engine label.
-    public var debugEngineID: PlaybackEngineID? { engine?.id }
-
     /// Awaits the in-flight sidecar fetch+load (`SidecarSubtitles.awaitFetch`) so a test can assert
     /// `subtitleRenderer`/`sidecarSubtitleInfo` deterministically instead of sleeping past the Task hop. The
     /// engine-beat analog is `FakePlaybackEngine.settle()`; this covers the ONE piece of
@@ -3571,14 +3326,6 @@ extension PlayerViewModel {
     public func currentDebugSnapshot() async -> PlaybackDebugInfo {
         await engine?.debugSnapshot() ?? .empty
     }
-
-    /// Live subtitle-delay nudge (`ms` absolute, positive = later) for an
-    /// ENGINE-rendered track (VLC retimes; AVKit no-ops). Client-drawn sidecar cues
-    /// are matched against the engine clock directly and have no retime path.
-    public func setSubtitleDelay(ms: Int) async {
-        subtitleDelayMs = ms
-        await engine?.setSubtitleDelay(milliseconds: ms)
-    }
 }
 
 // MARK: - Preview support
@@ -3595,13 +3342,11 @@ extension PlayerViewModel {
             clock: ContinuousClock(),
             playbackInfo: NoOpPlaybackReporting(),
             resolve: { _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
-            engineFactory: { _, _ in fatalError("preview VM never starts playback") },
+            engineFactory: { fatalError("preview VM never starts playback") },
             audioSession: PreviewAudioSession(),
             nowPlaying: PreviewNowPlaying(),
             subtitleFetch: { _ in .rejected },
-            smbResumeStore: SMBResumeStore(defaults: .standard),
-            subtitleSurface: { SubtitleSurface(size: .zero, cueSize: 0) },
-            engineSubtitleFonts: { _ in EngineSubtitleFonts(directory: SubtitleFontBundle.directoryURL, family: "") }
+            smbResumeStore: SMBResumeStore(defaults: .standard)
         )
         vm.itemTitle = "The Grand Budapest Hotel"
         vm.surface = .playing

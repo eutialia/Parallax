@@ -18,11 +18,6 @@ struct PlayerView: View {
     @Environment(PlayerPresentation.self) private var presentation
     #endif
     @State private var viewModel: PlayerViewModel?
-    /// The player's full-bleed size, measured off the black floor (the one child that
-    /// always lays out at the surface's true extent — the chrome is safe-area-bounded and
-    /// the video host mounts only once the view model exists). Read at asset construction
-    /// for the engine's subtitle sizing; `.zero` means geometry hasn't landed yet.
-    @State private var surfaceSize: CGSize = .zero
     #if os(tvOS)
     /// The tvOS HUD (floor → swipeScrub → clickSeek → fullHUD, and what the user is doing
     /// inside the full chrome), driven by `TVRemoteInputView` through `send(_:_:)`. See
@@ -58,7 +53,6 @@ struct PlayerView: View {
         ZStack {
             Color.black
                 .ignoresSafeArea()
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { surfaceSize = $0 }
 
             playbackSurface
         }
@@ -158,7 +152,7 @@ struct PlayerView: View {
     /// re-fire, but the session is built once.
     private func beginSession() async {
         guard viewModel == nil else { return }
-        await app.runPlayer(for: request, subtitleSurface: subtitleSurfaceProvider) { vm in
+        await app.runPlayer(for: request) { vm in
             viewModel = vm
             #if DEBUG
             // Playback Lab seam: hand the live view model to a scripted lab run (no-op when no
@@ -169,16 +163,6 @@ struct PlayerView: View {
         }
     }
 
-    /// The measured surface and the overlay's cue size on it, sampled once at asset
-    /// construction. The default surface stands in until the floor's geometry has landed, which
-    /// normally beats the resolve it races.
-    private var subtitleSurfaceProvider: @MainActor () -> SubtitleSurface {
-        { [size = $surfaceSize] in
-            let surface = size.wrappedValue == .zero ? PlayerMetrics.defaultSurface : size.wrappedValue
-            return SubtitleSurface(size: surface, cueSize: PlayerMetrics.forSurface(surface).subtitleFontSize)
-        }
-    }
-
     /// Everything above the player's black floor — video host, veils, HUD, and
     /// overlays — as ONE concrete view, so the iOS pull-to-dismiss can move it
     /// as a single card (offset/scale/clip apply once, not per ZStack child).
@@ -186,13 +170,8 @@ struct PlayerView: View {
     private var playbackSurface: some View {
         ZStack {
             if let vm = viewModel {
-                // The video host is mounted ONCE with stable identity across
-                // .loading→.playing. Previously it lived inside both switch branches,
-                // so the phase flip gave it a new identity and SwiftUI tore it down and
-                // rebuilt it — which re-homed VLC's drawable mid-playback and left the
-                // VLC path audio-only (AVKit survives the churn because AVPlayerLayer
-                // reattaches seamlessly; VLC's injected render view does not). The
-                // reload cover (showsReloadCover) hides it until the first frame.
+                // Mounted once, with stable identity across .loading→.playing. The reload
+                // cover (showsReloadCover) hides it until the first frame.
                 if showsVideoHost {
                     videoHost(vm)
                 }
@@ -264,9 +243,9 @@ struct PlayerView: View {
 
     /// Exit on user intent: end audio NOW, tear down AFTER the slide-out.
     /// `beginExit()` owns that hand-off (fence the start path, freeze the last
-    /// frame, `endAudio()`); the full `stop()` waits for the `.task` to end, once
-    /// the dismiss animation has landed and the host unmounts the view. Tearing down mid-slide unmounted the video
-    /// host (the card went blank as it moved) and `replaceCurrentItem(nil)`'s
+    /// frame, pause); the full `stop()` waits for the `.task` to end, once the dismiss
+    /// animation has landed and the host unmounts the view. Tearing down mid-slide unmounted
+    /// the video host (the card went blank as it moved) and `replaceCurrentItem(nil)`'s
     /// synchronous main-thread burst ate dismissal frames (the "cut" slide-out).
     /// Audio is the only urgent part; the frozen frame rides the card out.
     private func exitPlayer() {
@@ -313,8 +292,7 @@ struct PlayerView: View {
     }
 
     /// Whether the persistent video host is mounted. Shown for every phase except
-    /// `.failed` (which replaces the surface with the error overlay) — kept stable
-    /// across .loading→.playing so VLC's drawable isn't rebuilt mid-playback.
+    /// `.failed` (which replaces the surface with the error overlay).
     private var showsVideoHost: Bool {
         guard let vm = viewModel else { return false }
         if case .failed = vm.phase { return false }
@@ -362,30 +340,17 @@ struct PlayerView: View {
         }
     }
 
-    /// The engine-specific video surface. Shown for every phase except `.failed`.
+    /// The video surface. Shown for every phase except `.failed`.
     @ViewBuilder
     private func videoHost(_ vm: PlayerViewModel) -> some View {
         if let engine = vm.engine {
-            switch engine.id {
-            case .avKit:
-                AVKitVideoLayerHost(engine: engine, onPiPReady: { start in
-                    vm.startPiPAction = start
-                }, onFreezeReady: { freeze, unfreeze in
-                    vm.freezeSurfaceAction = freeze
-                    vm.unfreezeSurfaceAction = unfreeze
-                })
-                .ignoresSafeArea()
-            case .vlcKit:
-                // No PiP wiring: MobileVLCKit 3.x ships no PiP API, and the engine
-                // reports `supportsPiP: false` so the button never appears. Freeze IS
-                // wired: the exit cut stops the player (the only way to kill queued VLC
-                // audio), which closes the vout mid-slide-out.
-                VLCVideoHost(engine: engine, onFreezeReady: { freeze, unfreeze in
-                    vm.freezeSurfaceAction = freeze
-                    vm.unfreezeSurfaceAction = unfreeze
-                })
-                .ignoresSafeArea()
-            }
+            AVKitVideoLayerHost(engine: engine, onPiPReady: { start in
+                vm.startPiPAction = start
+            }, onFreezeReady: { freeze, unfreeze in
+                vm.freezeSurfaceAction = freeze
+                vm.unfreezeSurfaceAction = unfreeze
+            })
+            .ignoresSafeArea()
         }
     }
 

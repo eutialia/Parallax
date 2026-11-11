@@ -125,8 +125,8 @@ public enum CrashSentinel {
     ///
     /// **Why this is worth checking.** A log that ends with no crash record means no fatal signal
     /// reached `crashSignalHandler` — and one boring explanation for that is that somebody else
-    /// installed their own disposition after we did. This process loads two third-party native
-    /// stacks (VLCKit and AMSMB2/libsmb2), either of which may touch signal dispositions when it
+    /// installed their own disposition after we did. This process loads third-party native
+    /// code (AMSMB2/libsmb2, libass), any of which may touch signal dispositions when it
     /// initialises, which happens well after launch. Reporting the answer turns "the handler
     /// probably ran" into a fact, and rules a whole branch of the investigation in or out.
     ///

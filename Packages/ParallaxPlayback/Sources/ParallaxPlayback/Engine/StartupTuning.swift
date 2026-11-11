@@ -6,9 +6,6 @@ import Foundation
 /// `AVKitEngine`, not merely set to its documented default. That distinction matters:
 /// touching a property at all can pin behavior against a future OS default change,
 /// so `.systemDefault` must apply nothing.
-///
-/// Only `AVKitEngine` reads this — `VLCKitEngine` has its own buffering knobs and is
-/// untouched by this type.
 public struct StartupTuning: Sendable, Equatable {
     /// Seconds of forward buffer AVFoundation should target until the item plays.
     /// `nil` = leave `AVPlayerItem.preferredForwardBufferDuration` untouched (system

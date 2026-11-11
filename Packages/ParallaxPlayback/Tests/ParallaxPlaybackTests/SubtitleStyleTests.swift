@@ -5,27 +5,6 @@ import ParallaxPlayback
 @Suite("SubtitleStyle.RGBA")
 struct SubtitleRGBATests {
 
-    /// `rgb24` is the integer form of VLC's `freetype-color` option — the one place the
-    /// package's primitive colour crosses into libvlc, where a wrong shift or a dropped
-    /// rounding silently recolours every embedded SRT.
-    @Test("rgb24 packs the rounded 8-bit channels and drops alpha", arguments: [
-        (1.0, 1.0, 1.0, 0xFFFFFF),
-        (0.0, 0.0, 0.0, 0x000000),
-        (1.0, 0.0, 0.0, 0xFF0000),
-        (0.0, 1.0, 0.0, 0x00FF00),
-        (0.0, 0.0, 1.0, 0x0000FF),
-        (0.92, 0.92, 0.92, 0xEBEBEB),   // the standard fill: round(0.92 × 255) == 235
-    ] as [(Double, Double, Double, Int)])
-    func rgb24Packing(red: Double, green: Double, blue: Double, expected: Int) {
-        #expect(SubtitleStyle.RGBA(red: red, green: green, blue: blue).rgb24 == expected)
-    }
-
-    @Test("alpha never reaches rgb24", arguments: [0.0, 0.25, 1.0])
-    func alphaIsDropped(alpha: Double) {
-        let colour = SubtitleStyle.RGBA(red: 1, green: 0.5, blue: 0, alpha: alpha)
-        #expect(colour.rgb24 == SubtitleStyle.RGBA(red: 1, green: 0.5, blue: 0).rgb24)
-    }
-
     @Test("alpha defaults to fully opaque")
     func alphaDefaultsToOpaque() {
         #expect(SubtitleStyle.RGBA(red: 0, green: 0, blue: 0).alpha == 1)
@@ -37,7 +16,7 @@ struct SubtitleStyleStandardTests {
 
     /// Boxless by design, and deliberately below peak white so cues don't read as the
     /// brightest object in a tone-mapped HDR frame. These are the authored values every
-    /// renderer (overlay, AVKit, VLC freetype) reads.
+    /// renderer (overlay, AVKit) reads.
     @Test("the canonical look is 92% white over a 4% black ring")
     func canonicalLook() {
         let s = SubtitleStyle.standard

@@ -14,7 +14,7 @@ import Testing
 /// Scale the ceiling, never the assertion: multiply anti-hang bounds by `factor`; keep
 /// correctness expectations untouched. Local runs stay tight at ×1. CI reaches the
 /// simulator test host as `CI` via `TEST_RUNNER_CI` in ci.yml (plain shell env never
-/// crosses into simulator processes) — the same probe the live-VLC-decode suite uses.
+/// crosses into simulator processes).
 ///
 /// Lives in a zero-dependency product (`ParallaxTestScaling`) on purpose: app-hosted
 /// test bundles may reach this transitively without pulling a second static copy of

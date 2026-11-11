@@ -2,20 +2,15 @@ import Foundation
 
 /// Result of a codec/container lookup where "the container simply doesn't carry
 /// this stream" (`.none`) must be distinguishable from "carries it, but the
-/// fourcc/codec id isn't one we recognize" (`.unknown`) — callers (`EngineSelector`)
-/// route the latter to VLC rather than assuming AVKit compatibility.
+/// fourcc/codec id isn't one we recognize" (`.unknown`). `DirectPlay.verdict` treats
+/// the latter as unplayable rather than assuming AVPlayer compatibility.
 public enum ProbedCodec<C: Sendable & Hashable>: Sendable, Hashable {
     case known(C)
     case unknown
     case none
-
-    public var knownValue: C? {
-        if case .known(let c) = self { return c }
-        return nil
-    }
 }
 
-/// Structural defects that make AVFoundation misplay a file the VLC engine handles.
+/// Structural defects that make AVFoundation misplay a file.
 public enum AVPlayerHazard: Sendable, Hashable {
     /// H.264 with B-frames but no real composition offsets: AVPlayer displays decode order (motion judder).
     case decodeOrderTimestamps
@@ -39,8 +34,8 @@ public struct MediaProbeResult: Sendable, Equatable {
     /// `moov` box). A malformed top-level header (declared size shorter than the
     /// 8/16-byte header itself, or a short read at EOF) is treated the same way —
     /// the conservative read is "not yet fully written" rather than "corrupt."
-    /// Non-MP4 containers always report true — VLC owns them as-is, truncation
-    /// there isn't this probe's signal to detect.
+    /// Non-MP4 containers always report true: truncation there isn't this
+    /// probe's signal to detect.
     public let isComplete: Bool
     /// Structural defects proven by walking the sample tables — empty on every container
     /// but MP4/MOV, and on an MP4/MOV whose first video trak doesn't exhibit one.
@@ -69,7 +64,7 @@ public struct MediaProbeResult: Sendable, Equatable {
 /// or corrupt file over SMB is an expected input, not a bug.
 public enum MediaProbe {
     /// Byte budget for pulling `moov` into memory. A remux-worthy movie's moov is
-    /// single-digit MiB; past this cap codecs degrade to `.unknown` (→ VLC) instead
+    /// single-digit MiB; past this cap codecs degrade to `.unknown` (unplayable) instead
     /// of an unbounded LAN read.
     private static let moovByteCap = 64 * 1024 * 1024
 
@@ -264,7 +259,7 @@ public enum MediaProbe {
             let mappedInOrder = audioFourccsInOrder.map(mapAudioFourcc)
             // Any unrecognized audio fourcc must surface as `.unknown` per
             // `ProbedCodec`'s contract — silently dropping it would hide a track
-            // `EngineSelector` can't reason about.
+            // `DirectPlay.verdict` can't reason about.
             if mappedInOrder.isEmpty || mappedInOrder.contains(where: { $0 == nil }) {
                 audioCodecs = .unknown
             } else {

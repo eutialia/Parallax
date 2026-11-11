@@ -402,3 +402,29 @@ extension SMB2Manager: SMBReadableConnection {
 /// Aliased so app-side owners can name the type without importing AMSMB2, exactly as `SMBSharePool`
 /// does for the pool.
 public typealias SMBShareReader = SMBRandomAccessReader<SMB2Manager>
+
+/// What serving a file over the local media server needs from its byte source: random access,
+/// plus the bounded drain-then-release teardown that follows the server's stop.
+public protocol SMBBridgeReading: RandomAccessReading {
+    /// Teardown that waits (bounded) for in-flight reads before deciding checkin-vs-disconnect.
+    func drainAndDisconnect() async
+
+    /// Whether any SMB read/attribute fetch on this reader failed with a transport-class error
+    /// (connection lost, connect failure, hard timeout) during its lifetime.
+    var hadTransportFault: Bool { get async }
+}
+
+extension SMBRandomAccessReader: SMBBridgeReading {}
+
+/// What a file's owner needs from a pooled reader beyond the bridge's reads: the three ways its
+/// borrow can end.
+public protocol SMBShareReading: SMBBridgeReading {
+    /// Checks a clean borrow back in, discards a tainted one, condemns one with a call in flight.
+    func disconnect() async
+    /// Discards the borrow however cleanly it ends.
+    func markUnreusable() async
+    /// Fire-and-forget `disconnect()`, returning the transport evidence the borrow gathered first.
+    func teardownCapturingTransportFault() async -> Bool
+}
+
+extension SMBRandomAccessReader: SMBShareReading {}

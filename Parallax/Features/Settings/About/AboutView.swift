@@ -66,7 +66,7 @@ struct AboutView: View {
     private var acknowledgementsGroup: some View {
         SettingsGroup(
             title: "Acknowledgements",
-            footer: "Parallax uses AMSMB2 (libsmb2) and VLCKit under the LGPL-2.1. Since the whole "
+            footer: "Parallax uses AMSMB2 (libsmb2) under the LGPL-2.1. Since the whole "
                 + "app is open source, anyone can modify these libraries and rebuild Parallax from "
                 + "the repository with standard tooling, which satisfies the LGPL relink requirement."
         ) {

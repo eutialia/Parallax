@@ -2,9 +2,8 @@ import Foundation
 
 /// The `(stream, continuation)` pair every `PlaybackEngine` publishes its beats on,
 /// pre-seeded with an `.idle` stamped `PlaybackSessionID.none` — no session has been opened
-/// yet, so no consumer holding one adopts it. Both `AVKitEngine` and `VLCKitEngine` construct their
-/// `state`/`continuation` stored properties from this single factory — the buffering
-/// policy and its rationale used to be duplicated verbatim in each engine's `init`.
+/// yet, so no consumer holding one adopts it. Engines construct their `state`/`continuation`
+/// stored properties from this single factory.
 public enum PlaybackStateStream {
     /// Bounded so a wedged consumer can't grow the buffer without limit.
     /// `.bufferingNewest` keeps the freshest beats — the latest position plus any

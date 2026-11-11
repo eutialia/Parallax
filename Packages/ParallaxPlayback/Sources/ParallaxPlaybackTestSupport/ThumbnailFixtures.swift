@@ -9,7 +9,7 @@ import ImageIO
 
 /// Decode encoded thumbnail `Data` (HEIC, or JPEG on a host with no HEVC encoder) back into a
 /// `CGImage` to assert pixel dimensions / validity. Codec-agnostic: ImageIO sniffs the format.
-/// Shared by AV and VLC thumbnail suites so neither reimplements the sniffer.
+/// Shared so no thumbnail suite reimplements the sniffer.
 public func decodeThumbnailImage(_ data: Data) -> CGImage? {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil),
           CGImageSourceGetCount(source) >= 1 else { return nil }
@@ -19,7 +19,7 @@ public func decodeThumbnailImage(_ data: Data) -> CGImage? {
 // MARK: — Oversized still-source (pins the 320px tier)
 
 /// Synthesizes a short solid-color H.264 MP4 larger than the 320-tall thumbnail tier so a test
-/// can prove `AVAssetImageGenerator.maximumSize` / VLC's height bound actually scale down.
+/// can prove `AVAssetImageGenerator.maximumSize` actually scales down.
 ///
 /// The bundled `tiny.mp4` is 160×90 — already under 320 — so deleting the tier setting would
 /// not change its output at all. This clip is built at test time (no binary fixture committed),

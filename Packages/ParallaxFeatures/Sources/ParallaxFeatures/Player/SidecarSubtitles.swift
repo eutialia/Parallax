@@ -28,7 +28,7 @@ final class SidecarSubtitles {
 
     /// The client-side renderer (libass, `ParallaxSubtitles`) for the active sidecar
     /// subtitle that `SubtitleOverlayView` draws: used by the transcode path AND by
-    /// direct-play EXTERNAL subs (VLC can't shape sidecar text on iOS). Nil when no
+    /// direct-play EXTERNAL subs. Nil when no
     /// such subtitle is active — including direct-play EMBEDDED subs, which the engine
     /// renders itself. This is how we sidestep the in-manifest WebVTT drift
     /// (jellyfin/jellyfin#16647) while keeping authored ASS styling intact.

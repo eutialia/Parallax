@@ -37,24 +37,8 @@ No single file covers every script, so coverage is a routing problem rather than
 fallback one: the renderer classifies each run of a cue by Unicode script and names the
 face for it explicitly (`ASS_FONTPROVIDER_NONE` leaves libass nothing to fall back to).
 
-## Vendored binary frameworks
-
-| Component | License | Role |
-|-----------|---------|------|
-| [MobileVLCKit](https://code.videolan.org/videolan/VLCKit) 3.7.3 | LGPL-2.1 | Alternate playback engine, iOS/iPadOS (© VideoLAN) |
-| [TVVLCKit](https://code.videolan.org/videolan/VLCKit) 3.7.3 | LGPL-2.1 | Alternate playback engine, tvOS (© VideoLAN) |
-
-These are one library under two names: VideoLAN builds VLCKit per platform and ships the
-iOS and tvOS products as separately named modules, so the app links whichever matches the
-platform it is building for. Neither is resolved through SwiftPM — VideoLAN's official
-prebuilt xcframeworks are fetched by `scripts/fetch-mobilevlckit.sh` and linked as local
-binary targets; together they are ~1.7 GB unpacked, so they are git-ignored rather than
-committed.
-
-LGPL note (AMSMB2/libsmb2, VLCKit): Parallax meets the LGPL relink requirement. The whole
-app is open source, so anyone can modify these libraries and rebuild it from this
-repository — and VLCKit specifically ships as a **dynamic** framework, so a user-built
-replacement can be swapped in without rebuilding the app at all.
+LGPL note (AMSMB2/libsmb2): Parallax meets the LGPL relink requirement. The whole app is
+open source, so anyone can modify the library and rebuild it from this repository.
 
 ## Jellyfin icon (`JellyfinGlyph`)
 

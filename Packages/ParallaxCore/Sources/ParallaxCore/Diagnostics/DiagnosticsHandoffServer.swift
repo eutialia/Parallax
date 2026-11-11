@@ -10,7 +10,7 @@ import Network
 /// same network and gets a plain text download. iOS keeps the share sheet and uses this only when
 /// somebody would rather pull the file over the network.
 ///
-/// **Access control is a SHORT path token plus the server's lifetime.** Unlike `SMBHTTPBridge` —
+/// **Access control is a SHORT path token plus the server's lifetime.** Unlike `LocalMediaServer` —
 /// which mints a 128-bit token because a media URL is handed to a player, not to a person — this URL
 /// has to be READ OFF A TELEVISION AND TYPED on a phone, so a 32-hex token would make the feature
 /// unusable. Four characters from an unambiguous alphabet is the compromise: still one glance and a
@@ -26,7 +26,7 @@ import Network
 /// screen is open, after the user explicitly asked for it, behind a token a passer-by does not have.
 ///
 /// **Concurrency.** An `actor` owning the listener and its connections, with every
-/// Network.framework callback hopping back onto it — the shape `SMBHTTPBridge` already proved. The
+/// Network.framework callback hopping back onto it — the shape `LocalMediaServer` already proved. The
 /// payload is captured once at `start`, so a serve never touches the log file while it is being
 /// appended to.
 public actor DiagnosticsHandoffServer {
@@ -62,7 +62,7 @@ public actor DiagnosticsHandoffServer {
 
     /// Network.framework callbacks, and every listener/connection create/start/cancel — those reach
     /// the kernel's network policy layer on the CALLING thread and can block there, which must never
-    /// happen on a cooperative pool thread. Same discipline as `SMBHTTPBridge`.
+    /// happen on a cooperative pool thread. Same discipline as `LocalMediaServer`.
     private let queue = DispatchQueue(label: "com.lhdev.parallax.diagnostics-handoff")
 
     /// One server, one listener, one run. `starting` is claimed before the first suspension, so a

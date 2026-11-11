@@ -2,22 +2,14 @@ import Foundation
 import CoreMedia
 
 /// The engine abstraction. Single-consumer `state` stream — `PlayerViewModel`
-/// is the sole reader. Both `AVKitEngine` (Phase 4) and `VLCKitEngine` (Phase 5)
-/// conform. All `async` methods are witnessed by `@MainActor` methods on concrete
+/// is the sole reader. `AVKitEngine` conforms, and tests use a fake. All `async` methods are witnessed by `@MainActor` methods on concrete
 /// engines; the `nonisolated` synchronous requirements use `nonisolated let` storage.
 public protocol PlaybackEngine: AnyObject, Sendable {
-    /// Stable identifier for the engine type.
-    nonisolated var id: PlaybackEngineID { get }
-
-    /// Static capabilities that do not change at runtime.
-    nonisolated var capabilities: PlaybackEngineCapabilities { get }
-
     /// The live playback clock, smooth enough for sub-second cue timing (the `state`
     /// stream's ~0.5s beats are too coarse). Read directly by the client-side subtitle
     /// overlay so it can sync cues against any engine. An engine may report `.invalid`
-    /// while it has no position worth drawing to (VLC does before the first frame and
-    /// through the resume seek), so readers must gate on `isValid` rather than treat it
-    /// as 0:00.
+    /// while it has no position worth drawing to, so readers must gate on `isValid` rather
+    /// than treat it as 0:00.
     nonisolated var currentTime: CMTime { get }
 
     /// Single-consumer state stream. Only `PlayerViewModel` iterates this.
@@ -50,20 +42,6 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Pause playback.
     func pause() async
 
-    /// Silence audio output for a session that will come BACK: the transcode reload
-    /// freezes the frame, silences, swaps the stream and plays again, and the `play()`
-    /// on the other side must restore audio. RESUMABLE, and therefore best-effort about
-    /// how deep it reaches: VLC's implementation is a decode-side gain that cannot
-    /// touch samples already handed to the audio output.
-    func silence() async
-
-    /// Silence audio output NOW and for good, ahead of a deferred teardown. Dismissal
-    /// keeps the engine alive for the whole close animation (the last frame rides the
-    /// card out), so audio needs a kill switch that does not wait for `teardown()`,
-    /// and one that a late `play()` (a scrub commit coalesced just before the exit)
-    /// cannot undo. TERMINAL for this session: only `load()` reopens it.
-    func endAudio() async
-
     /// Seek to an arbitrary position. No-op if no item is loaded.
     ///
     /// **The seek-settle contract.** From the moment this is called until the engine resolves
@@ -77,10 +55,9 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// as `.observed` — it never republishes the pre-seek clock as if the seek had landed.
     /// See `PlaybackState`.
     ///
-    /// What "resolved" means is per-engine and documented on each `seek(to:)` override:
-    /// `VLCKitEngine` tests the clock's convergence on the target, `AVKitEngine` only knows
-    /// that `AVPlayer` returned `finished == true` (weaker). An engine that can tell neither
-    /// must report `.stale`.
+    /// What "resolved" means is documented on each `seek(to:)` override: `AVKitEngine` knows
+    /// only that `AVPlayer` returned `finished == true`. An engine that cannot tell must
+    /// report `.stale`.
     func seek(to time: CMTime) async
 
     /// Select an audio track by id. No-op if the id is not in the current inventory.
@@ -98,10 +75,6 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Polled (not render-bound); reflects "now", not the requested stream.
     func debugSnapshot() async -> PlaybackDebugInfo
 
-    /// Nudge the subtitle timing by `milliseconds` (VLC live-corrects subtitle
-    /// sync; AVKit has no such control and ignores it). Positive = subtitles later.
-    func setSubtitleDelay(milliseconds: Int) async
-
     /// Set the playback rate (1.0 = normal). Persisted by the engine so a
     /// later `play()` resumes at the chosen speed.
     func setRate(_ rate: Float) async
@@ -112,15 +85,6 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// on this engine) returns nil. The returned Data is an already-encoded still image (HEIC or
     /// JPEG — see below), not raw pixels.
     func captureFrame() async -> Data?
-
-    /// Whether `captureFrame()` issues its own fresh I/O to produce the still, as opposed to
-    /// reading a frame already resident from ordinary decode. AVKit's `AVAssetImageGenerator`
-    /// issues fresh range reads over the SMB bridge reader — contending with the SAME uplink
-    /// playback is pulling from; VLC's live snapshot reads no bytes at all, it grabs the frame
-    /// already on the decode surface. The app-side backfill (`MediaArtworkProvider`) uses this to
-    /// skip the capture on a non-LAN link, where those extra reads can queue ahead of the
-    /// player's next chunk and cost a buffer dip for a thumbnail.
-    nonisolated var captureFramePerformsIO: Bool { get }
 }
 
 public extension PlaybackEngine {
@@ -130,30 +94,9 @@ public extension PlaybackEngine {
     /// Default: no debug info. Concrete engines override with real telemetry.
     func debugSnapshot() async -> PlaybackDebugInfo { .empty }
 
-    /// Default: pause. Enough for engines whose pause takes effect on the next render
-    /// cycle (AVKit). VLC overrides: its pause is an input-thread command that a blocked
-    /// network read can delay for seconds, so it mutes the audio output directly first.
-    func silence() async { await pause() }
-
-    /// Default: `silence()`. An engine whose silence already stops the render pipeline on
-    /// the spot (AVKit's pause does) needs nothing stronger on exit. Only VLC overrides,
-    /// where mute is a per-block decode-side gain that leaves the ~1-2s already queued in
-    /// the audio output playing, so the terminal cut there has to stop the player.
-    func endAudio() async { await silence() }
-
-    /// Default: no-op. Only engines that can retime subtitles (VLC) override.
-    func setSubtitleDelay(milliseconds: Int) async {}
-
     /// Default: no-op. Engines that support variable-speed playback override.
     func setRate(_ rate: Float) async {}
 
-    /// Default: nil. Only engines that can grab a still from the live decode path
-    /// (`AVKitEngine`, `VLCKitEngine`) override; a bare / fake engine never pays for a
-    /// capture the app-side backfill would just discard.
+    /// Default: nil. A fake engine never pays for a capture the backfill would discard.
     func captureFrame() async -> Data? { nil }
-
-    /// Default: true (the conservative assumption — a capture that reads bytes). Symmetric with
-    /// `captureFrame()`'s default: an engine that never overrides `captureFrame()` returns nil
-    /// from it anyway, so whether this reads true or false there never changes behavior for it.
-    nonisolated var captureFramePerformsIO: Bool { true }
 }

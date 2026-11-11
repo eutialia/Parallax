@@ -9,7 +9,6 @@ This file holds only what you would get wrong without being told. Workflow lives
 ## Repository notes
 
 - `Parallax/` is the only place `#if os(...)` is allowed.
-- `Packages/ParallaxPlaybackVLC` links iOS-only VLCKit, so it is the one package that tests on the simulator, not the host.
 - After a clone, recreate the gitignored `Config/Signing.local.xcconfig`, which holds the real team, and run `git config core.hooksPath .githooks`.
 - `DESIGN.md` is the design system. Code comments cite it as law; read it before touching visuals.
 
@@ -47,7 +46,7 @@ Headless `xcodebuild` is the default. Reach for the Xcode MCP only for what head
 
 - iOS: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 18 Pro' -derivedDataPath /tmp/dd-Parallax build`, or `test`.
 - tvOS: `xcodebuild -scheme Parallax -destination 'generic/platform=tvOS Simulator' -derivedDataPath /tmp/dd-Parallax build`.
-- Packages: `scripts/verify.sh [filter]` on the host. ParallaxPlaybackVLC runs from its own directory against the simulator, through the `ParallaxPlaybackVLC-Package` scheme; the bare product schemes have no test action.
+- Packages: `scripts/verify.sh [filter]` on the host.
 - `-only-testing:` and the `verify.sh` filter take the Swift type name. The `@Suite` display name matches nothing and fakes a pass.
 - Real-keychain suites self-skip on unentitled simulator hosts. A skip is expected, a failure is real.
 - Run the tests for what you changed. CI owns the full matrix.
@@ -67,7 +66,7 @@ UI work is done when it holds on every surface it touches, not on the one you re
 
 - **iPhone, iPad, Apple TV.** The floating sidebar only appears at iPad regular width in landscape; portrait renders a top tab bar and hides sidebar bugs.
 - **tvOS focus.** Every horizontal band is a `tvFocusSection`, every pushed page applies `tvHidesTabSidebar`, every empty state has a focusable surface. Miss one and the Menu button exits the app or focus dies on a sparse row.
-- **Both engines, both sources.** AVKit and VLC, Jellyfin and SMB. Engine choice is invisible to the user by decision.
+- **Both sources.** Jellyfin and SMB. AVPlayer is the only engine; how a file reaches it is invisible to the user by decision.
 - **Debug and Release.** They diverge in either direction. Confirm which one reproduces a glitch before chasing it.
 
 ## Standing decisions

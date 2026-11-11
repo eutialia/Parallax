@@ -6,7 +6,7 @@ import ParallaxPlaybackTestSupport
 
 /// Only the double's *consumer-visible async contract* is pinned here — the stream
 /// lifecycle and the call log — because that is what every `PlayerViewModel` test in
-/// the app target reads. Field echoes (id/capabilities/selected-track getters) are
+/// the app target reads. Field echoes (id/selected-track getters) are
 /// deliberately absent: asserting a stub returns what it was handed catches nothing.
 @Suite("FakePlaybackEngine contract")
 @MainActor
@@ -14,7 +14,7 @@ struct FakePlaybackEngineTests {
 
     @Test("load records the asset and pushed states reach a for-await consumer in order")
     func loadRecordsAsset() async throws {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         let url = URL(string: "https://example.com/stream.mp4")!
         let asset = PlayableAsset.fixture(url: url)
 
@@ -52,7 +52,7 @@ struct FakePlaybackEngineTests {
     /// the spec, not a re-derivation.
     @Test("play/pause/seek/teardown append to the call log in order")
     func callOrder() async throws {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         try await fake.load(.fixture(url: URL(string: "https://example.com/stream.mp4")!))
         await fake.play()
         await fake.pause()
@@ -63,7 +63,7 @@ struct FakePlaybackEngineTests {
 
     @Test("before load a seek is a no-op, and a play is flagged as a test bug")
     func transportBeforeLoad() async {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         await fake.seek(to: CMTime(seconds: 30, preferredTimescale: 1000))
         await withKnownIssue { await fake.play() }
         #expect(fake.calls == [])
@@ -72,7 +72,7 @@ struct FakePlaybackEngineTests {
 
     @Test("a fake that lands seeks answers one with an observed beat at the target, in the loaded session")
     func landedSeekPublishesTheTarget() async throws {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         fake.landsSeeks = true
         var beats: [PlaybackBeat] = []
         let consumer = Task {
@@ -103,7 +103,7 @@ struct FakePlaybackEngineTests {
     /// `handled` before the assertion.
     @Test("settle() returns only after the consumer's loop body ran for every pushed state")
     func settleWaitsForConsumerBody() async throws {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         var handled: [PlaybackState] = []
         let task = Task {
             for await beat in fake.state {
@@ -126,7 +126,7 @@ struct FakePlaybackEngineTests {
 
     @Test("settle() throws instead of hanging when no one consumes the stream")
     func settleTimesOutWithoutConsumer() async throws {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         await #expect(throws: FakePlaybackEngine.SettleTimeout.self) {
             try await fake.settle(timeout: .milliseconds(20))
         }
@@ -134,7 +134,7 @@ struct FakePlaybackEngineTests {
 
     @Test("teardown finishes the state stream after delivering every pushed state")
     func teardownFinishesStream() async {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let fake = FakePlaybackEngine()
         var count = 0
         let task = Task {
             for await _ in fake.state { count += 1 }

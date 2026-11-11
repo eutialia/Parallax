@@ -5,21 +5,20 @@ import ParallaxPlayback
 import ParallaxSubtitles
 
 /// Draws the client-rendered subtitle bitmap over the video surface, synced to the
-/// engine clock (`PlaybackEngine.currentTime`, so it works for AVKit and VLC alike).
+/// engine clock (`PlaybackEngine.currentTime`).
 ///
 /// Active whenever `PlayerViewModel.subtitleRenderer` is set — the libass-backed
 /// `ParallaxSubtitles` engine loaded with a sidecar track:
 /// - Transcode: the correctly-timed sidecar instead of the in-manifest HLS WebVTT,
 ///   whose `X-TIMESTAMP-MAP` drifts on fMP4 segments (jellyfin/jellyfin#16647).
-/// - Direct-play external subs: VLC's simple text renderer can't shape sidecar text on
-///   iOS (HarfBuzz "Runs count 0"), so we fetch + render them here instead of slaving
-///   them to the engine.
+/// - Direct-play external subs: fetched and rendered here, so they take the same
+///   renderer and fonts as every other text subtitle.
 ///
 /// Authored ASS/SSA renders with its creator styling and positioning (9-cell
 /// alignment, `\pos` signs) — only its typefaces are swapped for bundled ones, at
 /// load; SRT/VTT is converted to ASS events and takes the user's `SubtitleStyle`.
-/// Embedded subs (rendered by the engine itself — AVKit legible / VLC's internal
-/// libass) leave `subtitleRenderer` nil, so this overlay draws nothing for them.
+/// Embedded subs the engine renders itself (AVKit legible) leave `subtitleRenderer` nil,
+/// so this overlay draws nothing for them.
 struct SubtitleOverlayView: View {
     let vm: PlayerViewModel
     /// User subtitle appearance. Pushed into the renderer via
@@ -90,7 +89,7 @@ struct SubtitleOverlayView: View {
     }
 
     /// The rect the video PICTURE actually occupies (aspect-fit of the native video
-    /// dimensions into the surface, both engines render `.resizeAspect`). The canvas
+    /// dimensions into the surface, which renders `.resizeAspect`). The canvas
     /// for AUTHORED tracks: frame aspect == storage aspect keeps libass' derived
     /// pixel-aspect at 1 (no glyph stretch on letterboxed layouts), and authored
     /// `\pos` coordinates land on the picture features they were typeset against.

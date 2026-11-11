@@ -284,7 +284,7 @@ struct PlayerReloadQueueTests {
                 if call == 2 { await switching.wait() }
                 return PlayerFixtures.resolvedMultiTrackTranscode()
             },
-            engineFactory: { id, _ in engines.make(id) }
+            engineFactory: { engines.make() }
         )
         cold.arm()
 
@@ -395,24 +395,25 @@ struct PlayerReloadQueueTests {
             if asks.count == 2 { return PlayerFixtures.resolvedVC1MKV(itemID: "movie-1") }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
-        let outgoing = engines.live
-        // A direct-play VC-1 stream routes to VLC, so the reload rebuilds — and the swap's
-        // audio cut is the seam that holds a caller inside `loadAndPlay`.
-        outgoing.hold(.endAudio)
+        let engine = engines.live
+        engine.hold(.load)
 
         let audio5 = try audioTrack(vm, 5)
         let switching = Task { @MainActor in await vm.selectAudioTrack(audio5) }
-        try await requireEventually({ outgoing.hasParked(.endAudio) }, "the reload never reached the engine swap")
+        try await requireEventually({ engine.hasParked(.load) }, "the reload never reached the engine load")
 
         let merged = await vm.seek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(merged, "the seek took the in-stream road against an engine mid-load")
 
-        outgoing.release(.endAudio)
+        engine.release(.load)
         await switching.value
 
         #expect(asks.count == 2, "the merged seek bought a reload of its own")
-        #expect(!outgoing.calls.contains { $0.hasPrefix("seek(") }, "the engine was sought mid-reload")
-        #expect(engines.live.calls.filter { $0.hasPrefix("seek(") } == ["seek(3000.0)"])
+        #expect(engines.count == 1)
+        let reloadLoad = try #require(engine.calls.lastIndex(of: "load"))
+        #expect(engine.calls.filter { $0.hasPrefix("seek(") } == ["seek(3000.0)"])
+        #expect(engine.calls.firstIndex(of: "seek(3000.0)").map { $0 > reloadLoad } == true,
+                "the engine was sought mid-reload")
     }
 
     // MARK: - The declined burn-in
@@ -672,7 +673,7 @@ struct PlayerReloadQueueTests {
                 if asks.count == 2 { await gate.wait() }
                 return PlayerFixtures.resolvedMultiTrackTranscode()
             },
-            engineFactory: { id, _ in engines.make(id) },
+            engineFactory: { engines.make() },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: { _, _ in AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2")) }
         )
@@ -787,7 +788,7 @@ struct PlayerReloadQueueTests {
 
     // MARK: - The reload's PRELUDE belongs to its own session too
 
-    /// The fences used to start at `beginPlayback`; the prelude before it — the silence, the
+    /// The fences used to start at `beginPlayback`; the prelude before it — the pause, the
     /// encode kill, the stop report — wrote `isMidSessionReload`, `.loading`, `bufferedTo` and
     /// the reporting flags with nothing checking whose session it was writing into. A reload
     /// parked there across an episode handoff put a spinner over playing video and re-armed
@@ -802,7 +803,7 @@ struct PlayerReloadQueueTests {
                 asks.append(id.rawValue)
                 return PlayerFixtures.resolvedMultiTrackTranscode()
             },
-            engineFactory: { id, _ in engines.make(id) },
+            engineFactory: { engines.make() },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: { _, _ in AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2")) }
         )
@@ -814,9 +815,9 @@ struct PlayerReloadQueueTests {
 
         let audio5 = try audioTrack(vm, 5)
         // The prelude's FIRST await, before it has written a single flag.
-        outgoing.hold(.silence)
+        outgoing.hold(.pause)
         let switching = Task { @MainActor in await vm.selectAudioTrack(audio5) }
-        try await requireEventually({ outgoing.hasParked(.silence) }, "the reload never reached its prelude")
+        try await requireEventually({ outgoing.hasParked(.pause) }, "the reload never reached its prelude")
 
         await vm.playNextEpisode()
         let replacement = engines.live
@@ -824,7 +825,7 @@ struct PlayerReloadQueueTests {
         try await replacement.settle()
         try #require(vm.phase == .playing)
 
-        outgoing.release(.silence)
+        outgoing.release(.pause)
         await switching.value
 
         #expect(asks.values == ["ep-1", "ep-2"], "the stale reload re-resolved the previous episode")
@@ -853,7 +854,7 @@ struct PlayerReloadQueueTests {
                     chineseSidecarURL: sidecarURL(session: asks.count)
                 )
             },
-            engineFactory: { id, _ in engines.make(id) },
+            engineFactory: { engines.make() },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
             fetchAdjacent: { _, _ in AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2")) }
@@ -923,7 +924,7 @@ struct PlayerReloadQueueTests {
 
     /// `selectAudioTrack`'s twin of `seek(to:)`'s rule: a reload the server answers with a
     /// direct-play stream lands in `resolved` while `loadAndPlay` is still running, so
-    /// reading `resolved?.method` re-points an engine that is mid-swap.
+    /// reading `resolved?.method` re-points an engine that is mid-load.
     @Test("an audio pick during a reload whose re-resolve came back DIRECT-PLAY still merges")
     func audioPickDuringADirectPlayReloadMerges() async throws {
         let asks = CallRecorder<ResolveAsk>()
@@ -934,19 +935,17 @@ struct PlayerReloadQueueTests {
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let audio4 = try audioTrack(vm, 4)
-        let outgoing = engines.live
-        // A direct-play VC-1 stream routes to VLC, so the reload rebuilds — and the swap's
-        // audio cut is the seam that holds a caller inside `loadAndPlay`.
-        outgoing.hold(.endAudio)
+        let engine = engines.live
+        engine.hold(.load)
 
         let audio5 = try audioTrack(vm, 5)
         let switching = Task { @MainActor in await vm.selectAudioTrack(audio5) }
-        try await requireEventually({ outgoing.hasParked(.endAudio) }, "the reload never reached the engine swap")
+        try await requireEventually({ engine.hasParked(.load) }, "the reload never reached the engine load")
 
         await vm.selectAudioTrack(audio4)
         #expect(vm.selectedAudioTrack == audio4)
 
-        outgoing.release(.endAudio)
+        engine.release(.load)
         await switching.value
 
         #expect(asks.count == 3)

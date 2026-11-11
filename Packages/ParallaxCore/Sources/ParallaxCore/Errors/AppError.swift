@@ -119,6 +119,8 @@ public enum PlaybackFailure: Sendable {
     /// server, a cold transcode or a wedged segment fetch is not a broken file, and telling
     /// the user it is sends them looking in the wrong place.
     case startupTimedOut
+    /// The file is truncated or still being written, so its index cannot be trusted.
+    case incompleteFile
 
     public var userMessage: String {
         switch self {
@@ -132,6 +134,8 @@ public enum PlaybackFailure: Sendable {
             return "Couldn't start audio playback. Try again."
         case .startupTimedOut:
             return "The server took too long to start this stream. Try again."
+        case .incompleteFile:
+            return "This file is incomplete. It may still be copying."
         }
     }
 }

@@ -4,16 +4,13 @@ import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxPlayback
 import OSLog
-import Synchronization
 
 private let logger = Logger(subsystem: "Parallax", category: "SMBPlaybackResolver")
 
-/// Turns a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`.
-///
-/// Decodes the `ItemID` back into a share path, reads the password from the Keychain,
-/// builds the credential-free `smb://` URL + libVLC credential options, and resolves
-/// filename-matched sidecar subtitles. Subtitle resolution failures are non-fatal —
-/// the video plays with an empty subtitle map rather than aborting.
+/// Turns a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`: decodes the `ItemID` back
+/// into a share path, reads the password from the Keychain, matches sidecar subtitles and
+/// starts the local server AVPlayer reads the file through. A subtitle failure is not fatal;
+/// the video plays without them.
 public struct SMBPlaybackResolver {
     let serverStore: ServerStore
     /// The app's one connection pool. The sidecar-subtitle lister, the container probe and the
@@ -21,21 +18,17 @@ public struct SMBPlaybackResolver {
     /// resolve.
     let connections: SMBConnections
     let resumeStore: SMBResumeStore
-    /// The container probe's deadline sleeps on it.
+    /// The delivery's probe deadline sleeps on it.
     let clock: any Clock<Duration>
-    /// Its `avPlayer` support decides which probed files may ride the bridge into AVKit.
+    /// Its `avPlayer` support decides which probed files AVPlayer can read as they are.
     let deviceProfileBuilder: DeviceProfileBuilder
 
-    /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`.
-    ///
-    /// Throws `AppError.source(.notFound)` if the `ItemID` can't be decoded back to a share path
-    /// (i.e. it wasn't minted by `SMBFileSource.itemID(share:path:)`).
+    /// Throws `AppError.source(.notFound)` if the `ItemID` wasn't minted by
+    /// `SMBFileSource.itemID(share:path:)`, the `Unplayable` reason's `AppError` when AVPlayer
+    /// cannot play the file, and the read failure's `AppError` when the file could not be probed.
     public func resolve(_ item: Item, ref: SMBServerRef) async throws -> SMBPlaybackItem {
-        // Decode the share path, read the Keychain password, build the credential-free smb:// URL
-        // + libVLC credential options — one assembly site shared with the thumbnail provider.
         let ctx = try await SMBSourceResolver.context(for: item, ref: ref, serverStore: serverStore)
 
-        // Resolve sidecar subtitles (best-effort — failures don't abort playback).
         let subtitleURLs: [Int: URL]
         let subtitleLabels: [Int: String]
         do {
@@ -43,16 +36,13 @@ public struct SMBPlaybackResolver {
             let lister = connections.lister(ref.credentials(password: ctx.password))
             let resolver = SMBSubtitleResolver(lister: lister, host: ref.data.host, share: ctx.share, root: "")
             let matches = try await resolver.subtitles(for: filename, in: directory)
-            // Sort by label, then filename, for deterministic index assignment. The filename
-            // tie-break matters: loosened matching can emit colliding labels (e.g. several "Default"
-            // lonely-video subs), and a label-only sort isn't stable — the index→URL map would
-            // otherwise depend on the lister's enumeration order.
+            // Label, then filename: loosened matching can emit colliding labels (several
+            // "Default" subs), and a label-only sort would leave the index-to-URL map depending
+            // on the lister's enumeration order.
             let sorted = matches.sorted {
                 ($0.label, $0.url.lastPathComponent) < ($1.label, $1.url.lastPathComponent)
             }
             subtitleURLs = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.offset, $0.element.url) })
-            // Same index keying as the URL map — the label survives so the subtitle menu
-            // can name each synthetic external track ("English" etc.) instead of "Track N".
             subtitleLabels = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.offset, $0.element.label) })
         } catch {
             logger.warning("SMB subtitle resolution failed for \(ctx.path, privacy: .public): \(error, privacy: .public)")
@@ -60,127 +50,34 @@ public struct SMBPlaybackResolver {
             subtitleLabels = [:]
         }
 
-        // Probe the container so AVKit-decodable files can ride the HTTP bridge
-        // (HDR display-match + AirPlay + real buffered ranges). Best-effort with a
-        // hard deadline: a hung share must not stall the loading veil — on timeout
-        // or error we fall back to today's smb://+VLC route, which needs no probe.
-        let reader = connections.reader(ctx.target(ref), ctx.path)
-        let probeResult = await Self.probeWithDeadline(reader, on: clock)
-
         let support = await deviceProfileBuilder.build().avPlayer
-        let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes, support: support)
+        let delivery: SMBDelivery
+        do {
+            delivery = try await SMBDelivery.start(
+                reader: connections.reader(ctx.target(ref), ctx.path),
+                fileName: (ctx.path as NSString).lastPathComponent,
+                support: support, clock: clock)
+        } catch let reason as Unplayable {
+            logger.notice("SMB file unplayable: \(String(describing: reason), privacy: .public) for \(ctx.path, privacy: .public)")
+            throw reason.appError
+        } catch SMBDelivery.ProbeFailure.timedOut(let transportFault) {
+            logger.warning("SMB probe timed out for \(ctx.path, privacy: .public) transportFault=\(transportFault)")
+            throw AppError.source(.connectionLost)
+        } catch SMBDelivery.ProbeFailure.unreadable(let underlying, _) {
+            throw SMBFileSource.mapReadError(underlying, share: ctx.share, path: ctx.path)
+        }
 
-        // VLC-routed files ride the local HTTP bridge too, by default: libvlc's own
-        // smb2 access has a fatal teardown race (poll failure → freed context →
-        // smb2_get_fds SIGSEGV) plus cancellation churn on every close, while the
-        // bridge reuses the same AMSMB2 stack the browse wall, thumbnails, and AVKit
-        // playback already trust. Hints keep the smb scheme so engine selection and
-        // cache sizing are unchanged — only the transport differs. Two gates keep the
-        // native smb2 input: a timed-out probe (the reader may be wedged, and a wedged
-        // reader would wedge the bridge) and an INCOMPLETE file — the bridge pins
-        // Content-Length at session start, so a still-growing download would be cut off
-        // at its open-time size and lose the read-rate duration estimate; libvlc's own
-        // input re-reads the live file. DEBUG `-smbNativeVLC` restores the native input
-        // for A/B runs.
-        var vlcOverBridge = !useBridge && probeResult?.isComplete == true
-        #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("-smbNativeVLC") { vlcOverBridge = false }
-        #endif
-
-        // Local resume: SMB has no server-side progress store, so the offset comes from
-        // the on-device store (nil = fresh start). Same key the VM saves beats under.
+        // No server holds SMB progress, so the offset comes from the on-device store.
         let startTime = await resumeStore.resumeTime(for: item.id)
 
-        // See `timingRepairLibraryOptions(for:)` for the WHY — the .decodeOrderTimestamps
-        // hazard's library-level fix.
-        let timingRepairLibraryOptions = Self.timingRepairLibraryOptions(for: probeResult)
-
-        if useBridge || vlcOverBridge {
-            // The reader is handed to the session and owned by it from here — the cleanup
-            // closure is the only site that tears it down. `session.start()` self-tears-down
-            // on a start failure (no SMBPlaybackItem, no cleanup closure would ever run).
-            let fileName = (ctx.path as NSString).lastPathComponent
-            let contentType: String
-            switch hints.container {
-            case .mov: contentType = "video/quicktime"
-            case .mp4: contentType = "video/mp4"
-            case .mkv: contentType = "video/x-matroska"   // VLC-over-bridge only; mkv never bridge-qualifies
-            default:
-                // AVKit bridge only qualifies containers AVKit opens (mp4 family), so its
-                // fallback stays video/mp4. Everything else here is VLC-over-bridge — ts,
-                // webm, avi, asf, unidentified OGM — where a wrong mime hint can only
-                // mislead libvlc's demuxer pick; the honest "no hint" lets it probe the
-                // bytes (same reason the thumbnail bridge uses octet-stream).
-                contentType = vlcOverBridge ? "application/octet-stream" : "video/mp4"
-            }
-            let session = SMBBridgeSession(reader: reader, fileName: fileName, contentType: contentType)
-            let url = try await session.start()
-            return SMBPlaybackItem(
-                itemID: item.id,
-                url: url,
-                title: item.displayTitle,
-                vlcOptions: [],       // bridged http: no VLC credentials in play
-                vlcLibraryOptions: timingRepairLibraryOptions,
-                startTime: startTime,
-                subtitleURLs: subtitleURLs,
-                subtitleLabels: subtitleLabels,
-                // Both bridge routes require `isComplete` (bridgeEligible's gate for AVKit, the
-                // vlcOverBridge gate above for VLC), and the bridge pins Content-Length, so the
-                // duration covers every byte the session will serve — no read-rate estimate in
-                // play. Only mp4's moov walk can prove a file incomplete; every other container
-                // reports complete, so a still-growing recording plays to its open-time size.
-                hasTrustworthyDuration: true,
-                hints: hints,
-                // The borrow's LIFETIME disqualifies it from pool reuse: an hours-long playback
-                // socket may be silently degraded (stalls surface as short reads, never a thrown
-                // error, so the taint rule can't catch them), and checking it in would hand the
-                // next thumbnail fetch a broken "warm" connection. Mark it before the ordered
-                // teardown so the drain path disconnects instead of donating.
-                cleanup: { await reader.markUnreusable(); await session.stop() }
-            )
-        }
-
-        // VLC route — release the probe's SMB connection (libVLC opens its own) and carry
-        // whatever the probe learned so the engine can size its cache; scheme stays smb.
-        if probeResult == nil {
-            // Probe timed out or failed: the reader may be wedged in a native AMSMB2 read that won't
-            // return until its socket timeout. Awaiting disconnect() inline would serialize behind that
-            // wedge on the reader's actor and re-stall resolve()'s return — the very veil-stall the 4s
-            // deadline just avoided. Fire-and-forget cleanup. With pooling this is also the CORRECTNESS
-            // path: disconnect() sees the still-in-flight op (inFlightOps > 0) and CONDEMNS the borrow
-            // rather than checking it in — it is parked alive, untouched while the native read runs,
-            // and discarded once that read finally returns. Either way the next borrower never sees
-            // this socket.
-            //
-            // Sample hadTransportFault first: resolve still falls through to native VLC (no throw,
-            // no SMBPlaybackItem field the VM reacts to), so a connect/op blip that the probe then
-            // abandoned has no admission/poison consumer — surface it at warning so the evidence
-            // is not dropped with the reader. Fire-and-forget: awaiting the teardown inline would
-            // serialize behind the still-wedged native call it's escaping.
-            Task {
-                if await reader.teardownCapturingTransportFault() {
-                    logger.warning("SMB probe abandoned with prior transport fault for \(ctx.path, privacy: .public) — falling back to native VLC")
-                }
-            }
-        } else {
-            // Probe completed cleanly; the reader is idle — check its borrow back in (reusable) inline.
-            await reader.disconnect()
-        }
         return SMBPlaybackItem(
             itemID: item.id,
-            url: ctx.url,
+            url: delivery.url,
             title: item.displayTitle,
-            vlcOptions: ctx.vlcOptions,
-            vlcLibraryOptions: timingRepairLibraryOptions,
             startTime: startTime,
             subtitleURLs: subtitleURLs,
             subtitleLabels: subtitleLabels,
-            // VLC route: trustworthy only when the probe ran AND proved the file complete — an
-            // unproven/incomplete file may synthesize its duration from the read-rate estimate
-            // (VLCKitEngine.effectiveDurationMs), which SMBResumeStore's 95% clear must never trust.
-            hasTrustworthyDuration: probeResult?.isComplete == true,
-            hints: hints,
-            cleanup: nil
+            cleanup: { await delivery.stop(discardingConnection: true) }
         )
     }
 
@@ -214,108 +111,6 @@ public struct SMBPlaybackResolver {
         }
     }
 
-    /// Pure routing decision shared by `resolve` and its unit tests. Given the probe
-    /// outcome (`nil` = probe failed/timed out), the file size and what AVPlayer plays on
-    /// this device, decides whether an AVKit-decodable file may ride the HTTP bridge and
-    /// builds the matching `PlaybackHints`.
-    ///
-    /// Bridge ONLY when: the probe ran, it positively IDENTIFIED the container (`nil` means
-    /// "magic bytes matched nothing" — OGM/FLV land here, and the selector's AVKit verdict
-    /// on container-less hints is a default, not proof, so they'd bridge straight into
-    /// AVFoundation's "Cannot Open"), the file is complete (an incomplete download needs
-    /// VLC + the read-rate duration estimate), no track was codec-`.unknown` (unknown → VLC
-    /// keeps it decodable), the probe found no AVPlayer hazard (a degenerate `ctts` on a
-    /// B-frame h264 stream plays in decode order under AVKit — VLC reconstructs it correctly),
-    /// and the selector's verdict on the `http` candidate hints is AVKit.
-    ///
-    /// `nonisolated` because it is pure: the app target infers `@MainActor` for everything, which
-    /// would make this decision unreachable from the actors that share it (`MediaArtworkProvider`
-    /// routes its frame-grabs through exactly the same call).
-    nonisolated static func route(
-        probe: MediaProbeResult?, sizeBytes: Int64?, support: AVPlayerSupport
-    ) -> (hints: PlaybackHints, useBridge: Bool) {
-        let candidateHints = PlaybackHints(
-            scheme: "http",
-            container: probe?.container,
-            videoCodec: probe?.videoCodec.knownValue,
-            audioCodecs: probe?.audioCodecs.knownValue ?? [],
-            subtitleFormats: [],
-            fileSizeBytes: sizeBytes
-        )
-        let bridgeEligible = probe.map {
-            $0.isComplete
-                && $0.container != nil
-                && $0.videoCodec != .unknown && $0.audioCodecs != .unknown
-                && $0.avPlayerHazards.isEmpty
-                && EngineSelector.select(hints: candidateHints, support: support) == .avKit
-        } ?? false
-
-        if bridgeEligible {
-            return (candidateHints, true)
-        }
-        return (
-            PlaybackHints(
-                scheme: "smb",
-                container: probe?.container,
-                videoCodec: probe?.videoCodec.knownValue,
-                audioCodecs: probe?.audioCodecs.knownValue ?? [],
-                subtitleFormats: [],
-                fileSizeBytes: sizeBytes
-            ),
-            false
-        )
-    }
-
-    /// The libvlc INSTANCE arguments that repair the `.decodeOrderTimestamps` hazard, or
-    /// nil when the probe found no such hazard. The decoder re-derives display order from
-    /// the bitstream, but roughly half the frames then carry timestamps that read as
-    /// "late" to VLC's output clock and get dropped — the visible effect is a halved frame
-    /// rate. `--no-drop-late-frames`/`--no-skip-frames` keep every decoded frame instead;
-    /// pacing beats the broken clock. Scoped to this ONE hazard — other hazards have sane
-    /// clocks and keep normal dropping. Library-level (not per-media): the vout's
-    /// `is_late_dropped` flag inherits from the owning libvlc INSTANCE, not a per-media
-    /// variable (proven on device) — `VLCMediaPlayer(options:)` is the only surface that
-    /// can set it. Pure so it's testable without a live decode.
-    nonisolated static func timingRepairLibraryOptions(for probe: MediaProbeResult?) -> [String]? {
-        probe?.avPlayerHazards.contains(.decodeOrderTimestamps) == true
-            ? ["--no-drop-late-frames", "--no-skip-frames"]
-            : nil
-    }
-
-    /// Races a container probe against a hard `deadline` on `clock`, abandoning the probe
-    /// if the deadline wins. Returns the probe result, or `nil` on timeout/failure —
-    /// `route(probe:sizeBytes:)` reads `nil` as "fall back to the VLC route."
-    ///
-    /// Unstructured on purpose: a task group would await the probe child even after
-    /// `cancelAll()`, so a wedged share stalls the loading veil until AMSMB2's own
-    /// socket timeout. Racing an abandoned `Task` keeps the deadline promise; the zombie
-    /// probe self-terminates within the reader's connect timeout and holds only memory
-    /// (the reader outlives it either way — the bridge route hands it to the bridge, the
-    /// VLC route fire-and-forget-disconnects it behind the in-flight read).
-    ///
-    /// `nonisolated` for the same reason as `route`: it touches no main-actor state, and the
-    /// thumbnail provider's actor probes through it too.
-    nonisolated static func probeWithDeadline(
-        _ reader: any RandomAccessReading,
-        within deadline: Duration = .seconds(4),
-        on clock: any Clock<Duration>
-    ) async -> MediaProbeResult? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<MediaProbeResult?, Never>) in
-            let latch = OneShotLatch(continuation)
-            let probe = Task { try? await MediaProbe.probe(reader) }
-            let timer = Task {
-                guard (try? await clock.sleep(for: deadline)) != nil else { return }
-                probe.cancel()          // cooperative only: a wedged read ignores it
-                latch.resume(nil)
-            }
-            Task {
-                let result = await probe.value
-                timer.cancel()
-                latch.resume(result)
-            }
-        }
-    }
-
     // MARK: - Private helpers
 
     /// Splits a share-relative path into (directory, filename).
@@ -331,26 +126,11 @@ public struct SMBPlaybackResolver {
     }
 }
 
-/// Resumes a `CheckedContinuation` exactly once, thread-safe. The probe race has two
-/// racers that can each try to complete the continuation (the probe finishing, or the
-/// deadline firing); whichever wins takes the continuation out under the lock, and the
-/// loser's `resume` is a no-op. A double-resume of a `CheckedContinuation` traps, so the
-/// mutual exclusion here is load-bearing, not defensive.
-///
-/// `nonisolated` because `probeWithDeadline` is: the app target's default `@MainActor` inference
-/// would otherwise pin the latch to main and make the probe race unable to touch it.
-nonisolated private final class OneShotLatch: Sendable {
-    private let box: Mutex<CheckedContinuation<MediaProbeResult?, Never>?>
-
-    init(_ continuation: CheckedContinuation<MediaProbeResult?, Never>) {
-        box = Mutex(continuation)
-    }
-
-    func resume(_ value: MediaProbeResult?) {
-        let continuation = box.withLock { stored -> CheckedContinuation<MediaProbeResult?, Never>? in
-            defer { stored = nil }
-            return stored
+extension Unplayable {
+    nonisolated var appError: AppError {
+        switch self {
+        case .incompleteFile: .playback(.incompleteFile)
+        case .container, .videoCodec, .audioCodec, .directHazards: .playback(.unsupportedFormat)
         }
-        continuation?.resume(returning: value)
     }
 }

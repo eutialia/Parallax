@@ -1,11 +1,10 @@
 import Foundation
 
-/// A one-shot load deadline shared by both playback engines. Without it the only ways out of
+/// A one-shot load deadline for the playback engine. Without it the only ways out of
 /// `.loading` are an explicit engine error or a throwing `load()` — so a source that opens but
 /// never produces a first frame (a truncated container the demuxer can't finish, a dead SMB
 /// mount, a wedged HLS segment fetch) leaves the player permanently, uncontrollably stuck on the
-/// loading scrim. `VLCThumbnailer` already ships a 20s deadline for exactly this class; the
-/// engines had none.
+/// loading scrim.
 ///
 /// Usage: `arm(onTimeout:)` when entering `.loading`; `disarm()` at the first sign of life (the
 /// first real beat / `.ready`) and on teardown. If neither happens within `timeout`, `onTimeout`
