@@ -9,7 +9,7 @@ import ParallaxPlayback
 /// A resolved tile artwork plus the source duration extracted while generating it. The duration
 /// rides alongside the image so an SMB tile can show its runtime under the thumbnail; nil when the
 /// source carries no artwork, or when no length was ever resolved for it — a sidecar image has no
-/// video length of its own, and libvlc can't always read one.
+/// video length of its own.
 /// `nonisolated` for the same app-target MainActor-default reason as `SMBThumbnailKey`: this value
 /// is produced and compared inside the `MediaArtworkProvider` actor, and an inferred main-actor
 /// isolation makes even `MediaArtwork.none` unreachable from there (an error under the Swift 6
@@ -57,13 +57,13 @@ public nonisolated struct MediaArtwork: Sendable, Equatable {
 /// guard live in the reader + pool (see `SMBRandomAccessReader.disconnect()`).
 ///
 /// **Failure memory.** A generation failure is recorded both in-memory (fast path) and as a
-/// persistent `.fail` marker on disk, so a file libvlc can't decode isn't re-attempted (and
+/// persistent `.fail` marker on disk, so a file that will not decode isn't re-attempted (and
 /// re-charged the full timeout) every launch. Backoff is exponential, capped at 24h — never
 /// permanent, so a decodable-but-slow-over-VPN file self-heals when circumstances change; Clear
 /// Cache or a file change (new size/mtime = new key) resets early.
 ///
 /// **Credentials** never leave this file in the clear: they're read from the Keychain via
-/// `SMBSourceResolver` and ride the pooled reader / `vlcOptions`, never logged.
+/// `SMBSourceResolver` and ride the pooled reader, never logged.
 public actor MediaArtworkProvider {
 
     /// Per-fetch outcome diagnostics. File NAMES only (never credentials, never full URLs);
@@ -71,12 +71,7 @@ public actor MediaArtworkProvider {
     private static let log = Logger(subsystem: "com.lhdev.parallax", category: "thumbnails")
 
     private let cache: SMBThumbnailCache
-    /// `@MainActor`-isolated, called via `await` (it hops to main for the actual decode).
-    /// `thumbnailer` opens any container (VLC in the app) and is the default/fallback path;
-    /// `avThumbnailer` is used only when `SMBPlaybackResolver.route` says the container is
-    /// AVKit-eligible (same decision as playback).
     private let thumbnailer: any FrameThumbnailing
-    private let avThumbnailer: any FrameThumbnailing
     private let serverStore: ServerStore
     /// Shared warm-connection pool. Its cold-connect latency also classes the link (LAN/WAN), which
     /// seeds each host's AIMD admission window (WAN/unknown start narrow; LAN starts wider).
@@ -91,26 +86,16 @@ public actor MediaArtworkProvider {
     private var pending: [SMBThumbnailKey: (task: Task<MediaArtwork, Never>, claims: Int)] = [:]
 
     /// Hard ceiling for the WHOLE post-sidecar pipeline, anchored when cover-art / frame-grab
-    /// work starts: the MKV cover-art extract, the container probe, an AV attempt and a VLC
-    /// fallback all draw from this ONE budget (see `GenerationDeadline`) rather than each arming
+    /// work starts: the MKV cover-art extract, the container probe and the frame decode
+    /// all draw from this ONE budget (see `GenerationDeadline`) rather than each arming
     /// its own. 30s, not the thumbnailer's 20s default: over VPN a *successful* fetch measured
     /// 11.1s and several legitimate files timed out at 20s, so the default ceiling sat inside the
     /// observed success band. On LAN a fetch takes 1–3s, so only genuinely broken files ever pay
     /// this — and they're then backed off anyway.
     private static let generationTimeout: Duration = .seconds(30)
 
-    /// Cap on the AVFoundation attempt WITHIN the generation budget. Stricter than the 30s total on
-    /// purpose: the AV path exists because it's fast (moov + one keyframe); a wedge should fail over
-    /// to VLC with budget left rather than sit for half a minute.
-    private static let avGenerationTimeout: Duration = .seconds(15)
-
-    /// Cap on the container probe WITHIN the generation budget — the same 4s deadline
-    /// `SMBPlaybackResolver` gives its own probe.
-    private static let probeTimeout: Duration = .seconds(4)
-
     /// Where a frame-grab tries again after a grey frame (see `FrameQuality`). A different seek
-    /// target lands at a different distance from the previous keyframe. All stay under VLC's 0.3
-    /// default so the decode still opens at the target via `:start-time=`.
+    /// target lands at a different distance from the previous keyframe.
     private static let greyRetryPositions: [Float] = [0.15, 0.25]
 
     /// Cap on the embedded cover-art extract WITHIN the generation budget. Metadata seeks are a
@@ -143,11 +128,11 @@ public actor MediaArtworkProvider {
     private let clock: any Clock<Duration>
     /// Wall time: the persisted `.fail` marker is a date that has to survive a relaunch.
     private let now: @Sendable () -> Date
-    /// Its `avPlayer` support feeds `SMBPlaybackResolver.route`, the same decision playback makes.
+    /// Its `avPlayer` support goes to `SMBDelivery.start`, the same decision playback makes.
     private let deviceProfileBuilder: DeviceProfileBuilder
     private static let failureBackoff: Duration = .seconds(180)
-    /// Backoff ceiling — deliberately NOT permanent: a decodable-but-slow file (a big MKV that
-    /// times out over VPN but grabs in 1–3s on LAN) must get another chance when circumstances
+    /// Backoff ceiling — deliberately NOT permanent: a decodable-but-slow file (one that times
+    /// out over VPN but grabs in 1–3s on LAN) must get another chance when circumstances
     /// change. 24h means a chronically-failing key costs at most one 30s attempt per day, while a
     /// genuinely broken file stays effectively silenced.
     private static let maxBackoff: Duration = .seconds(24 * 3600)
@@ -167,7 +152,6 @@ public actor MediaArtworkProvider {
     ///   - cacheDirectory: where generated thumbnails are stored.
     public init(
         thumbnailer: any FrameThumbnailing,
-        avThumbnailer: any FrameThumbnailing,
         serverStore: ServerStore,
         connections: SMBConnections,
         cacheDirectory: URL,
@@ -180,7 +164,6 @@ public actor MediaArtworkProvider {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.elapsed = clock.stopwatch()
         self.thumbnailer = thumbnailer
-        self.avThumbnailer = avThumbnailer
         self.serverStore = serverStore
         self.connections = connections
         self.cache = SMBThumbnailCache(directory: cacheDirectory, now: now)
@@ -327,24 +310,18 @@ public actor MediaArtworkProvider {
     /// itself just by being watched. The movie→key recipe lives only here (via `thumbnailKey`) so
     /// the player never reimplements it.
     ///
-    /// `captureFramePerformsIO` (from `PlaybackEngine.captureFramePerformsIO`) gates an I/O-issuing
-    /// capture (AVKit) off non-LAN links: its fresh range reads queue on the SAME serialized bridge
-    /// reader playback is pulling its next chunk from, so on WAN they contend for bandwidth the
-    /// player needs more than the thumbnail does. VLC's capture reads no bytes at all and always
-    /// runs, regardless of link class.
+    /// Skipped off a LAN link: the capture's range reads queue on the same serialized reader
+    /// playback pulls its next chunk from, and the player needs that bandwidth more.
     public func backfillThumbnail(
         item: Item,
         ref: SMBServerRef,
         duration: Duration?,
-        captureFramePerformsIO: Bool,
         captureFrame: @Sendable () async -> Data?
     ) async {
         guard let key = thumbnailKey(for: item, ref: ref) else { return }
         // Cross-actor call into `SMBThumbnailCache` — needs await even from this actor.
         guard await cache.existing(for: key) == nil else { return }
-        if captureFramePerformsIO, await connections.linkClass(ref.data.host) != .lan {
-            return
-        }
+        guard await connections.linkClass(ref.data.host) == .lan else { return }
         guard let data = await captureFrame(), FrameQuality.isUsable(data) else { return }
         _ = await cache.store(data, duration: duration, for: key)
     }
@@ -442,7 +419,7 @@ public actor MediaArtworkProvider {
         }
         guard !Task.isCancelled else { return (.none, .inconclusive) }
 
-        // ONE ceiling shared by cover-art + frame-grab (probe / AV / VLC) — see `GenerationDeadline`.
+        // ONE ceiling shared by cover-art + frame-grab — see `GenerationDeadline`.
         let deadline = GenerationDeadline(elapsed: elapsed, budget: Self.generationTimeout)
         // MKV only: WebM's element subset excludes Attachments entirely, so the walk would be
         // pure waste (a guaranteed-nil probe) on every .webm file.
@@ -460,7 +437,8 @@ public actor MediaArtworkProvider {
         }
 
         let grab = await frameGrab(
-            ctx: ctx, ref: ref, key: key, fileName: fileName, link: link, deadline: deadline)
+            ctx: ctx, ref: ref, key: key, fileName: fileName, link: link, deadline: deadline,
+            earlierTierTransportFault: earlierTierTransportFault)
         guard earlierTierTransportFault else { return (grab.artwork, grab.outcome) }
         // Earlier-tier reads are link evidence too, and used to be invisible to the window: a host
         // that timed out every sidecar/cover-art and then fell through looked perfectly healthy. A
@@ -594,165 +572,93 @@ public actor MediaArtworkProvider {
         }
     }
 
-    /// The frame-grab tier — rides the local HTTP bridge over a pooled reader, exactly as before.
-    ///
-    /// **Generation rides the local HTTP bridge, not `smb://`.** Pointing libvlc at a per-fetch
-    /// `SMBHTTPBridge` (fronting one pooled `SMBRandomAccessReader`) instead of the share directly
-    /// buys three things on a high-RTT link (VPN):
-    ///  - ONE SMB connection per thumbnail instead of two — the pre-parse and VLCKit's internal
-    ///    player each open the URL, and over the bridge both multiplex onto the reader's single warm
-    ///    connection instead of paying two WAN SMB handshakes;
-    ///  - big reads — the bridge streams the file in 2 MiB slices, where libvlc's smb module issues
-    ///    small sequential reads, each charged a round-trip;
-    ///  - a kill switch — stopping the bridge on resolve instantly starves the a19 thumbnailer's
-    ///    zombie player (no cancel API; it otherwise streams the share until its internal 45s timer).
-    /// Credentials also stay out of libvlc entirely: they live in the reader's pooled target; the
-    /// bridge URL carries only a random one-shot token.
+    /// The frame-grab tier: the thumbnailer reads the file through a per-fetch local server over
+    /// one pooled reader, so credentials stay in the pool and stopping the server on any exit
+    /// starves a decode nobody is waiting for. Only a file AVPlayer plays directly gets a frame.
     ///
     /// `deadline` is the shared generation ceiling (cover-art already spent some of it when that
     /// tier ran); do not construct a fresh budget here.
     private func frameGrab(
         ctx: SMBSourceContext, ref: SMBServerRef, key: SMBThumbnailKey,
-        fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline
+        fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline,
+        earlierTierTransportFault: Bool
     ) async -> FrameGrabAttempt {
-        func newReader() -> any SMBShareReading {
-            connections.reader(ctx.target(ref), ctx.path)
-        }
-
-        var reader = newReader()
-        // Same probe → route sequencing as `SMBPlaybackResolver.resolve`, on the SAME reader the
-        // bridge will own. `useBridge` means AVKit-eligible (hazard-free, complete, selector says
-        // AVKit); otherwise stay on VLC. Size comes from the cache key when the listing had one
-        // (`movie.size ?? 0` → 0 means unknown → nil).
-        let probeResult = await SMBPlaybackResolver.probeWithDeadline(
-            reader, within: deadline.capped(at: Self.probeTimeout), on: clock)
-        // Sticky transport evidence from the probe reader, sampled at discard. Nil probe always
-        // routes to VLC on a FRESH reader; without capturing this bit the probe stage's link
-        // fault vanished with the discarded borrow (same override shape as sidecarTransportFault).
-        var probeTransportFault = false
-        if probeResult == nil {
-            // The gate `SMBPlaybackResolver.resolve` applies, mirrored: a nil probe means the
-            // deadline won (or the probe failed), so the reader may still have a native AMSMB2 call
-            // sitting in libsmb2's poll loop — and handing THAT borrow to the bridge wedges the
-            // bridge with it. Teardown is fire-and-forget for the resolver's reason (awaiting it
-            // would serialize behind the very wedge the deadline just escaped) and routes into the
-            // condemn machinery: `disconnect()` sees the in-flight op and parks the borrow instead
-            // of returning it. The generation carries on over a FRESH reader — a nil probe always
-            // routes to VLC, which needs no probe.
-            probeTransportFault = await reader.teardownCapturingTransportFault()
-            reader = newReader()
-        }
-        let sizeBytes: Int64? = key.size > 0 ? key.size : nil
         let support = await deviceProfileBuilder.build().avPlayer
-        let (_, useAV) = SMBPlaybackResolver.route(probe: probeResult, sizeBytes: sizeBytes, support: support)
-
-        // libvlc sniffs the container from the bytes; the advertised type is advisory only.
-        let session = SMBBridgeSession(
-            reader: reader, fileName: fileName, contentType: "application/octet-stream")
-        let bridgeURL: URL
+        let skipped = { (outcome: ThumbnailFetchOutcome) in
+            FrameGrabAttempt(artwork: .none, outcome: outcome, decodedAFrame: false)
+        }
+        let delivery: SMBDelivery
         do {
-            // Loopback, not LAN: the thumbnailer is strictly on-device (no AirPlay), and a VPN's
-            // policy layer resets self-connections to LAN/link-local addresses — the observed
-            // "connection reset by peer" storm that broke generation over VPN. `start` tears the
-            // session down itself on failure — a local bind failure is not a decode failure and
-            // says nothing at all about the REMOTE host's link: don't poison the key over it. But a
-            // nil probe's sticky fault is still positive REMOTE evidence gathered before the bind
-            // ever ran, so it still counts toward `.transportFailure`.
-            bridgeURL = try await session.start(scope: .loopback)
+            // Loopback, not LAN: the thumbnailer is strictly on-device, and a VPN's policy layer
+            // resets self-connections to LAN and link-local addresses.
+            delivery = try await SMBDelivery.start(
+                reader: connections.reader(ctx.target(ref), ctx.path), fileName: fileName,
+                support: support, scope: .loopback,
+                probeDeadline: deadline.capped(at: MediaDelivery.defaultProbeDeadline), clock: clock)
+        } catch SMBDelivery.ProbeFailure.timedOut(let transportFault) {
+            return skipped(Self.earlyExitOutcome(probeTransportFault: transportFault))
+        } catch SMBDelivery.ProbeFailure.unreadable(let underlying, let transportFault) {
+            if Self.shouldRecordFailure(error: underlying, hadTransportFault: transportFault),
+               !earlierTierTransportFault, !Task.isCancelled {
+                await recordFailure(key)
+            }
+            Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] (probe: \(String(describing: underlying), privacy: .public))")
+            // A server that answered "no" carried the request: a link success.
+            return skipped(transportFault ? .transportFailure : .success)
+        } catch let reason as Unplayable {
+            // The failure marker gates the sidecar and cover-art tiers too. A poster tier that
+            // lost to the link, or a generation nobody waited for, must get its retry, so
+            // only a file whose every tier answered is remembered as having no artwork.
+            if !earlierTierTransportFault, !Task.isCancelled { await recordFailure(key) }
+            Self.log.info("thumbnail SKIPPED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] (\(String(describing: reason), privacy: .public))")
+            // The probe's bytes arrived: a content-level miss, which is a link success.
+            return skipped(.success)
         } catch {
-            return FrameGrabAttempt(
-                artwork: .none,
-                outcome: Self.earlyExitOutcome(probeTransportFault: probeTransportFault),
-                decodedAFrame: false)
+            // A local bind failure says nothing about the file or the remote link, so the key
+            // is not poisoned over it.
+            return skipped(.inconclusive)
         }
 
         let result = await decodeAndStore(
-            via: bridgeURL, session: session, key: key, fileName: fileName, link: link,
-            container: probeResult?.container, useAV: useAV, deadline: deadline,
-            probeTransportFault: probeTransportFault)
-        // Torn down on EVERY exit (decodeAndStore never throws): starves a zombie fetch the moment we
-        // stop caring instead of it streaming SMB for up to 45s more. AWAITED, not fire-and-forget:
-        // the caller releases the gate permit right after we return, and the bridge-first teardown
-        // checks the pooled reader back in (or discards a tainted borrow).
-        await session.stop()
+            via: delivery, key: key, fileName: fileName, link: link, deadline: deadline)
+        // Awaited, not fire-and-forget: the caller releases the gate permit right after this
+        // returns, and the stop checks the pooled reader back in or discards a tainted borrow.
+        await delivery.stop()
         return result
     }
 
-    /// The decode + cache-store + outcome-logging half of a frame-grab, running against an
-    /// already-started bridge session. Never throws; the caller owns the session teardown. A
-    /// content-level failure poisons the key (records the failure); a cancellation never does.
-    ///
-    /// When `useAV` is true (route said AVKit-eligible), try AVFoundation first, capped at
-    /// `avGenerationTimeout` but never past what `deadline` has left. A transport-class fault aborts
-    /// without VLC fallback and without poisoning (network blip, not a bad file). Any other AV
-    /// failure falls back to VLC on the same bridge URL, spending the REST of the same budget. When
-    /// `useAV` is false, VLC runs alone with the whole remainder.
+    /// The decode + cache-store + outcome-logging half of a frame-grab. Never throws; the caller
+    /// stops the delivery. A content-level failure poisons the key (records the failure); a
+    /// cancellation never does.
     private func decodeAndStore(
-        via bridgeURL: URL, session: SMBBridgeSession, key: SMBThumbnailKey, fileName: String,
-        link: SMBLinkClass?, container: Container?, useAV: Bool, deadline: GenerationDeadline,
-        probeTransportFault: Bool
+        via delivery: SMBDelivery, key: SMBThumbnailKey, fileName: String,
+        link: SMBLinkClass?, deadline: GenerationDeadline
     ) async -> FrameGrabAttempt {
         let start = elapsed()
-        // Hoisted out of the `do` so the FAILURE log names the tier that actually ran: a fall-through
-        // that then failed in VLC is `framegrab-av+vlc`, exactly as the success path labels it.
-        var tier = useAV ? "framegrab-av" : "framegrab"
         do {
-            // SMB media is REMOTE: the thumbnailer's default 0.3 (30%-in) snapshot forces a deep
-            // mid-file seek, and over the share a Matroska cluster read there repeatedly fails and
-            // sometimes times out. So ask for an early frame DIRECTLY: 5% in is past a black leader but
-            // shallow enough that the bytes are already streamed for the header. No vlcOptions: the
-            // bridge URL needs none.
-            var frame: ThumbnailFrame
-            if useAV {
-                do {
-                    frame = try await avThumbnailer.frame(
-                        from: bridgeURL, at: 0.05, container: container,
-                        timeout: deadline.capped(at: Self.avGenerationTimeout))
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    // Transport blip → don't blame the file, don't spend another 30s on VLC.
-                    // `useAV` only happens on a non-nil probe (`route`'s bridgeEligible is `probe.map
-                    // {...} ?? false`), so `probeTransportFault` — set only on a nil probe — is always
-                    // false here; the session's own flag is the whole story.
-                    if await session.hadTransportFault {
-                        let elapsed = elapsed() - start
-                        let stats = await session.stats
-                        Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=framegrab-av \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (AV transport fault, no VLC fallback; \(String(describing: error), privacy: .public), \(stats.formatted, privacy: .public))")
-                        return FrameGrabAttempt(
-                            artwork: .none, outcome: .transportFailure, decodedAFrame: false)
-                    }
-                    // Content-level AV miss (hazard probe didn't catch, AVFoundation quirk) → VLC.
-                    Self.log.info("thumbnail AV fell through: \(fileName, privacy: .public) [tier=framegrab-av \(Self.context(link), privacy: .public)] (\(String(describing: error), privacy: .public)) — VLC fallback")
-                    tier = "framegrab-av+vlc"
-                    frame = try await thumbnailer.frame(
-                        from: bridgeURL, at: 0.05, container: container, timeout: deadline.remaining)
-                }
-            } else {
-                frame = try await thumbnailer.frame(
-                    from: bridgeURL, at: 0.05, container: container, timeout: deadline.remaining)
-            }
+            // 5% in, not the thumbnailer's default 30%: past a black leader, and shallow enough
+            // that the bytes are already streamed for the header.
+            var frame = try await thumbnailer.frame(
+                from: delivery.url, at: 0.05, timeout: deadline.remaining)
             var retryPositions = Self.greyRetryPositions[...]
             var usable = FrameQuality.isUsable(frame.data)
             while !usable, deadline.remaining > .zero, let position = retryPositions.popFirst() {
-                // Retries always go through the VLC thumbnailer, whatever decoded the first frame.
-                if useAV { tier = "framegrab-av+vlc" }
-                Self.log.info("thumbnail grey frame: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] — retrying at \(position, privacy: .public)")
+                Self.log.info("thumbnail grey frame: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] — retrying at \(position, privacy: .public)")
                 frame = try await thumbnailer.frame(
-                    from: bridgeURL, at: position, container: container, timeout: deadline.remaining)
+                    from: delivery.url, at: position, timeout: deadline.remaining)
                 usable = FrameQuality.isUsable(frame.data)
             }
             guard usable else {
                 // Never cached. The backoff bounds the retries; each one walks the ladder again.
                 await recordFailure(key)
-                Self.log.info("thumbnail REJECTED: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] (grey frame at every position)")
+                Self.log.info("thumbnail REJECTED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] (grey frame at every position)")
                 // Frames crossed the link up to three times: a content-level miss, which is a link success.
                 return FrameGrabAttempt(artwork: .none, outcome: .inconclusive, decodedAFrame: true)
             }
             let elapsed = elapsed() - start
-            let stats = await session.stats
+            let stats = await delivery.stats
             failures[key] = nil  // a decodable file: clear the in-memory stamp (store clears the disk marker)
-            Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public) (\(stats.formatted, privacy: .public))")
+            Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public) (\(stats.formatted, privacy: .public))")
             // A nil from store() is a WRITE failure, not a decode failure — return .none but do NOT
             // poison the key, so the next scroll retries instead of hiding a decodable file. The
             // frame still DECODED, which is what the link evidence is about: `decodedAFrame` stays
@@ -767,18 +673,12 @@ public actor MediaArtworkProvider {
             )
         } catch {
             let elapsed = elapsed() - start
-            // Probe-stage transport evidence ORs with the frame-grab session's: the discarded
-            // probe reader is gone, so only this bit carries its hadTransportFault into poison
-            // and AIMD (same composition as sidecarTransportFault → generateHoldingPermit).
-            let transportFault = Self.effectiveTransportFault(
-                sessionHadTransportFault: await session.hadTransportFault,
-                probeTransportFault: probeTransportFault
-            )
+            let transportFault = await delivery.hadTransportFault
             if Self.shouldRecordFailure(error: error, hadTransportFault: transportFault) {
                 await recordFailure(key)
             }
-            let stats = await session.stats
-            Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public), \(stats.formatted, privacy: .public))")
+            let stats = await delivery.stats
+            Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public), \(stats.formatted, privacy: .public))")
             // AIMD: shrink only when the LINK didn't keep up. Thumbnailer hard timeouts count too
             // (they fire on a struggling link even when no SMB read/attribute fault was recorded).
             // A cancelled generation is `.inconclusive` — nobody ever found out how the link was
@@ -800,8 +700,7 @@ public actor MediaArtworkProvider {
     ///
     /// Only a content-level failure earns one. A transport-class SMB fault means the FILE may be
     /// perfectly fine — the network blipped — and a cancellation means nobody ever found out, so
-    /// neither may blacklist a file for hours. Applies to pure-VLC, pure-AV, and AV→VLC-fallback
-    /// outcomes alike, and is INDEPENDENT of the AIMD window outcome: poison and admission are
+    /// neither may blacklist a file for hours. INDEPENDENT of the AIMD window outcome: poison and admission are
     /// separate axes (a content miss leaves the window alone but does poison; a blip is the
     /// reverse).
     ///
@@ -812,27 +711,8 @@ public actor MediaArtworkProvider {
         return true
     }
 
-    /// Transport evidence for poison + AIMD after a frame-grab. ORs the live session's flag with
-    /// any sticky bit captured from a discarded probe reader — that reader is gone by the time
-    /// the grab finishes, so the bit must be threaded in separately (same composition idea as
-    /// `sidecarTransportFault` in `generateHoldingPermit`).
-    ///
-    /// `nonisolated static` and pure so the OR is pin-able without a share or a bridge.
-    nonisolated static func effectiveTransportFault(
-        sessionHadTransportFault: Bool,
-        probeTransportFault: Bool
-    ) -> Bool {
-        sessionHadTransportFault || probeTransportFault
-    }
-
-    /// The outcome for `frameGrab`'s early exit — the bridge's own `session.start()` throwing before
-    /// any decode ever ran. The local bind failure itself says nothing about the remote host (see the
-    /// call site), but a nil-probe branch may have already captured positive transport evidence off
-    /// the discarded probe reader; that sticky bit still deserves `.transportFailure` over a blank
-    /// `.inconclusive`.
-    ///
-    /// `nonisolated static` and pure so this threading — not just the OR inside
-    /// `effectiveTransportFault` — is pinnable without a share, a pool, or a bridge.
+    /// The outcome when the probe never answered: a link fault the abandoned reader recorded is
+    /// positive evidence against the host, anything else says nothing.
     nonisolated static func earlyExitOutcome(probeTransportFault: Bool) -> ThumbnailFetchOutcome {
         probeTransportFault ? .transportFailure : .inconclusive
     }
@@ -993,7 +873,7 @@ nonisolated private struct FrameGrabAttempt {
 /// The ONE ceiling cover-art + frame-grab draw from, anchored in `generateHoldingPermit` before
 /// either tier runs.
 ///
-/// The cover-art extract, the probe, an AV attempt and a VLC fallback used to (or would) arm
+/// The cover-art extract, the probe and the frame decode used to (or would) arm
 /// INDEPENDENT ceilings and run in series under a single held permit — well past the 30s budget,
 /// with the whole host's admission slot blocked for all of it. They now draw from this shared
 /// budget: each phase asks for its own cap or whatever is left, whichever is smaller, so the total
@@ -1036,7 +916,7 @@ nonisolated private extension Int64 {
     }
 }
 
-nonisolated private extension SMBHTTPBridge.Stats {
+nonisolated private extension LocalMediaServer.Stats {
     /// "4.2 MiB over 12 connections" — what a frame-grab cost the share, for the outcome logs.
     var formatted: String {
         "\(Int64(bytesRead).mibLabel) over \(connections) connections"

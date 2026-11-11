@@ -3,9 +3,8 @@ import Foundation
 /// The canonical look for plain-text subtitles, shared by every renderer that draws
 /// them:
 /// - the app's client-side sidecar renderer (libass via `ParallaxSubtitles` — the
-///   common case for both engines; this style maps into its selective override),
-/// - AVKit's native WebVTT rendering (direct-play embedded tracks),
-/// - VLC's freetype renderer (direct-play embedded SRT on the VLC engine).
+///   common case; this style maps into its selective override),
+/// - AVKit's native WebVTT rendering (direct-play embedded tracks).
 /// Authored ASS/SSA never takes any of this: a creator's script carries its own
 /// colours, sizes, borders and placement, and that typesetting is theirs to keep.
 /// The one thing the renderer changes about such a track is the typeface, because
@@ -33,12 +32,6 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
             self.alpha = alpha
         }
 
-        /// 24-bit `0xRRGGBB` (alpha dropped) — the integer form of VLC's `freetype-color`.
-        public var rgb24: Int {
-            (Int((red * 255).rounded()) << 16)
-                | (Int((green * 255).rounded()) << 8)
-                | Int((blue * 255).rounded())
-        }
     }
 
     /// Glyph fill.
@@ -57,21 +50,16 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
 
     // MARK: User-configurable (v1 subtitle settings).
     // These style the PLAIN-TEXT subtitles we draw ourselves. The client sidecar
-    // renderer honors all four, live. VLC's simple freetype renderer (embedded plain
-    // text) honors size, family and colour too — via `EngineSubtitleTextStyle`
-    // on the asset, so they are fixed for the life of the decoder and a change applies
-    // from the next item; `verticalOffsetRatio` is client-only. An AUTHORED ASS/SSA
-    // track is never restyled by any of them: its creator's colours, sizes and
-    // placement stand, and only its font family is mapped onto a bundled face.
+    // renderer honors all four, live. An AUTHORED ASS/SSA track is never restyled
+    // by any of them: its creator's colours, sizes and placement stand, and only
+    // its font family is mapped onto a bundled face.
 
     /// Cue size multiplier on the proven per-device base size
     /// (`PlayerMetrics.subtitleFontSize`, remapped onto the renderer's script base
     /// by the overlay). 1.0 == the tuned base; the size control scales this 0.5…2.0.
     public let fontScale: Double
     /// Glyph family, mapped to one of the two bundled Noto faces. The client renderer
-    /// takes it as a style override; VLC's own renderers take it as the `:ssa-fontsdir`
-    /// media option plus the `--freetype-font` instance argument the app materializes
-    /// it under.
+    /// takes it as a style override.
     public let fontDesign: SubtitleFontDesign
     /// Legibility backing: the canonical black ring, OR an opaque box (mutually
     /// exclusive — a box carries its own contrast, so it takes no ring).

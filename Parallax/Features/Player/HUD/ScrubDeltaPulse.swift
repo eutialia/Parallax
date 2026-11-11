@@ -239,10 +239,7 @@ struct ScrubDeltaPulse: View {
     /// seek shows two passes.
     static let sweepSeconds: TimeInterval = 0.95
     /// How long the seek must stay in flight before the pulse arms: an AVKit in-buffer seek
-    /// lands well inside this, so a local scrub never flashes a frame of pulse. It does not try
-    /// to out-wait VLC, whose poll only reports an observed clock every 500ms — a pulse that
-    /// arms and immediately fades reads as one soft breath, and pushing the delay past half a
-    /// second to suppress it would cost the real reload seeks their first pass.
+    /// lands well inside this, so a local scrub never flashes a frame of pulse.
     /// The concrete indicator's travel is NOT gated on this: a short seek still gets its
     /// glide, it just gets no comet — which is the whole point of the delay.
     static let armDelay: Duration = .milliseconds(220)

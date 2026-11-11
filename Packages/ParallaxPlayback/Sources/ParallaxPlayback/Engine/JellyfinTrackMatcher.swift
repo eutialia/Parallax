@@ -15,7 +15,7 @@ public enum JellyfinTrackMatcher {
     /// to, when the join is unambiguous. Public because the app needs it on the
     /// Jellyfin direct-play path: text streams are drawn client-side from their
     /// sidecar URLs, but an IMAGE stream has no sidecar, so the menu row has to keep
-    /// the engine's own track id (`.vlc`/`.avKitOption`) for the engine to render it.
+    /// the engine's own track id (`.avKitOption`) for the engine to render it.
     ///
     /// Subtitle-only facade over `matchedStream(kind:…)` so `AVKitTrackNaming.Kind`
     /// stays internal to this package.

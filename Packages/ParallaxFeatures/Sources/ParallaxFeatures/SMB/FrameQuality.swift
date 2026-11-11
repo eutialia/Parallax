@@ -4,7 +4,7 @@ import ParallaxCore
 
 /// Tells a real video frame from a decoder's grey filler.
 ///
-/// A decode that starts mid-GOP has no reference frame, and libavcodec (VLC's decoder for wmv3)
+/// A decode that starts mid-GOP has no reference frame, and libavcodec
 /// substitutes one painted YUV 128: neutral mid-grey, about RGB 130 after range expansion. The
 /// P-frames that follow only add their residuals to it, so the snapshot is a grey field with sparse
 /// blocks of detail.

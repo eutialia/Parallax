@@ -51,16 +51,3 @@ public struct SMBConnections: Sendable {
         return SMBConnections(pool: pool) { PooledSMBLister(pool: pool, credentials: $0) }
     }
 }
-
-/// What a file's owner needs from a pooled reader beyond the bridge's reads: the three ways its
-/// borrow can end.
-public protocol SMBShareReading: SMBBridgeReading {
-    /// Checks a clean borrow back in, discards a tainted one, condemns one with a call in flight.
-    func disconnect() async
-    /// Discards the borrow however cleanly it ends.
-    func markUnreusable() async
-    /// Fire-and-forget `disconnect()`, returning the transport evidence the borrow gathered first.
-    func teardownCapturingTransportFault() async -> Bool
-}
-
-extension SMBRandomAccessReader: SMBShareReading {}

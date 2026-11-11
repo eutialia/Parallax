@@ -16,8 +16,8 @@ public struct SubtitleFeed {
     /// The loaded source and its generation, or nil when the overlay has nothing to draw.
     /// Generation, not identity: a freed renderer's address can be reused by the next one.
     let source: () -> (source: any SubtitleFrameSource, generation: Int)?
-    /// The engine's playhead in seconds, or nil while it can't be read (no engine, or VLC's
-    /// clock during buffering and seeks).
+    /// The engine's playhead in seconds, or nil while it can't be read (no engine, or an
+    /// invalid clock time).
     let engineSeconds: () -> Double?
     let clock: any Clock<Duration>
 

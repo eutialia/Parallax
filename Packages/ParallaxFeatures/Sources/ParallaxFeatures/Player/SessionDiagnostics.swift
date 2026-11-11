@@ -13,8 +13,7 @@ final class SessionDiagnostics {
     /// Milliseconds on the player's clock from `engine.play()` dispatch to this session's FIRST
     /// `.playing` beat — the debug overlay's `Startup:` row (Plan C, AVKit startup
     /// tuning A/B). `nil` before the first beat lands and reset per session/reload
-    /// (see `reset()`). Engine-agnostic: set for VLCKit sessions too, though
-    /// only AVKit is presently tunable.
+    /// (see `reset()`).
     private(set) var startupMillis: Int?
 
     /// What the live transcode job is ACTUALLY doing to the video (copy/remux vs
@@ -39,25 +38,19 @@ final class SessionDiagnostics {
 
     private static let openLog = Log.retained(category: "PlayerOpen")
 
-    /// `engine.play()` was dispatched on `engine`.
-    private struct Dispatch {
-        let at: Duration
-        let engine: PlaybackEngineID
-    }
-
     /// The one stopwatch both metrics read; the first `.playing` beat consumes it.
     ///
     /// An open (the user-visible wait from the player's start) walks `armed` → `resolved` →
-    /// `dispatched`, and survives `reset()` and an AVKit→VLC reroute mid-open. A reload has no
+    /// `dispatched`, and survives `reset()` mid-open. A reload has no
     /// open and no route: its startup metric alone runs as `reloading`. Only `dispatched` can
     /// finish an open, and it can only be reached through `resolved`, so a record always has
     /// its resolve span and route.
     private enum Stopwatch {
         case idle
-        case reloading(Dispatch)
+        case reloading(Duration)
         case armed(start: Duration, origin: OpenOrigin)
         case resolved(start: Duration, origin: OpenOrigin, resolve: Duration, route: OpenRoute)
-        case dispatched(start: Duration, origin: OpenOrigin, resolve: Duration, route: OpenRoute, Dispatch)
+        case dispatched(start: Duration, origin: OpenOrigin, resolve: Duration, route: OpenRoute, Duration)
     }
 
     @ObservationIgnored private var stopwatch = Stopwatch.idle
@@ -91,11 +84,11 @@ final class SessionDiagnostics {
         deliveryProbeTask?.cancel()
     }
 
-    /// `engine.play()` was dispatched on `engine`: start the clock the first `.playing` beat
-    /// stops. A reroute dispatches again on the engine that will actually play. A dispatch with no
-    /// route behind it is a reload's (or a path that never noted one), and measures no open.
-    func armStartupClock(engine: PlaybackEngineID) {
-        let dispatch = Dispatch(at: elapsed(), engine: engine)
+    /// `engine.play()` was dispatched: start the clock the first `.playing` beat stops. A
+    /// dispatch with no route behind it is a reload's (or a path that never noted one), and
+    /// measures no open.
+    func armStartupClock() {
+        let dispatch = elapsed()
         switch stopwatch {
         case .idle, .reloading, .armed:
             stopwatch = .reloading(dispatch)
@@ -144,12 +137,12 @@ final class SessionDiagnostics {
         case .idle, .armed, .resolved:
             return
         case .reloading(let dispatch):
-            startupMillis = Self.millis(now - dispatch.at)
+            startupMillis = Self.millis(now - dispatch)
         case .dispatched(let start, let origin, let resolve, let route, let dispatch):
-            startupMillis = Self.millis(now - dispatch.at)
+            startupMillis = Self.millis(now - dispatch)
             let record = OpenRecord(
-                total: now - start, resolve: resolve, load: now - dispatch.at,
-                route: route, engine: dispatch.engine, origin: origin
+                total: now - start, resolve: resolve, load: now - dispatch,
+                route: route, origin: origin
             )
             Self.openLog.notice(record.logLine)
             lastOpen = record
@@ -231,12 +224,12 @@ public enum OpenOrigin: String, Equatable, Sendable {
 }
 
 public enum OpenRoute: Equatable, Sendable {
-    case smb(bridged: Bool)
+    case smb
     case jellyfin(PlaybackMethod)
 
     public var logFields: String {
         switch self {
-        case .smb(let bridged): "source=smb transport=\(bridged ? "bridge" : "native")"
+        case .smb: "source=smb"
         case .jellyfin(.directPlay): "source=jellyfin transport=directPlay"
         case .jellyfin(.transcode): "source=jellyfin transport=transcode"
         }
@@ -250,15 +243,10 @@ public struct OpenRecord: Equatable, Sendable {
     public let resolve: Duration
     public let load: Duration
     public let route: OpenRoute
-    public let engine: PlaybackEngineID
     public let origin: OpenOrigin
 
     public var logLine: String {
-        let engineName = switch engine {
-        case .avKit: "avkit"
-        case .vlcKit: "vlc"
-        }
         let timings = "\(SessionDiagnostics.millis(total))ms (resolve \(SessionDiagnostics.millis(resolve))ms, load \(SessionDiagnostics.millis(load))ms)"
-        return "open → playing in \(timings) \(route.logFields) engine=\(engineName) origin=\(origin.rawValue)"
+        return "open → playing in \(timings) \(route.logFields) origin=\(origin.rawValue)"
     }
 }

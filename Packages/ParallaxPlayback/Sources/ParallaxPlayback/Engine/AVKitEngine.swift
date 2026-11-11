@@ -5,13 +5,6 @@ import ParallaxCore
 
 @MainActor
 public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
-    public nonisolated let id: PlaybackEngineID = .avKit
-    public nonisolated let capabilities = PlaybackEngineCapabilities(
-        supportsPiP: true,
-        supportsVideoAirPlay: true,
-        supportsNowPlayingIntegration: true
-    )
-
     public nonisolated let state: AsyncStream<PlaybackBeat>
     private nonisolated let continuation: AsyncStream<PlaybackBeat>.Continuation
 
@@ -44,11 +37,6 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private let player = AVPlayer()
     public nonisolated var avPlayer: AVPlayer { player }
-
-    /// `AVAssetImageGenerator` issues fresh range reads for its still — over the SMB bridge
-    /// route those queue behind (and ahead of) the player's own reads on the same reader. See
-    /// the protocol doc.
-    public nonisolated let captureFramePerformsIO = true
 
     /// Injected buffering profile — see `StartupTuning`. `.systemDefault` (every field
     /// `nil`) applies nothing in `load()`, so the shipping default is byte-identical to
@@ -116,7 +104,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     /// The asset declared that the app draws every subtitle itself
     /// (`PlayableAsset.engineSubtitlesDisabled`), so AVFoundation must never render a
-    /// legible option. Unlike VLC there is no `:no-spu` equivalent, so enforcement is a
+    /// legible option. AVPlayer has no switch that disables subtitle rendering, so enforcement is a
     /// deselect at each point AVFoundation re-applies its automatic selection criteria —
     /// when the media selection groups load, on `.ready`, and after any audible selection
     /// (documented: criteria re-apply on a selection in another group) — plus
@@ -170,11 +158,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// Where the position of a CLOCK-READ beat about to ship comes from (see
     /// `PositionProvenance`). Only two answers exist here: with no seek outstanding
     /// `player.currentTime()` is `.observed`, and with one outstanding it is `.stale` — never
-    /// `.projected`, because unlike VLC this engine has no extrapolation to publish; the clock
+    /// `.projected`, because this engine has no extrapolation to publish; the clock
     /// simply keeps reading the pre-seek value until AVPlayer moves it.
     ///
     /// AVKit's `.observed` is the WEAK form — "no seek call is outstanding", i.e. AVPlayer
-    /// returned from the latest one — not VLC's "the clock converged on the target";
+    /// returned from the latest one, not "the clock converged on the target";
     /// `AVPlayer.seek` reporting `finished` IS the strongest completion signal this engine has.
     private var clockProvenance: PositionProvenance { inFlightSeeks == 0 ? .observed : .stale }
 
@@ -437,8 +425,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     /// A watchdog giving up is the one moment where "it just spun forever" becomes a report,
     /// and the useful half is what the engine was doing when it gave up. Read SYNCHRONOUSLY,
-    /// before the `.failed` above reaches the app: that beat is what tears the engine down (a
-    /// `.loadTimedOut` on an MP4 reroutes to VLC, which retires this engine outright), so a
+    /// before the `.failed` above reaches the app: that beat is what tears the engine down, so a
     /// snapshot deferred into a `Task` was read after `currentItem` was already nil and logged
     /// a line of dashes — empty in exactly the case it was written for. Only the
     /// media-selection half of `debugSnapshot()` needs an await, and none of it is in here.
@@ -486,7 +473,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// **Seek-settle contract (see `PlaybackEngine.seek(to:)`).** AVKit's `.observed` is the
     /// WEAK form: "no `seek(to:)` call is outstanding", i.e. AVPlayer returned
     /// `finished == true` from the latest one. That is the strongest completion signal this
-    /// engine has — there is no clock-convergence test like VLC's. So an `.observed` beat here
+    /// engine has — there is no clock-convergence test. So an `.observed` beat here
     /// promises the seek RESOLVED; that it resolved AT the target is the zero tolerance below.
     ///
     /// The window this opens splits by beat kind. The pre-seek echo below carries the TARGET,
@@ -583,8 +570,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     public func setSubtitleTrack(_ track: SubtitleTrack?) async {
         // The asset draws its own subtitles; selecting a legible option would render a
-        // second copy under the client overlay. Mirrors `VLCKitEngine`'s refusal, and
-        // like it applies for the lifetime of the asset — deselect (`nil`) still works.
+        // second copy under the client overlay. The refusal applies for the lifetime
+        // of the asset; deselect (`nil`) still works.
         if track != nil, engineSubtitlesDisabled {
             Log.playback.info("setSubtitleTrack ignored: this asset renders subtitles client-side")
             return
@@ -644,8 +631,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let tolerance = CMTime(seconds: 1, preferredTimescale: 600)
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
-        // The SAME 320pt tier the browse thumbnailers produce (`AVThumbnailer`,
-        // `VLCThumbnailer`): a backfilled still lands in `SMBThumbnailCache`
+        // The SAME 320pt tier the browse thumbnailer produces (`AVThumbnailer`):
+        // a backfilled still lands in `SMBThumbnailCache`
         // beside theirs, under a budget sized at ~30–120 KB per HEIC, and a 1280
         // still is 5–10× that. Height-bounded with a 0 width, so AVFoundation
         // scales the width from the source aspect (a portrait clip caps on its
@@ -660,8 +647,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             // to AVFoundation explicitly: without it the generator's range reads keep streaming
             // after the Swift task dies. `nonisolated(unsafe)`: the handler closure is `@Sendable`
             // and the generator isn't, but `cancelAllCGImageGeneration()` is documented
-            // thread-safe and this handle is used for that one call only (same idiom as
-            // VLCKitEngine's player handle).
+            // thread-safe and this handle is used for that one call only.
             nonisolated(unsafe) let cancellableGenerator = generator
             let cgImage: CGImage = try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in

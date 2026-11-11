@@ -40,21 +40,14 @@ public struct AppEnvironment {
     /// One element each time the device's HDR playback eligibility may have moved: a display
     /// connected or disconnected, Low Power Mode, other system resource shifts.
     public let hdrEligibilityChanges: @Sendable () -> AsyncStream<Void>
-    /// Decodes a frame from any container (VLC in the app) for SMB tiles with no artwork.
+    /// Decodes one frame of a file AVFoundation opens, for an SMB tile.
     public let thumbnailer: any FrameThumbnailing
-    /// Decodes a frame with AVFoundation, the fast path for the containers it opens (mp4, mov).
-    public let avThumbnailer: any FrameThumbnailing
-    /// Library options are instance-scoped and must exist at player creation (see
-    /// `VLCKitEngine.init`), so they're a factory input, not a post-build configuration.
-    public let makePlaybackEngine: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
+    public let makePlaybackEngine: @MainActor @Sendable () -> any PlaybackEngine
     /// The lock screen and the remote commands, one per player.
     public let makeNowPlaying: @MainActor @Sendable () -> any NowPlayingUpdating
     /// Asks the display to match the content about to play and waits for it to settle. tvOS
     /// switches HDR and frame rate; iOS has nothing to switch.
     public let prepareDisplay: @MainActor @Sendable (any PlaybackEngine) async -> Void
-    /// VLC's own subtitle fonts for a design: a directory built under Caches, and the family
-    /// its freetype renderer is told to use.
-    public let engineSubtitleFonts: @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts
     /// The client identity every Jellyfin request presents.
     public let clientName: String
     public let deviceName: String
@@ -79,11 +72,9 @@ public struct AppEnvironment {
         browseSMBServices: @escaping @Sendable () -> AsyncStream<[String]>,
         hdrEligibilityChanges: @escaping @Sendable () -> AsyncStream<Void>,
         thumbnailer: any FrameThumbnailing,
-        avThumbnailer: any FrameThumbnailing,
-        makePlaybackEngine: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
+        makePlaybackEngine: @escaping @MainActor @Sendable () -> any PlaybackEngine,
         makeNowPlaying: @escaping @MainActor @Sendable () -> any NowPlayingUpdating,
         prepareDisplay: @escaping @MainActor @Sendable (any PlaybackEngine) async -> Void,
-        engineSubtitleFonts: @escaping @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts,
         clientName: String,
         deviceName: String,
         appVersion: String,
@@ -106,11 +97,9 @@ public struct AppEnvironment {
         self.browseSMBServices = browseSMBServices
         self.hdrEligibilityChanges = hdrEligibilityChanges
         self.thumbnailer = thumbnailer
-        self.avThumbnailer = avThumbnailer
         self.makePlaybackEngine = makePlaybackEngine
         self.makeNowPlaying = makeNowPlaying
         self.prepareDisplay = prepareDisplay
-        self.engineSubtitleFonts = engineSubtitleFonts
         self.clientName = clientName
         self.deviceName = deviceName
         self.appVersion = appVersion

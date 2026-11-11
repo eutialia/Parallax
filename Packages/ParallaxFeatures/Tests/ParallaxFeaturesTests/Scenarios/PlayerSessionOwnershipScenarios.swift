@@ -1,6 +1,5 @@
 import Foundation
 import ParallaxCore
-import ParallaxCoreTestSupport
 import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
@@ -14,23 +13,10 @@ import ParallaxTestScaling
 @Suite("Player session ownership", .scaledTimeLimit())
 struct PlayerSessionOwnershipScenarios {
     enum Route: String, CaseIterable, CustomTestStringConvertible {
-        case avkitOverBridge, vlcOverBridge, jellyfin
+        case smbOverBridge, jellyfin
         var testDescription: String { rawValue }
 
         var scheme: String { self == .jellyfin ? "https" : "http" }
-
-        var fileName: String { self == .vlcOverBridge ? "Film.mkv" : "Film.mp4" }
-
-        var contents: Data {
-            switch self {
-            case .vlcOverBridge: AppWorld.mkvBytes
-            case .avkitOverBridge, .jellyfin:
-                ISOBMFFFixtures.mp4(traks: [
-                    ISOBMFFFixtures.trak(stsdEntries: ["avc1"], handler: "vide"),
-                    ISOBMFFFixtures.trak(stsdEntries: ["mp4a"], handler: "soun"),
-                ])
-            }
-        }
     }
 
     @Test("closing a player frees the session it owned", arguments: Route.allCases)
@@ -41,9 +27,9 @@ struct PlayerSessionOwnershipScenarios {
             let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films", minutes: 170)
             world = try await AppWorld.launch(signedIn: [(den, "ana")])
             world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
-        case .avkitOverBridge, .vlcOverBridge:
+        case .smbOverBridge:
             world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
-            try await world.playSMBFilm(named: route.fileName, contents: route.contents)
+            try await world.playSMBFilm()
         }
 
         weak var player: PlayerViewModel?

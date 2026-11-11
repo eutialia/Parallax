@@ -75,8 +75,7 @@ extension PlaybackBeat {
     }
 }
 
-/// The engine-agnostic half of the `PlaybackEngine` stream contract, run against AVKit here and
-/// against VLCKit in ParallaxPlaybackVLC.
+/// The engine-agnostic half of the `PlaybackEngine` stream contract, run against AVKit.
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
 // Swift Testing applies no default timeout, so an engine that never finishes its continuation
 // wedges the whole run instead of failing its own test.
@@ -92,11 +91,6 @@ struct PlaybackEngineStreamContractTests {
     @Test("teardown finishes the state stream so consumers' for-await loops end")
     func teardownFinishesStream() async {
         await PlaybackEngineContract.teardownFinishesStream(AVKitEngine())
-    }
-
-    @Test("the engine reports the id and capabilities of the kind that built it")
-    func identity() {
-        PlaybackEngineContract.identity(AVKitEngine(), id: .avKit, capabilities: .avKit)
     }
 }
 
@@ -143,8 +137,8 @@ struct AVKitLogRedactionTests {
     }
 }
 
-/// `PlayableAsset.engineSubtitlesDisabled` on the AVKit path. VLC has `:no-spu`;
-/// AVFoundation has no equivalent, so the contract is enforced by deselecting the legible
+/// `PlayableAsset.engineSubtitlesDisabled` on the AVKit path.
+/// AVFoundation has no switch to turn subtitles off, so the contract is enforced by deselecting the legible
 /// group (once when the media selection groups load, once at `.ready` — AVPlayer applies
 /// its own automatic selection between the two) and by refusing to select afterwards.
 ///
@@ -296,8 +290,7 @@ struct AVKitSeekSettleTests {
     }
 
     /// The other side: `AVPlayer` returned `finished == true` and no newer seek is outstanding,
-    /// so the post-seek beat carries an observed clock. Weaker than VLC's convergence test —
-    /// this asserts the seek RESOLVED; where it lands is `pausedSeekLandsInsideALongSegment`'s.
+    /// so the post-seek beat carries an observed clock. This asserts the seek RESOLVED; where it lands is `pausedSeekLandsInsideALongSegment`'s.
     @Test("the post-seek beat is observed and lands at the target")
     func postSeekBeatIsObserved() async throws {
         let engine = try await readyEngine()
@@ -505,8 +498,7 @@ struct AVKitSeekSettleTests {
     /// with nothing inside it. The original assertion was written as an `allSatisfy` over that
     /// empty set and passed without testing anything; measured, it is empty every run. So the
     /// claim is restated as what actually holds here — no beat escapes before the resume lands,
-    /// least of all an observed 0:00 — and the labelling itself is covered on the VLC seam,
-    /// where the window is long enough to stand inside.
+    /// least of all an observed 0:00.
     @Test("the load-time resume seek opens a settle window, and no beat escapes before it lands")
     func loadTimeResumeSeekOpensASettleWindow() async throws {
         let engine = AVKitEngine()
@@ -640,8 +632,7 @@ struct AVKitWatchdogExpiryTests {
     }
 
     /// The diagnosis has to be captured BEFORE the failure is published. The `.failed` beat is
-    /// what tears the engine down — a `.loadTimedOut` on an MP4 reroutes to VLC, which retires
-    /// this engine outright — so a snapshot deferred into a `Task` was read after `currentItem`
+    /// what tears the engine down, so a snapshot deferred into a `Task` was read after `currentItem`
     /// had been nil'd and logged a line of dashes, empty in exactly the case it was written
     /// for. The teardown here stands in for that: same turn, straight after the expiry.
     @Test("the watchdog's diagnosis survives a teardown in the same turn")

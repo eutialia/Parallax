@@ -22,8 +22,8 @@ nonisolated struct SMBThumbnailKey: Hashable, Sendable {
 
 /// A cached thumbnail: its on-disk image plus the source duration persisted alongside it (a small
 /// `.dur` sidecar). `duration` is nil when none was stored — a sidecar-image thumbnail (which has no
-/// video length), an old entry written before duration extraction, or a file libvlc couldn't read a
-/// length from.
+/// video length), an old entry written before duration extraction, or a file the thumbnailer couldn't
+/// read a length from.
 nonisolated struct CachedThumbnail: Sendable, Equatable {
     let url: URL
     let duration: Duration?
@@ -43,8 +43,8 @@ nonisolated struct CachedThumbnail: Sendable, Equatable {
 ///  - `.heic`/`.png` — the image itself (the eviction unit).
 ///  - `.art` — empty marker: the image is a poster or cover art, exempt from the grey check.
 ///  - `.dur` — the source duration in milliseconds (best-effort; absence just yields nil duration).
-///  - `.fail` — a PERSISTENT failure marker (attempt count + last-attempt epoch) so a file libvlc
-///    can't decode isn't re-attempted (and re-charged the full timeout) on every launch. The
+///  - `.fail` — a PERSISTENT failure marker (attempt count + last-attempt epoch) so a file the
+///    thumbnailer can't decode isn't re-attempted (and re-charged the full timeout) on every launch. The
 ///    size+mtime in the base name means a changed file self-invalidates its marker along with its
 ///    stale image. `MediaArtworkProvider` reads it to compute an exponential backoff.
 ///
@@ -177,8 +177,8 @@ actor SMBThumbnailCache {
         //
         // A nil duration PRESERVES whatever sidecar is already there. The key embeds size + mtime,
         // so an existing sidecar was written for this exact file and is still true; the caller
-        // simply couldn't read a length this time (a playback backfill capture, where VLC never
-        // resolved one). Deleting it stripped the runtime label off a tile a full generation had
+        // simply couldn't read a length this time (a playback backfill capture without one).
+        // Deleting it stripped the runtime label off a tile a full generation had
         // already measured.
         let persistedDuration: Duration?
         if let duration {

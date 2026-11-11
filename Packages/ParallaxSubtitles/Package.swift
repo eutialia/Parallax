@@ -10,12 +10,10 @@ let package = Package(
         .macOS(.v26),
     ],
     products: [
-        // Dynamic on purpose. The app also links VLCKit, whose dylib re-exports an
-        // older private copy of libass; a static link here lets the linker bind our
-        // ass_* calls to VLC's symbols instead of ours. Shipping this package as its
-        // own dylib — built against the libass archives below and nothing else — keeps
-        // both copies apart under dyld's two-level namespace. Never add a VLCKit or
-        // playback dependency to this package.
+        // Dynamic on purpose: this package ships as its own dylib, built against the
+        // libass archives below and nothing else, so no other linked library's copy of
+        // libass can capture our ass_* calls under dyld's two-level namespace. Never add
+        // a playback dependency to this package.
         .library(name: "ParallaxSubtitles", type: .dynamic, targets: ["ParallaxSubtitles"]),
     ],
     dependencies: [
@@ -37,16 +35,14 @@ let package = Package(
             ],
             // The only fonts subtitles ever render with: unmodified Noto
             // releases, one family programme across every script. `.copy` keeps
-            // the directory intact so its path can be handed to a second libass
-            // (VLC's) as a fonts dir — which is also why the shared SIL OFL 1.1
-            // text ships in the app's Resources/Licenses/ and not in here:
-            // libass would try to open a .txt as a typeface.
+            // the directory intact so `SubtitleFontBundle` can enumerate it and
+            // resolve each file by its `Fonts/` path.
             resources: [ .copy("Fonts") ],
             swiftSettings: [ .swiftLanguageMode(.v6) ],
             // The prebuilt archives are pure static libraries and declare none of
             // their own system dependencies: libass' CoreText font provider and
             // its iconv-based recoding, plus freetype's zlib, have to be named
-            // here. This is the whole link line — no VLCKit, ever.
+            // here. This is the whole link line.
             linkerSettings: [
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("CoreGraphics"),

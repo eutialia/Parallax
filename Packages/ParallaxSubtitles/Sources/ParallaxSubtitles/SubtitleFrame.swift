@@ -8,7 +8,7 @@ public struct SubtitleFrame: Sendable {
     ///
     /// Premultiplied BGRA in the sRGB space. ASS carries no colour space of its
     /// own and libass leaves HDR mapping undefined, so subtitle colours are
-    /// treated as SDR sRGB / BT.709 the way mpv and VLC treat them.
+    /// treated as SDR sRGB / BT.709 the way mpv treats them.
     public let image: CGImage?
 
     /// Where `image` belongs inside `canvasSize`, in pixels.

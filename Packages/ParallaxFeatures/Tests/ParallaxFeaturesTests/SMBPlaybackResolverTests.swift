@@ -35,7 +35,7 @@ private func makeRef(share: String = "Media") -> SMBServerRef {
 
 /// Returns a `.movie` `Item` whose `ItemID` is encoded the same way `SMBMediaRepository` encodes it.
 /// `rawID` overrides the encoded id outright — used to mint an undecodable (no `share:path` colon) id.
-private func makeItem(share: String = "Media", path: String = "Movies/Example.mkv", rawID: String? = nil) -> Item {
+private func makeItem(share: String = "Media", path: String = "Movies/Example.mp4", rawID: String? = nil) -> Item {
     let title = (path as NSString).lastPathComponent
     let displayTitle = (title as NSString).deletingPathExtension
     return makeMovieItem(rawID ?? "\(share):\(path)", title: displayTitle)
@@ -55,10 +55,13 @@ struct SMBPlaybackResolverTests {
     /// `resumeStore` defaults to a throwaway isolated store, NOT `SMBResumeStore.shared`: the shared
     /// one reads and writes the real `UserDefaults.standard` domain, so every test that didn't pass
     /// its own store was touching (and could inherit) live app state.
+    /// `contents` is the file the share serves; nil makes the share refuse the file's stat.
     private func makeResolver(
         seedPassword: String? = "",
         listing: SiblingListing,
-        resumeStore: SMBResumeStore? = nil
+        resumeStore: SMBResumeStore? = nil,
+        contents: Data? = AppWorld.mp4Bytes,
+        world: FakeSMBWorld? = nil
     ) async throws -> SMBPlaybackResolver {
         let store = makeIsolatedServerStore(label: "SMBPlaybackResolverTests")
         if let seedPassword {
@@ -66,10 +69,12 @@ struct SMBPlaybackResolverTests {
             try #require(id == makeRef().id, "makeRef()'s id must be the one addSMBServer derives")
         }
         let clock = TestClock()
-        let world = FakeSMBWorld(clock: clock)
-        // No file bytes are readable, so the container probe fails and every resolve takes the
-        // smb:// route these suites pin.
-        world.setFileSizeOutcome(.fails(POSIXError(.ECONNREFUSED)))
+        let world = world ?? FakeSMBWorld(clock: clock)
+        if let contents {
+            world.setContents(contents)
+        } else {
+            world.setFileSizeOutcome(.fails(POSIXError(.ECONNREFUSED)))
+        }
         world.setListingOutcome(listing.shouldThrow ? .fails(SiblingListing.StubError.listFailed) : .entries(listing.entries))
         return SMBPlaybackResolver(
             serverStore: store,
@@ -82,44 +87,80 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - URL
 
-    @Test("resolved URL is smb://host/share/path with no credentials embedded")
+    @Test("the resolved URL is the local bridge's, naming the file and carrying no credentials")
     func urlIsCredentialFree() async throws {
-        let listing = SiblingListing(entries: [])
-        let resolver = try await makeResolver(listing: listing)
-        let item = makeItem(share: "Media", path: "Movies/Example.mkv")
-        let ref = makeRef()
+        let resolver = try await makeResolver(seedPassword: "s3cr3t", listing: SiblingListing(entries: []))
 
-        let result = try await resolver.resolve(item, ref: ref)
+        let result = try await resolver.resolve(makeItem(), ref: makeRef())
+        await result.cleanup()
 
-        #expect(result.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
+        #expect(result.url.scheme == "http")
+        #expect(result.url.lastPathComponent == "Example.mp4")
         #expect(!result.url.absoluteString.contains("@"), "URL must not contain credential separator")
         #expect(!result.url.absoluteString.contains("alice"))
+        #expect(!result.url.absoluteString.contains("s3cr3t"))
     }
 
-    // MARK: - VLC credential options
-
-    @Test("vlcOptions contain the three smb credential strings with the seeded password")
-    func vlcOptionsCarryCredentials() async throws {
-        let listing = SiblingListing(entries: [])
-        let resolver = try await makeResolver(seedPassword: "s3cr3t", listing: listing)
-        let item = makeItem()
-        let ref = makeRef()
-
-        let result = try await resolver.resolve(item, ref: ref)
-
-        #expect(result.vlcOptions == [":smb-user=alice", ":smb-pwd=s3cr3t", ":smb-domain=WORKGROUP"])
-    }
-
-    @Test("stored-empty guest password resolves with an empty smb-pwd option")
+    @Test("a stored-empty guest password resolves")
     func storedEmptyGuestPasswordResolves() async throws {
-        let listing = SiblingListing(entries: [])
-        let resolver = try await makeResolver(listing: listing)   // default seed: stored ""
-        let item = makeItem()
-        let ref = makeRef()
+        let resolver = try await makeResolver(listing: SiblingListing(entries: []))   // default seed: stored ""
 
-        let result = try await resolver.resolve(item, ref: ref)
+        let result = try await resolver.resolve(makeItem(), ref: makeRef())
+        await result.cleanup()
 
-        #expect(result.vlcOptions == [":smb-user=alice", ":smb-pwd=", ":smb-domain=WORKGROUP"])
+        #expect(result.url.scheme == "http")
+    }
+
+    // MARK: - Files AVPlayer can't play directly
+
+    /// Every played SMB file rides the bridge into AVPlayer, so a file the verdict refuses fails
+    /// the resolve with the error the player shows, instead of opening a stream that can't play.
+    @Test("a file AVPlayer can't play directly fails the resolve with the reason the player shows",
+          arguments: [
+            (Data?.none, AppError.source(.connectionLost)),
+            (ISOBMFFFixtures.ftyp() + ISOBMFFFixtures.box("mdat", Data(count: 64)), .playback(.incompleteFile)),
+            (AppWorld.mkvBytes, .playback(.unsupportedFormat)),
+            (ISOBMFFFixtures.mp4(traks: [ISOBMFFFixtures.trak(stsdEntries: ["vp09"], handler: "vide")]),
+             .playback(.unsupportedFormat)),
+          ])
+    func unplayableFileFailsTheResolve(contents: Data?, expected: AppError) async throws {
+        let resolver = try await makeResolver(listing: SiblingListing(entries: []), contents: contents)
+
+        do {
+            let result = try await resolver.resolve(makeItem(), ref: makeRef())
+            await result.cleanup()
+            Issue.record("resolved \(result.url) for a file AVPlayer can't play")
+        } catch let error as AppError {
+            #expect(error.diagnosticDescription == expected.diagnosticDescription)
+        }
+    }
+
+    @Test("a file that vanished since the listing fails as not found, not as a dropped connection")
+    func vanishedFileFailsAsNotFound() async throws {
+        let world = FakeSMBWorld(clock: TestClock())
+        let resolver = try await makeResolver(listing: SiblingListing(entries: []), world: world)
+        world.setFileSizeOutcome(.fails(POSIXError(.ENOENT)))
+
+        do {
+            let result = try await resolver.resolve(makeItem(), ref: makeRef())
+            await result.cleanup()
+            Issue.record("resolved \(result.url) for a file that is gone")
+        } catch let error as AppError {
+            #expect(error.diagnosticDescription == AppError.source(.notFound).diagnosticDescription)
+        }
+    }
+
+    @Test("a played file's connection is dropped at cleanup, never returned to the pool")
+    func playedFileDiscardsItsConnection() async throws {
+        let world = FakeSMBWorld(clock: TestClock())
+        let resolver = try await makeResolver(listing: SiblingListing(entries: []), world: world)
+
+        let result = try await resolver.resolve(makeItem(), ref: makeRef())
+        let before = world.disconnectedIDs
+        await result.cleanup()
+
+        await untilSettled { world.disconnectedIDs.count == before.count + 1 }
+        #expect(world.useAfterFreeIDs.isEmpty)
     }
 
     @Test("missing Keychain slot throws .auth(.credentialUnavailable) instead of a guest logon")
@@ -146,26 +187,27 @@ struct SMBPlaybackResolverTests {
 
     @Test("subtitleURLs contains matched sidecar and excludes unrelated files")
     func subtitleURLsContainsMatchedSidecar() async throws {
-        // Sibling entries alongside "Example.mkv":
+        // Sibling entries alongside "Example.mp4":
         //   Example.en.srt  → matches (language token "en")
         //   readme.txt      → not a subtitle extension, excluded
         //   Other.srt       → unrelated filename, excluded by STRICT matching
-        //   Sibling.mkv     → a second video, so the listing is NOT a lonely-video folder; that keeps
+        //   Sibling.mp4     → a second video, so the listing is NOT a lonely-video folder; that keeps
         //                     the tiered matcher's lonely-video fallback OFF, so "Other.srt" (which
         //                     matches no video by name) is correctly excluded rather than cross-attached.
         let entries: [SMBDirectoryEntry] = [
-            .init(name: "Example.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Sibling.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Example.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Sibling.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "Example.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "readme.txt",     isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "Other.srt",      isDirectory: false, size: 1, modifiedAt: nil),
         ]
         let listing = SiblingListing(entries: entries)
         let resolver = try await makeResolver(listing: listing)
-        let item = makeItem(share: "Media", path: "Movies/Example.mkv")
+        let item = makeItem(share: "Media", path: "Movies/Example.mp4")
         let ref = makeRef()
 
         let result = try await resolver.resolve(item, ref: ref)
+        await result.cleanup()
 
         #expect(result.subtitleURLs.count == 1)
         let subURL = try #require(result.subtitleURLs.values.first)
@@ -184,9 +226,10 @@ struct SMBPlaybackResolverTests {
 
         // Must NOT throw — subtitle errors are non-fatal.
         let result = try await resolver.resolve(item, ref: ref)
+        await result.cleanup()
 
         #expect(result.subtitleURLs.isEmpty)
-        #expect(result.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
+        #expect(result.url.lastPathComponent == "Example.mp4")
     }
 
     // MARK: - Title
@@ -195,10 +238,11 @@ struct SMBPlaybackResolverTests {
     func titleIsDisplayTitle() async throws {
         let listing = SiblingListing(entries: [])
         let resolver = try await makeResolver(listing: listing)
-        let item = makeItem(share: "Media", path: "Movies/Example.mkv")
+        let item = makeItem(share: "Media", path: "Movies/Example.mp4")
         let ref = makeRef()
 
         let result = try await resolver.resolve(item, ref: ref)
+        await result.cleanup()
 
         #expect(result.title == "Example")
     }
@@ -237,6 +281,7 @@ struct SMBPlaybackResolverTests {
             let resolver = try await makeResolver(listing: SiblingListing(entries: []), resumeStore: store)
 
             let result = try await resolver.resolve(makeItem(), ref: makeRef())
+            await result.cleanup()
 
             #expect(result.startTime == nil)
         }
@@ -246,7 +291,7 @@ struct SMBPlaybackResolverTests {
     func startTimeFromStoredResume() async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
             let resolver = try await makeResolver(listing: SiblingListing(entries: []), resumeStore: store)
-            let item = makeItem(path: "Movies/Resumable.mkv")
+            let item = makeItem(path: "Movies/Resumable.mp4")
             await store.save(
                 position: CMTime(seconds: 300, preferredTimescale: 600),
                 duration: CMTime(seconds: 7200, preferredTimescale: 600),
@@ -254,6 +299,7 @@ struct SMBPlaybackResolverTests {
             )
 
             let result = try await resolver.resolve(item, ref: makeRef())
+            await result.cleanup()
 
             let startTime = try #require(result.startTime)
             #expect(abs(CMTimeGetSeconds(startTime) - 300) < 0.001)
@@ -262,21 +308,22 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - Root-level path (no directory)
 
-    @Test("path with no directory component produces correct URL and resolves subs from share root")
+    @Test("path with no directory component resolves and finds subs at the share root")
     func rootLevelPath() async throws {
         let entries: [SMBDirectoryEntry] = [
-            .init(name: "Standalone.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Standalone.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "Standalone.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
         ]
         let listing = SiblingListing(entries: entries)
         let resolver = try await makeResolver(listing: listing)
         // ItemID encodes root="" → path is just the filename
-        let item = makeItem(share: "Media", path: "Standalone.mkv")
+        let item = makeItem(share: "Media", path: "Standalone.mp4")
         let ref = makeRef(share: "Media")
 
         let result = try await resolver.resolve(item, ref: ref)
+        await result.cleanup()
 
-        #expect(result.url.absoluteString == "smb://nas.local/Media/Standalone.mkv")
+        #expect(result.url.lastPathComponent == "Standalone.mp4")
         #expect(result.subtitleURLs.count == 1)
         let subURL = try #require(result.subtitleURLs.values.first)
         #expect(subURL.lastPathComponent == "Standalone.en.srt")

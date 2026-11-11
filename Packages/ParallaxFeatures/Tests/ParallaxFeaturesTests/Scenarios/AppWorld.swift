@@ -19,9 +19,9 @@ import Testing
 /// scratch directory), the Jellyfin transport (`FakeJellyfinServer`s), the LAN discovery broadcast,
 /// the SMB connections under the real pool (`nas`), Bonjour browsing, the clock, reachability
 /// (scripted, online until told otherwise), the display's HDR support and its eligibility changes,
-/// what AVPlayer plays, the audio session, both frame thumbnailers, the playback engines
-/// (`engines`), Now Playing, the display, VLC's subtitle fonts and the retained diagnostics log
-/// (empty, with no network to hand it off over).
+/// what AVPlayer plays, the audio session, the frame thumbnailer, the playback engines
+/// (`engines`), Now Playing, the display and the retained diagnostics log (empty, with no network
+/// to hand it off over).
 @MainActor
 final class AppWorld {
     private(set) var app: AppModel
@@ -29,8 +29,6 @@ final class AppWorld {
     /// Every SMB host the app connects to; scenarios script one NAS.
     let nas: FakeSMBWorld
     let thumbnailer: RecordingThumbnailer
-    /// The AVFoundation thumbnailer, for the containers it opens.
-    let avThumbnailer: RecordingThumbnailer
     /// Every playback engine the app built, in build order. The last one is playing.
     let engines: EngineLedger
     /// The shared audio session every player activates and deactivates.
@@ -87,7 +85,6 @@ final class AppWorld {
         let nas = FakeSMBWorld(clock: clock)
         let bonjour = ScriptedBonjour()
         let thumbnailer = RecordingThumbnailer()
-        let avThumbnailer = RecordingThumbnailer()
         let engines = EngineLedger()
         let audioSession = RecordingAudioSession()
         let reachability = ScriptedReachability()
@@ -110,15 +107,13 @@ final class AppWorld {
             browseSMBServices: { bonjour.browse() },
             hdrEligibilityChanges: { display.eligibilityChanges },
             thumbnailer: thumbnailer,
-            avThumbnailer: avThumbnailer,
-            makePlaybackEngine: { id, _ in
-                let engine = engines.make(id)
+            makePlaybackEngine: {
+                let engine = engines.make()
                 engine.landsSeeks = true
                 return engine
             },
             makeNowPlaying: { SpyNowPlaying() },
             prepareDisplay: { _ in },
-            engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts,
             clientName: "Parallax",
             deviceName: "Scenario Device",
             appVersion: "1.0",
@@ -136,7 +131,7 @@ final class AppWorld {
 
         let world = AppWorld(
             environment: environment, servers: accounts.map(\.server) + lanServers, clock: clock,
-            nas: nas, thumbnailer: thumbnailer, avThumbnailer: avThumbnailer, engines: engines,
+            nas: nas, thumbnailer: thumbnailer, engines: engines,
             audioSession: audioSession, keychain: keychain,
             lan: lan, bonjour: bonjour,
             reachability: reachability, display: display,
@@ -148,7 +143,7 @@ final class AppWorld {
 
     private init(
         environment: AppEnvironment, servers: [FakeJellyfinServer], clock: TestClock,
-        nas: FakeSMBWorld, thumbnailer: RecordingThumbnailer, avThumbnailer: RecordingThumbnailer,
+        nas: FakeSMBWorld, thumbnailer: RecordingThumbnailer,
         engines: EngineLedger, audioSession: RecordingAudioSession, keychain: FakeKeychain,
         lan: ScriptedLAN, bonjour: ScriptedBonjour, reachability: ScriptedReachability, display: ScriptedDisplay,
         suiteName: String,
@@ -161,7 +156,6 @@ final class AppWorld {
         self.clock = clock
         self.nas = nas
         self.thumbnailer = thumbnailer
-        self.avThumbnailer = avThumbnailer
         self.engines = engines
         self.audioSession = audioSession
         self.keychain = keychain
@@ -278,7 +272,7 @@ final class AppWorld {
 
     /// Lists one film with `contents` behind it on the share and taps it, leaving the
     /// presenter holding its play request.
-    func playSMBFilm(named name: String = "Heat.mkv", contents: Data = AppWorld.mkvBytes) async throws {
+    func playSMBFilm(named name: String = "Heat.mp4", contents: Data = AppWorld.mp4Bytes) async throws {
         nas.setFolder([SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
         nas.setContents(contents)
         let folder = await openSMBFolder(Self.smbRef, share: "Media")
@@ -296,11 +290,28 @@ final class AppWorld {
     /// once the presenter no longer shows that request, whoever dismissed it.
     @discardableResult
     func openPlayer(sourceLocation: SourceLocation = #_sourceLocation) async throws -> PlayerViewModel {
-        let request = try #require(app.playback.request, "nothing asked the player to open", sourceLocation: sourceLocation)
         let built = engines.count
+        try mountPlayer(sourceLocation: sourceLocation)
+        try await until({ self.engines.count > built && self.engine.calls.contains("play") }, sourceLocation: sourceLocation)
+        return try #require(player, sourceLocation: sourceLocation)
+    }
+
+    /// Mounts the player as `openPlayer` does, for an open that never reaches an engine, and
+    /// waits until it shows its error.
+    @discardableResult
+    func openPlayerToItsError(sourceLocation: SourceLocation = #_sourceLocation) async throws -> PlayerViewModel {
+        try mountPlayer(sourceLocation: sourceLocation)
+        try await until({
+            if case .failed = self.player?.phase { true } else { false }
+        }, sourceLocation: sourceLocation)
+        return try #require(player, sourceLocation: sourceLocation)
+    }
+
+    private func mountPlayer(sourceLocation: SourceLocation) throws {
+        let request = try #require(app.playback.request, "nothing asked the player to open", sourceLocation: sourceLocation)
         let app = app
         let session = Task { [weak self] in
-            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { self?.player = $0 }
+            await app.runPlayer(for: request) { self?.player = $0 }
         }
         playerSession = session
         mount {
@@ -309,8 +320,6 @@ final class AppWorld {
                 return
             }
         }
-        try await until({ self.engines.count > built && self.engine.calls.contains("play") }, sourceLocation: sourceLocation)
-        return try #require(player, sourceLocation: sourceLocation)
     }
 
     /// The engine opened the stream and knows how long it is.
@@ -499,16 +508,14 @@ final class RecordingThumbnailer: FrameThumbnailing {
     var script: [Data] = []
     /// Set and close it to park every decode after it has been recorded. Left nil it adds no
     /// suspension, which the timing-sensitive scenarios rely on. A decode cancelled while parked
-    /// throws `CancellationError` once released, as both real thumbnailers do.
+    /// throws `CancellationError` once released, as the real thumbnailer does.
     var hold: AsyncGate?
     private(set) var requests: [URL] = []
     private(set) var positions: [Float] = []
-    private(set) var containers: [Container?] = []
 
-    func frame(from url: URL, at position: Float, container: Container?, timeout: Duration) async throws -> ThumbnailFrame {
+    func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
         requests.append(url)
         positions.append(position)
-        containers.append(container)
         await hold?.pass()
         try Task.checkCancellation()
         guard !script.isEmpty else { return Self.frame }
@@ -671,4 +678,9 @@ extension AppWorld {
     nonisolated static let smbServer = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
     nonisolated static let smbRef = makeSMBRef(smbServer)
     nonisolated static let mkvBytes = Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60))
+    /// A complete h264/aac MP4: the shape AVPlayer plays directly.
+    nonisolated static let mp4Bytes = ISOBMFFFixtures.mp4(traks: [
+        ISOBMFFFixtures.trak(stsdEntries: ["avc1"], handler: "vide"),
+        ISOBMFFFixtures.trak(stsdEntries: ["mp4a"], handler: "soun"),
+    ])
 }

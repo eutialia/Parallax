@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 /// tile resolution without materialising a full-size intermediate.
 ///
 /// System frameworks only (ImageIO/CoreGraphics/UniformTypeIdentifiers) — no SwiftUI/Combine — so
-/// it lives in `ParallaxCore` and both the SMB browse layer and the VLC thumbnailer can share it.
+/// it lives in `ParallaxCore` and both the SMB browse layer and the frame thumbnailer can share it.
 ///
 /// `CGImage` is value-immutable and the calls here are stateless, so the enum carries no state and
 /// needs no isolation.

@@ -2,17 +2,14 @@ import Foundation
 import Testing
 import UIKit
 import ParallaxCore
-import ParallaxFileBrowse
 import ParallaxPlayback
-import ParallaxPlaybackVLC
 @testable import Parallax
 
-/// End-to-end proof that `VLCThumbnailer` can generate a frame THROUGH `SMBHTTPBridge` —
-/// the transport `MediaArtworkProvider` now uses for every SMB thumbnail. Exercises the
-/// whole chain over loopback HTTP: libvlc pre-parse (range/sniff requests), the internal
-/// player's own open, and the frame decode, all served by the bridge from an in-memory
-/// reader. If a VLC↔bridge incompatibility ever appears (range semantics, keep-alive,
-/// content sniffing), this is the test that catches it without a NAS.
+/// End-to-end proof that the thumbnailer can generate a frame through `LocalMediaServer`, the
+/// transport `MediaArtworkProvider` uses for every SMB thumbnail: the `moov` load, the keyframe
+/// decode and the HEIC encode against a live ranged server, which no unit test reaches. If an
+/// incompatibility with the bridge ever appears (range semantics, keep-alive, content
+/// sniffing), this is the test that catches it without a NAS.
 @Suite("Thumbnail-over-bridge integration", .tags(.integration))
 @MainActor
 struct ThumbnailBridgeIntegrationTests {
@@ -32,56 +29,18 @@ struct ThumbnailBridgeIntegrationTests {
         return try Data(contentsOf: fixture)
     }
 
-    @Test(
-        "VLCThumbnailer decodes a frame served through a loopback bridge",
-        .enabled(if: ProcessInfo.processInfo.environment["CI"] == nil,
-                 "virtualized runners decode without hardware acceleration and blow the parse ceiling")
-    )
-    func thumbnailOverLoopbackBridge() async throws {
-        let data = try fixtureData()
-        let bridge = SMBHTTPBridge(
-            reader: InMemoryRandomAccessReader(data: data),
-            fileName: "tiny.mp4",
-            contentType: "application/octet-stream"
-        )
-        let url = try await bridge.start(scope: .loopback)
-        #expect(url.host() == "127.0.0.1", "thumbnail bridges must advertise loopback (VPN-proof)")
-
-        let thumbnailer = VLCThumbnailer()
-        do {
-            let frame = try await thumbnailer.thumbnailData(
-                for: url, height: Self.requestedHeight, timeout: .seconds(20)
-            )
-            // Non-empty bytes prove only that SOMETHING came back — a truncated or 1×1 frame
-            // passes that. The decoded geometry is knowable: the thumbnailer honours the requested
-            // height, and the fixture is 16:9, so the width follows.
-            let image = try #require(UIImage(data: frame.data), "the frame bytes must decode as an image")
-            #expect(image.size.height == Self.requestedHeight)
-            #expect(abs(image.size.width / image.size.height - MediaImage.landscape) < 0.02)
-        } catch {
-            Issue.record("thumbnail over bridge failed: \(error)")
-        }
-        await bridge.stop()
-    }
-
-    /// The same round trip for the AV tier — the one an AVKit-eligible container actually takes.
-    /// It exercises the whole deadline-raced pipeline (`moov` load → keyframe decode → HEIC) against
-    /// a live ranged server, which no unit test reaches.
-    ///
-    /// The size check is a CEILING, not an equality: `AVAssetImageGenerator.maximumSize` bounds the
-    /// output and never upscales, while libvlc's thumbnailer does — so on this deliberately tiny
-    /// fixture the two engines legitimately differ. Their shared tile bound lives in
-    /// `AVThumbnailer.targetHeight`; what this pins is that the AV output is inside it and keeps the
-    /// source aspect.
+    /// The size check is a ceiling, not an equality: `AVAssetImageGenerator.maximumSize` bounds
+    /// the output and never upscales, and the fixture is deliberately tiny.
     @Test("AVThumbnailer decodes a frame served through a loopback bridge")
     func avThumbnailOverLoopbackBridge() async throws {
         let data = try fixtureData()
-        let bridge = SMBHTTPBridge(
+        let bridge = LocalMediaServer(
             reader: InMemoryRandomAccessReader(data: data),
             fileName: "tiny.mp4",
-            contentType: "application/octet-stream"
+            contentType: "video/mp4"
         )
         let url = try await bridge.start(scope: .loopback)
+        #expect(url.host() == "127.0.0.1", "thumbnail bridges must advertise loopback (VPN-proof)")
 
         do {
             let frame = try await AVThumbnailer().thumbnailData(

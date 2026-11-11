@@ -42,7 +42,7 @@ public final class PlaybackPresenter {
     /// dismisses itself through its item binding, a server switch closes the player from
     /// `AppModel`, and the debug lab dismisses from a script. Those paths used to drop
     /// straight into the slide-out with the engine still running, so audio played on for
-    /// the whole animation: exactly the bug `endAudio()` fixes for the close button.
+    /// the whole animation: exactly the bug `beginExit()` fixes for the close button.
     /// Routing the hand-off through here means the presenter is the one place that has to
     /// know.
     ///
@@ -80,7 +80,7 @@ public final class PlaybackPresenter {
 
     /// Sessions whose engines are still draining or whose audio session is still active. The next
     /// player activates that same audio session, so a pick opens only once this is empty: an
-    /// engine teardown has no fixed length (VLC's can take seconds), and a deactivation landing
+    /// engine teardown has no fixed length, and a deactivation landing
     /// after the next activation silences the new player.
     private var deviceHolds: Set<DeviceHold> = []
 

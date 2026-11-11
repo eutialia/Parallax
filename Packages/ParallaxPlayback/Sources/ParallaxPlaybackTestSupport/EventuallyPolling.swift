@@ -6,9 +6,8 @@ import Testing
 /// if it never holds.
 ///
 /// Every suite that drives a real engine needs this and each had grown its own copy —
-/// `requireEventually` in `AVKitSeekSettleTests`, `waitForPoll`/`requirePoll` in
-/// `VLCKitEngineSeamTests`, another `requireEventually` in the app's `PlayerViewModelTests` —
-/// with three different sleep granularities and two different opinions on whether expiry is a
+/// `requireEventually` in `AVKitSeekSettleTests`, another in the app's `PlayerViewModelTests` —
+/// with different sleep granularities and two different opinions on whether expiry is a
 /// failure. It is one helper: expiry IS a failure (a condition that never holds is exactly
 /// what a test is asserting against), and the timeout is an anti-hang ceiling, never part of
 /// the claim — hence `CITimeScale`, so an oversubscribed runner cannot trip it while the code

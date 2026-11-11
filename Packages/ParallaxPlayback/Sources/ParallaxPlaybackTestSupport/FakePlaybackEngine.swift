@@ -6,26 +6,6 @@ import Synchronization
 import ParallaxTestScaling
 import ParallaxPlayback
 
-// MARK: — PlaybackEngineCapabilities convenience stubs
-
-extension PlaybackEngineCapabilities {
-    /// AVKit preset: all capabilities enabled.
-    public static let avKit = PlaybackEngineCapabilities(
-        supportsPiP: true,
-        supportsVideoAirPlay: true,
-        supportsNowPlayingIntegration: true
-    )
-
-    /// VLC preset: Now Playing only. MobileVLCKit ships no Picture-in-Picture API and
-    /// renders offscreen, so neither PiP nor video AirPlay is available — mirrors
-    /// `VLCKitEngine.capabilities`.
-    public static let vlcKit = PlaybackEngineCapabilities(
-        supportsPiP: false,
-        supportsVideoAirPlay: false,
-        supportsNowPlayingIntegration: true
-    )
-}
-
 // MARK: — FakePlaybackEngine
 
 /// Deterministic `PlaybackEngine` test double.
@@ -49,11 +29,9 @@ extension PlaybackEngineCapabilities {
 /// a torn read, it doesn't sequence calls for you.
 public final class FakePlaybackEngine: PlaybackEngine {
 
-    public nonisolated let id: PlaybackEngineID
-    public nonisolated let capabilities: PlaybackEngineCapabilities
     public nonisolated let state: AsyncStream<PlaybackBeat>
 
-    /// The session `load()` last opened, stamped onto every `push`. Mirrors both real engines:
+    /// The session `load()` last opened, stamped onto every `push`. Mirrors the real engine:
     /// a fake is reloadable in place too, and a test that reloads it gets the same boundary the
     /// app relies on. `Mutex`-free because it is only written from `load()` and read from
     /// `push`, both on the generic executor in every existing suite; `nonisolated(unsafe)` is
@@ -118,9 +96,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// wants to prove a captured frame flows through to a store sets this before pushing the
     /// beat that schedules the capture.
     public nonisolated(unsafe) var captureFrameResult: Data? = nil
-    /// Overrides `captureFramePerformsIO`. Defaults to the protocol's own default (`true`) so a
-    /// test that doesn't care about the WAN-skip behavior isn't surprised by a fake-specific one.
-    public nonisolated(unsafe) var captureFramePerformsIO = true
 
     private let continuation: AsyncStream<PlaybackBeat>.Continuation
     /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
@@ -128,9 +103,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// One `ParkingGate` per parkable call. See `ParkedCall` and `hold(_:)`.
     private let gates: [ParkedCall: ParkingGate]
 
-    public init(id: PlaybackEngineID, capabilities: PlaybackEngineCapabilities) {
-        self.id = id
-        self.capabilities = capabilities
+    public init() {
         // Two-layer stream. The inner buffered stream keeps the ORIGINAL semantics
         // (`push` never blocks, states queue in order, `finish()` still drains what's
         // already queued, a cancelled consumer ends its loop). The outer `unfolding`
@@ -222,7 +195,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
         }
     }
 
-    /// Opens a new session like both real engines, so a reload's incoming beats are
+    /// Opens a new session like the real engine, so a reload's incoming beats are
     /// distinguishable from the outgoing ones a test left in flight.
     @discardableResult
     public func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID {
@@ -230,6 +203,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
             $0.loadedAssets.append(asset)
             $0.calls.append("load")
         }
+        await gates[.load]!.park()
         if let loadError { throw loadError }
         recordedState.withLock {
             $0.hasLoaded = true
@@ -255,24 +229,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
             $0.calls.append("pause")
             $0.isPlayingNow = false
         }
-    }
-
-    /// Recorded distinctly from "pause" so tests can tell a resumable silence from a
-    /// transport pause — the two diverge on real engines (VLC mutes the audio output).
-    public func silence() async {
-        recordedState.withLock { $0.calls.append("silence") }
-        await gates[.silence]!.park()
-    }
-
-    /// Recorded distinctly from "silence" too: this is the TERMINAL exit cut (VLC stops
-    /// the player outright), and the exit tests assert exactly which of the two a path took.
-    public func endAudio() async {
-        recordedState.withLock {
-            $0.calls.append("endAudio")
-            // The terminal cut stops the player outright, so the transport is down with it.
-            $0.isPlayingNow = false
-        }
-        await gates[.endAudio]!.park()
+        await gates[.pause]!.park()
     }
 
     /// A no-op before `load()`, as the protocol says. With `landsSeeks`, a seek on a loaded stream
@@ -299,18 +256,19 @@ public final class FakePlaybackEngine: PlaybackEngine {
         /// Inside `await engine.seek(...)` — the window a synchronous fence can land in
         /// mid-seek.
         case seek
+        /// Inside `load(_:)`, before the stream opens: a reload has already adopted the new
+        /// resolve while the engine has not loaded it.
+        case load
         /// State DELIVERY, with the element already pulled from the stream: the beat is in
         /// the consumer's hands but its handler has not run. Cancelling a subscription
         /// cannot recall a state already in flight, so this is what proves the consumer
         /// drops it on identity rather than on luck.
         case beat
-        /// Inside `endAudio()` — the awaited half of an engine swap, so the outgoing engine
-        /// is still the live one while a transport command or a beat lands.
-        case endAudio
-        /// Inside `silence()` — the FIRST await of a mid-session reload's prelude, before
-        /// it has written a single flag. Where a session handoff has to find it.
-        case silence
-        /// Inside `teardown()`, before it finishes the stream — a stand-in for VLC's
+        /// Inside `pause()`. The first await of a mid-session reload's prelude, before it has
+        /// written a single flag, and the awaited half of an engine swap, so the outgoing
+        /// engine is still the live one while a transport command or a beat lands.
+        case pause
+        /// Inside `teardown()`, before it finishes the stream — a stand-in for a slow,
         /// multi-second teardown, which is what proves a retirement runs off the swap's
         /// critical path.
         case teardown
@@ -351,9 +309,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
         await gates[.subtitleTrack]!.park()
     }
 
-    public func setSubtitleDelay(milliseconds: Int) async {
-        recordedState.withLock { $0.calls.append("setSubtitleDelay(\(milliseconds))") }
-    }
 
     public func teardown() async {
         recordedState.withLock { $0.calls.append("teardown") }

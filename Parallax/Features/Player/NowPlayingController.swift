@@ -2,7 +2,7 @@ import MediaPlayer
 import CoreMedia
 import ParallaxFeatures
 
-/// Drives `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` for both engines.
+/// Drives `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` for the player.
 /// Engine-agnostic: the VM calls `update(...)` on every `PlaybackState` event;
 /// remote-command callbacks forward to the VM via the closures set in `configure(...)`.
 @MainActor

@@ -31,10 +31,9 @@ struct OpenTimingScenarios {
         #expect(record.total == .milliseconds(1011))
         #expect(record.resolve == .milliseconds(611))
         #expect(record.load == .milliseconds(400))
-        #expect(record.route == .smb(bridged: true))
-        #expect(record.engine == .vlcKit)
+        #expect(record.route == .smb)
         #expect(record.origin == .tap)
-        #expect(record.logLine == "open → playing in 1011ms (resolve 611ms, load 400ms) source=smb transport=bridge engine=vlc origin=tap")
+        #expect(record.logLine == "open → playing in 1011ms (resolve 611ms, load 400ms) source=smb origin=tap")
     }
 
     @Test("a Jellyfin film's open is recorded once, when its first frame plays, with its delivery method")
@@ -49,26 +48,7 @@ struct OpenTimingScenarios {
         world.clock.advance(by: .seconds(5))
         try await world.streamPlays(at: .seconds(6), of: .seconds(600))
 
-        #expect(player.lastOpen?.logLine == "open → playing in 1234ms (resolve 0ms, load 1234ms) source=jellyfin transport=directPlay engine=avkit origin=tap")
-    }
-
-    @Test("an open that AVKit can't decode and VLC takes over is one record, on VLC, timed from the start")
-    func rerouteIsOneRecordOnTheEngineThatPlayed() async throws {
-        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films")
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
-        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
-        let player = try await world.openPlayer()
-        world.clock.advance(by: .milliseconds(700))
-
-        world.streamFailsToDecode()
-        try await world.until { world.engines.count == 2 && world.engine.calls.contains("play") }
-        world.clock.advance(by: .milliseconds(300))
-        try await world.streamPlays(at: .seconds(1), of: .seconds(600))
-
-        let record = try #require(player.lastOpen)
-        #expect(record.engine == .vlcKit)
-        #expect(record.total == .milliseconds(1000))
-        #expect(record.load == .milliseconds(300))
+        #expect(player.lastOpen?.logLine == "open → playing in 1234ms (resolve 0ms, load 1234ms) source=jellyfin transport=directPlay origin=tap")
     }
 
     @Test("a failed open leaves no record, and the retry's record is timed from the retry")

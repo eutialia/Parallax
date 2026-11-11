@@ -49,7 +49,7 @@ public enum PlaybackState: Sendable {
     /// `buffered` is the absolute media time the contiguous buffer around the
     /// playhead extends to (AVKit: end of the `loadedTimeRanges` range containing
     /// the position) — the progress bar's middle "instant seek" layer. Nil when
-    /// the engine doesn't report buffer ranges (VLC).
+    /// no loaded range contains the playhead.
     ///
     /// `provenance` is the seek-settle contract every position-carrying case carries — see
     /// the note above the enum. Deliberately NOT defaulted: `.observed` is the strongest claim
@@ -64,11 +64,7 @@ public enum PlaybackState: Sendable {
     /// Mid-stream stall: the user's intent is "playing" but the engine is waiting
     /// for media (AVKit: `timeControlStatus == .waitingToPlayAtSpecifiedRate`)
     /// after a seek past the buffer, or a network underrun. Distinct from
-    /// `.loading` (no stream yet) and `.paused` (user intent). BOTH engines emit it:
-    /// VLC derives it from its own poll (frozen clock plus frozen demux, a seek whose
-    /// fetch stopped, a rate-change re-decode) rather than from `state == .buffering`,
-    /// which fires bogusly during normal playback (VideoLAN VLCKit#578). Only the
-    /// buffered RANGES are AVKit-only; the VLC engine always ships `buffered: nil`.
+    /// `.loading` (no stream yet) and `.paused` (user intent).
     case buffering(position: CMTime, duration: CMTime, buffered: CMTime?,
                    provenance: PositionProvenance)
     case ended

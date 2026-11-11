@@ -87,7 +87,7 @@ struct RoutingScenarios {
 
         #expect(world.app.router.activeServerID == ServerID(rawValue: attic.id))
         #expect(world.playRequest == AppWorld.PlayRequest(item: attic.itemID(of: "Alien"), server: "Attic", fromBeginning: false))
-        #expect(!world.engine.calls.contains("endAudio"))
+        #expect(world.engine.isPlayingNow)
     }
 
     @Test("signing out the active server re-closes the launch reveal until the next server's Home and library list settle")

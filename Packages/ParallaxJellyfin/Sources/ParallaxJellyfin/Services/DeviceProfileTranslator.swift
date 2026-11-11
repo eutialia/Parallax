@@ -13,31 +13,20 @@ import ParallaxCore
 ///    video codec, no entry matches → the server remuxes to HLS and the AVKit path
 ///    handles it (preserving HDR/DV/Atmos).
 ///
-/// 2. **VLC tier** — broad container set; video codecs from `softwareVideoCodecs`
-///    (only what AVPlayer cannot play here, so MKV+HEVC falls through to the AVKit remux);
-///    broad audio (all VLC audio, including AVKit audio, because audio breadth is safe
-///    once the video-codec gate has already decided AVKit-vs-VLC).
-///    Omitted when `softwareVideoCodecs` is empty (avKit-only caps).
-///
-/// 3. **Transcode floor** — HLS fallback for anything neither tier covers, in the codecs
+/// 2. **Transcode floor** — HLS fallback for anything direct play does not cover, in the codecs
 ///    `AVPlayerSupport.hlsVideoCodecs` and `hlsAudioCodecs` list.
 ///
 /// ## `hls` divergence (preserved)
 ///
 /// `hls` is NOT in the DirectPlay container strings. It is a transcode delivery format,
-/// not a source container. `AVPlayerSupport.containers` retains `.hls` for
-/// EngineSelector routing; the translator deliberately subtracts it from BOTH tiers.
+/// not a source container. `AVPlayerSupport.containers` lists `.hls` because AVPlayer plays
+/// it; the translator subtracts it so it never reaches the wire profile.
 enum DeviceProfileTranslator {
     static func deviceProfile(from capabilities: DeviceCapabilities) -> DeviceProfile {
         var directPlayProfiles = [DirectPlayProfile]()
 
         // 1. AVKit tier — hardware-native direct play
         directPlayProfiles.append(avKitDirectPlay(from: capabilities))
-
-        // 2. VLC tier — software/VLC direct play (omit when no software codecs declared)
-        if !capabilities.softwareVideoCodecs.isEmpty {
-            directPlayProfiles.append(vlcDirectPlay(from: capabilities))
-        }
 
         // Serialize the device's max bitrate. Sending nil does NOT mean
         // "unlimited" — Jellyfin then applies an 8 Mbps default, which forces a
@@ -68,37 +57,9 @@ enum DeviceProfileTranslator {
         let audioCodecs = capabilities.avPlayer.audioCodecs
             .map(\.rawValue).sorted().joined(separator: ",")
         // Subtract .hls — it is a transcode delivery format, not a direct-play source
-        // container. AVPlayerSupport.containers keeps .hls for routing;
-        // that must not bleed into the Jellyfin wire profile.
+        // container, so it must not reach the Jellyfin wire profile.
         let containers = capabilities.avPlayer.containers.subtracting([.hls])
             .map(\.rawValue).sorted().joined(separator: ",")
-
-        return DirectPlayProfile(
-            audioCodec: audioCodecs,
-            container: containers,
-            type: .video,
-            videoCodec: videoCodecs
-        )
-    }
-
-    private static func vlcDirectPlay(from capabilities: DeviceCapabilities) -> DirectPlayProfile {
-        // Video: software tier only (whatever AVPlayer plays is excluded by
-        // construction in DeviceCapabilities).
-        let videoCodecs = capabilities.softwareVideoCodecs
-            .map(\.rawValue).sorted().joined(separator: ",")
-
-        // Audio: union of AVKit audio + VLC-additional audio (the video-codec gate
-        // already decided this is a VLC-routed file, so broad audio is safe).
-        let allVlcAudio = capabilities.avPlayer.audioCodecs
-            .union(Set(capabilities.softwareAudioCodecs))
-        let audioCodecs = allVlcAudio.map(\.rawValue).sorted().joined(separator: ",")
-
-        // Containers: union of avKit containers + software containers, minus hls
-        // (hls is a delivery format, not a direct-play source container).
-        let allVlcContainers = capabilities.avPlayer.containers
-            .union(Set(capabilities.softwareContainers))
-            .subtracting([.hls])
-        let containers = allVlcContainers.map(\.rawValue).sorted().joined(separator: ",")
 
         return DirectPlayProfile(
             audioCodec: audioCodecs,
@@ -123,8 +84,8 @@ enum DeviceProfileTranslator {
             container: "mp4",
             context: .streaming,
             // Client-side subtitle rendering: we fetch each text subtitle as a
-            // sidecar VTT and draw it ourselves through one cross-engine overlay
-            // (AVKit + VLC) we fully control — own styling today, user-customizable
+            // sidecar VTT and draw it ourselves through one overlay
+            // we fully control — own styling today, user-customizable
             // size/position/color later — so the server must NOT embed a legible
             // group for AVPlayer to auto-select underneath it.
             enableSubtitlesInManifest: false,
@@ -173,8 +134,8 @@ enum DeviceProfileTranslator {
         // selectable on the transcode path (PlaybackInfoService/PlayerViewModel gate
         // this behind an explicit user pick — burn-in forces a full re-encode, and
         // can even turn an HDR source SDR server-side; jellyfin-tizen#202 — so it's
-        // opt-in, never a default). Direct-play is unaffected: VLC renders these
-        // natively there.
+        // opt-in, never a default). Direct play never asks the server for these: an
+        // image sub there is the engine's own embedded track, if AVPlayer exposes one.
         //
         // One profile per REAL codec identifier: the server matches a profile by
         // string equality against the stream's own codec, so the short marketing

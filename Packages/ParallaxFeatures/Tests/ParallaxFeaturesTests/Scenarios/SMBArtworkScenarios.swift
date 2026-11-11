@@ -1,5 +1,6 @@
 import Foundation
 import ParallaxCore
+import ParallaxCoreTestSupport
 @testable import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
@@ -14,10 +15,10 @@ struct SMBArtworkScenarios {
     func generationPausesUnderThePlayer() async throws {
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Ran.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Ran.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
         ], share: "Media")
-        world.nas.setContents(Data(repeating: 0, count: 4096))
+        world.nas.setContents(AppWorld.mp4Bytes)
         let provider = world.app.services.mediaArtworkProvider
         let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
         try await world.until { root.media.count == 2 }
@@ -35,7 +36,7 @@ struct SMBArtworkScenarios {
         let artwork = await tile.value
 
         #expect(artwork.duration == .seconds(42))
-        #expect(world.thumbnailer.requests.map(\.lastPathComponent) == ["Heat.mkv"])
+        #expect(world.thumbnailer.requests.map(\.lastPathComponent) == ["Heat.mp4"])
         #expect(await provider.isPausedForPlayback == false)
     }
 
@@ -43,10 +44,10 @@ struct SMBArtworkScenarios {
     func hungSidecarFallsBackToAFrameGrab() async throws {
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
             SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: 512, modifiedAt: nil),
         ], share: "Media")
-        world.nas.setContents(Data(repeating: 0, count: 4096))
+        world.nas.setContents(AppWorld.mp4Bytes)
         let root = await world.openSMBFolder(AppWorld.smbRef, share: "Media")
         try await world.until { root.media.count == 1 }
         let heat = root.media[0]
@@ -65,7 +66,7 @@ struct SMBArtworkScenarios {
         let artwork = await loading.value
 
         #expect(artwork.duration == .seconds(42))
-        #expect(world.thumbnailer.requests.map(\.lastPathComponent) == ["Heat.mkv"])
+        #expect(world.thumbnailer.requests.map(\.lastPathComponent) == ["Heat.mp4"])
     }
 
     @Test("a grey mosaic frame is not cached; the grab retries deeper in the file and caches that frame")
@@ -81,20 +82,32 @@ struct SMBArtworkScenarios {
         #expect(world.thumbnailer.positions == [0.05, 0.15])
     }
 
-    @Test("the frame grab is told which container the probe identified, on every position it tries",
+    @Test("a file AVPlayer can't play directly is never handed to the frame grab, and its failure is remembered",
           arguments: [
-            (Data([0x00, 0x00, 0x01, 0xBA]) + Data(repeating: 0, count: 4092), Container.mpegps),
-            (Data([0x1A, 0x45, 0xDF, 0xA3]) + Data(repeating: 0, count: 4092), .mkv),
-            (Data(repeating: 0, count: 4096), nil),
-          ] as [(Data, Container?)])
-    func grabCarriesTheProbedContainer(contents: Data, expected: Container?) async throws {
+            AppWorld.mkvBytes,
+            Data(repeating: 0, count: 4096),
+            ISOBMFFFixtures.mp4(traks: [ISOBMFFFixtures.trak(stsdEntries: ["vp09"], handler: "vide")]),
+          ])
+    func undirectPlayableFileIsNotGrabbed(contents: Data) async throws {
         let (world, provider, heat, ref) = try await Self.openHeat(contents: contents)
-        world.thumbnailer.script = [TestFrames.mosaic]
 
-        _ = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
-        #expect(world.thumbnailer.positions == [0.05, 0.15])
-        #expect(world.thumbnailer.containers == [expected, expected])
+        #expect(Self.frame(of: artwork) == "none")
+        #expect(world.thumbnailer.positions == [])
+        #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) != nil)
+    }
+
+    @Test("a file the share refuses to open is remembered as failed, so its tile is not probed again on every scroll")
+    func unreadableFileBacksOff() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        world.nas.setFileSizeOutcome(.fails(POSIXError(.EACCES)))
+
+        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+
+        #expect(Self.frame(of: artwork) == "none")
+        #expect(world.thumbnailer.positions == [])
+        #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) != nil)
     }
 
     @Test("a file that only decodes to grey shows no artwork and is not grabbed again within its backoff")
@@ -132,17 +145,16 @@ struct SMBArtworkScenarios {
         #expect(world.thumbnailer.positions == [0.05, 0.15, 0.25, 0.05])
     }
 
-    @Test("a grey mosaic captured during playback is not cached, so the tile still gets a real frame")
-    func mosaicBackfillIsDropped() async throws {
+    @Test("a frame captured during playback is cached unless it is grey, which leaves the tile to a real grab",
+          arguments: [(TestFrames.mosaic, [Float(0.05)]), (TestFrames.scene, [])])
+    func playbackCaptureIsCachedUnlessGrey(captured: Data, grabs: [Float]) async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
 
-        await provider.backfillThumbnail(
-            item: heat, ref: ref, duration: .seconds(42), captureFramePerformsIO: false
-        ) { TestFrames.mosaic }
+        await provider.backfillThumbnail(item: heat, ref: ref, duration: .seconds(42)) { captured }
         let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
         #expect(Self.frame(of: artwork) == "scene")
-        #expect(world.thumbnailer.positions == [0.05])
+        #expect(world.thumbnailer.positions == grabs)
     }
 
     @Test("a file that decodes only to grey after a sidecar timeout leaves the host's window open for two concurrent generations")
@@ -150,16 +162,16 @@ struct SMBArtworkScenarios {
         let ref = AppWorld.smbRef
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
             SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: 512, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Ran.wmv", isDirectory: false, size: 4096, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Alien.wmv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Ran.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Alien.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
         ], share: "Media")
-        world.nas.setContents(Data(repeating: 0, count: 4096))
+        world.nas.setContents(AppWorld.mp4Bytes)
         let root = await world.openSMBFolder(ref, share: "Media")
         try await world.until { root.media.count == 3 }
         let provider = world.app.services.mediaArtworkProvider
-        let heat = try #require(root.media.first { "\($0.id)".contains("Heat.mkv") })
+        let heat = try #require(root.media.first { "\($0.id)".contains("Heat.mp4") })
         let others = root.media.filter { $0.id != heat.id }
         let poster = try #require(root.artwork[heat.id])
         world.thumbnailer.script = [TestFrames.mosaic, TestFrames.mosaic, TestFrames.mosaic]
@@ -186,7 +198,7 @@ struct SMBArtworkScenarios {
     @Test("a grey thumbnail cached by an older build is evicted and regenerated on first read; a good one is served as is")
     func cachedGreyThumbnailIsRegenerated() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
-        let ran = try await Self.addFile("Ran.wmv", to: world, ref: ref)
+        let ran = try await Self.addFile("Ran.mp4", to: world, ref: ref)
         let seeding = world.thumbnailCache()
         _ = await seeding.store(TestFrames.mosaic, duration: .seconds(42), for: try Self.key(of: heat, ref: ref))
         _ = await seeding.store(TestFrames.scene, duration: .seconds(42), for: try Self.key(of: ran, ref: ref))
@@ -205,7 +217,7 @@ struct SMBArtworkScenarios {
         let ref = AppWorld.smbRef
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
             SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: Int64(TestFrames.mosaic.count), modifiedAt: nil),
         ], share: "Media")
         world.nas.setContents(TestFrames.mosaic)
@@ -256,11 +268,11 @@ struct SMBArtworkScenarios {
         let alphaAgain = Task { await provider.artwork(for: root.media[0], ref: AppWorld.smbRef, sidecar: nil) }
         root.prefetchWindow(from: 0, lookahead: 1)
         await hold.open()
-        try await world.until { () async in world.requestedFiles.contains("Omega.wmv") }
+        try await world.until { () async in world.requestedFiles.contains("Omega.mp4") }
         _ = await alphaAgain.value
         rootAgain.cancel()
 
-        #expect(world.requestedFiles.sorted() == ["Alpha.wmv", "Alpha.wmv", "Omega.wmv"])
+        #expect(world.requestedFiles.sorted() == ["Alpha.mp4", "Alpha.mp4", "Omega.mp4"])
     }
 
     @Test("a thumbnail scrolled past in the folder on screen still finishes while the backlog has room; files the viewport never neared are not fetched")
@@ -282,7 +294,7 @@ struct SMBArtworkScenarios {
         filmsScreen.cancel()
 
         #expect(world.requestedFiles.sorted() == [
-            "Film 1.wmv", "Film 2.wmv", "Film 3.wmv", "Film 4.wmv", "Film 6.wmv", "Film 7.wmv", "Film 8.wmv",
+            "Film 1.mp4", "Film 2.mp4", "Film 3.mp4", "Film 4.mp4", "Film 6.mp4", "Film 7.mp4", "Film 8.mp4",
         ])
     }
 
@@ -307,7 +319,7 @@ struct SMBArtworkScenarios {
         secondScreen.cancel()
 
         #expect(world.requestedFiles.sorted() == [
-            "Film 1.wmv", "Film 1.wmv", "Film 2.wmv", "Film 3.wmv", "Film 4.wmv", "Film 5.wmv",
+            "Film 1.mp4", "Film 1.mp4", "Film 2.mp4", "Film 3.mp4", "Film 4.mp4", "Film 5.mp4",
         ])
     }
 
@@ -319,13 +331,13 @@ struct SMBArtworkScenarios {
         world.nas.setLatency(.milliseconds(400), host: AppWorld.smbServer.host)
         world.nas.setFolder([
             SMBDirectoryEntry(name: "Films", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Alpha.wmv", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: 2)),
-            SMBDirectoryEntry(name: "Omega.wmv", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: 1)),
+            SMBDirectoryEntry(name: "Alpha.mp4", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: 2)),
+            SMBDirectoryEntry(name: "Omega.mp4", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: 1)),
         ], share: "Media")
         world.nas.setFolder((1...8).map {
-            SMBDirectoryEntry(name: "Film \($0).wmv", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: TimeInterval(100 - $0)))
+            SMBDirectoryEntry(name: "Film \($0).mp4", isDirectory: false, size: 4096, modifiedAt: Date(timeIntervalSince1970: TimeInterval(100 - $0)))
         }, share: "Media", path: "Films")
-        world.nas.setContents(Data(repeating: 0, count: 4096))
+        world.nas.setContents(AppWorld.mp4Bytes)
         let hold = AsyncGate(open: false)
         world.thumbnailer.hold = hold
         return (world, hold)
@@ -341,7 +353,7 @@ struct SMBArtworkScenarios {
 
     private static func addFile(_ name: String, to world: AppWorld, ref: SMBServerRef) async throws -> Item {
         world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.wmv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
             SMBDirectoryEntry(name: name, isDirectory: false, size: 4096, modifiedAt: nil),
         ], share: "Media")
         let root = await world.openSMBFolder(ref, share: "Media")
@@ -352,12 +364,12 @@ struct SMBArtworkScenarios {
     private struct StateNotFound: Error {}
 
     private static func openHeat(
-        contents: Data = Data(repeating: 0, count: 4096)
+        contents: Data = AppWorld.mp4Bytes
     ) async throws -> (AppWorld, MediaArtworkProvider, Item, SMBServerRef) {
         let ref = AppWorld.smbRef
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.wmv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
         ], share: "Media")
         world.nas.setContents(contents)
         let root = await world.openSMBFolder(ref, share: "Media")

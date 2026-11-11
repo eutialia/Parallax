@@ -3,7 +3,7 @@ import ParallaxPlayback
 
 /// Named AVKit buffering profiles for on-device startup-time A/B testing (Plan C).
 /// `.fastStart` is the SHIPPING default, promoted from the 2026-07-08 device A/B
-/// (Jellyfin over VPN: System 3152ms → Fast Start 1991ms; VLC control rows confirmed
+/// (Jellyfin over VPN: System 3152ms → Fast Start 1991ms; control rows confirmed
 /// the gap exceeds network jitter). `.system` stays pickable as the control.
 /// A third candidate, "Fast Start (Eager)" (`automaticallyWaitsToMinimizeStalling =
 /// false`), was DELETED in the same pass: it wedged the loading scrim forever (first

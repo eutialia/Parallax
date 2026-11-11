@@ -64,7 +64,7 @@ def audio_args(index, codec, layout_filter, bitrate=None, title=None, default=No
 MATRIX = [
     {
         "name": "hevc-truehd-ac3.mkv",
-        "why": "the dropout repro shape: undecodable TrueHD default track + AC3 fallback",
+        "why": "undecodable TrueHD default track + AC3 fallback",
         "video": ["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", X265_SHORT],
         "audio": [
             dict(codec="truehd", layout=SURROUND, title="TrueHD", default=True),

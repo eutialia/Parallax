@@ -3,7 +3,7 @@ import Foundation
 import ParallaxCore
 
 /// `SMBLister` over the shared `SMBConnectionPool` — directory enumeration and share enumeration.
-/// Streaming runs through libVLC's native `smb://` path or the HTTP bridge, not this type.
+/// Streaming runs through the HTTP bridge, not this type.
 ///
 /// **Why it is pooled.** Browsing used to stand up a fresh `SMB2Manager` per screen and tear it
 /// down again on disappear, so every drill-in and every back-navigation paid a full SMB handshake

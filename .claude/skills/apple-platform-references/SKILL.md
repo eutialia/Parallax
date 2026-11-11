@@ -30,7 +30,7 @@ Files most relevant to Parallax (in priority order):
 - `SwiftUI-Implementing-Liquid-Glass-Design.md` — iOS 26 Liquid Glass design system in SwiftUI. Read before building UI surfaces.
 - `SwiftUI-New-Toolbar-Features.md` — Toolbar API changes. Relevant for the player chrome and navigation bars.
 - `Foundation-AttributedString-Updates.md` — AttributedString in Swift 6.2. Useful if we ever render subtitles natively or build rich info displays.
-- `Swift-InlineArray-Span.md` — `InlineArray` and `Span` for buffer code. Could matter if we ever bridge VLC frame buffers or write a custom decoder.
+- `Swift-InlineArray-Span.md` — `InlineArray` and `Span` for buffer code. Could matter for the media bridge's sample buffers.
 - `UIKit-Implementing-Liquid-Glass-Design.md` — UIKit Liquid Glass, useful for the `UIViewControllerRepresentable` wrapping `AVPlayerViewController` and any custom UIKit chrome.
 - `Implementing-Assistive-Access-in-iOS.md` — accessibility consideration for a future hardening pass.
 

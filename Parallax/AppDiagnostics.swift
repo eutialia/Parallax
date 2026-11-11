@@ -86,8 +86,8 @@ private struct ScenePhaseDiagnostics: ViewModifier {
             }
             .task {
                 await AppDiagnostics.stallMonitor.start()
-                // Checked once the scene is up, which is late enough for VLCKit and AMSMB2 to have
-                // initialised: if either of them replaced our signal dispositions, the absence of a
+                // Checked once the scene is up, which is late enough for AMSMB2 to have
+                // initialised: if it replaced our signal dispositions, the absence of a
                 // crash record in this file means nothing, and that has to be stated rather than
                 // assumed. See `CrashSentinel.displacedSignals`.
                 DiagnosticsLog.recordCrashHandlerState()

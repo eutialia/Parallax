@@ -3,14 +3,13 @@
 
 Builds (or reuses) the Parallax app, installs it on a simulator, feeds it a
 merged scenario JSON, captures unified-log + app telemetry while the scenario
-runs, and analyzes the result for seek latency / stalls / audio-dropout
-signatures.
+runs, and analyzes the result for seek latency / stalls.
 
 Usage:
-    ./run.py --scenario scenarios/dropout.json
+    ./run.py --scenario scenarios/deepseek.json
     ./run.py --scenario scenarios/smoke.json --file custom.mkv --sim "iPhone 18 Pro"
     ./run.py --scenario scenarios/deepseek.json --no-build
-    ./run.py --analyze results/dropout-20260731-201500
+    ./run.py --analyze results/smoke-20260731-201500
     ./run.py --selftest
 
 STDLIB ONLY — no pip dependencies. Requires macOS + Xcode command line tools.
@@ -21,7 +20,6 @@ import collections
 import datetime
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -34,7 +32,6 @@ SUBSYSTEM = "com.lhdev.parallax"
 DEFAULT_SIM = "iPhone 18 Pro"
 DEFAULT_CONFIG = "lab-config.local.json"
 DERIVED_DATA = Path.home() / "Library/Caches/ParallaxPlaybackLab/DerivedData"
-LOG_TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f%z"
 SEEK_CMDS = ("seek", "skip", "scrub")
 HEAVY_LOCK_ENV = "PARALLAX_LAB_HOLDS_HEAVY_LOCK"
 
@@ -180,8 +177,6 @@ def get_app_container(udid: str, bundle_id: str, attempts: int = 8, delay: float
 def start_log_capture(udid: str, out_path: Path):
     out_file = open(out_path, "w")
     proc = subprocess.Popen(
-        # --level debug is load-bearing: the vlc-audio tap mirrors libvlc lines
-        # at debug level, and the default (info) captures none of them.
         ["xcrun", "simctl", "spawn", udid, "log", "stream", "--style", "ndjson",
          "--level", "debug", "--predicate", f'subsystem == "{SUBSYSTEM}"'],
         stdout=out_file, stderr=subprocess.DEVNULL,
@@ -243,28 +238,6 @@ def parse_telemetry(lines: list) -> list:
         except json.JSONDecodeError:
             continue
     return events
-
-
-def parse_log_ndjson(lines: list) -> list:
-    entries = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        message = obj.get("eventMessage", "")
-        ts_raw = obj.get("timestamp")
-        ts = None
-        if ts_raw:
-            try:
-                ts = datetime.datetime.strptime(ts_raw, LOG_TS_FORMAT)
-            except ValueError:
-                ts = None
-        entries.append({"ts": ts, "message": message})
-    return entries
 
 
 def run_summary(events: list) -> dict:
@@ -368,68 +341,8 @@ def stall_windows(events: list, t0: float | None) -> list:
     return stalls
 
 
-US_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:µs|us|usec|microseconds)\b", re.IGNORECASE)
-
-
-def dropout_signatures(log_entries: list) -> dict:
-    flush_count = sum(1 for e in log_entries if "flushing buffers" in e["message"].lower())
-    late_count = sum(1 for e in log_entries if "starting late" in e["message"].lower())
-
-    deferring = [e for e in log_entries if e["ts"] is not None and "deferring start" in e["message"].lower()]
-    deferring.sort(key=lambda e: e["ts"])
-    episodes, cur = [], []
-    for e in deferring:
-        if cur and (e["ts"] - cur[-1]["ts"]).total_seconds() >= 2:
-            episodes.append(cur)
-            cur = []
-        cur.append(e)
-    if cur:
-        episodes.append(cur)
-
-    episode_reports = []
-    for ep in episodes:
-        duration = (ep[-1]["ts"] - ep[0]["ts"]).total_seconds()
-        max_us = None
-        for e in ep:
-            for m in US_RE.finditer(e["message"]):
-                val = float(m.group(1))
-                if max_us is None or val > max_us:
-                    max_us = val
-        episode_reports.append({"duration_s": duration, "max_deferral_us": max_us, "count": len(ep)})
-
-    clock_source = None
-    for e in log_entries:
-        lowered = e["message"].lower()
-        if "using clock source" in lowered:
-            idx = lowered.index("using clock source")
-            clock_source = e["message"][idx + len("using clock source"):].strip(" :\t")
-            break
-
-    return {
-        "flush_count": flush_count,
-        "late_count": late_count,
-        "deferring_episodes": episode_reports,
-        "clock_source": clock_source,
-    }
-
-
-def build_verdicts(seeks: list, stalls: list, dropouts: dict) -> list:
+def build_verdicts(seeks: list, stalls: list) -> list:
     lines = []
-
-    n_flush = dropouts["flush_count"]
-    # Sub-second deferrals are normal renderer start latency; the pathological
-    # flush-loop deferrals are ~3s. Only long ones indict the run.
-    long_eps = [e for e in dropouts["deferring_episodes"]
-                if (e["max_deferral_us"] or 0) > 1_000_000]
-    n_ep = len(long_eps)
-    if n_flush == 0 and n_ep == 0:
-        lines.append("DROPOUT SIGNATURE: no flush events, no long deferrals — PASS")
-    else:
-        avg_us = (sum(e["max_deferral_us"] for e in long_eps) / n_ep) if n_ep else 0.0
-        lines.append(
-            f"DROPOUT SIGNATURE: {n_flush} flush events, {n_ep} long deferral episodes "
-            f"(max ~{avg_us / 1e6:.1f}s) — FAIL"
-        )
 
     if seeks:
         parts = []
@@ -453,28 +366,24 @@ def build_verdicts(seeks: list, stalls: list, dropouts: dict) -> list:
     return lines
 
 
-def analyze(events: list, log_entries: list) -> dict:
+def analyze(events: list) -> dict:
     summary = run_summary(events)
     t0 = summary["t0"]
     seeks = seek_latencies(events, t0)
     stalls = stall_windows(events, t0)
-    dropouts = dropout_signatures(log_entries)
     return {
         "summary": summary,
         "phases": phase_timeline(events, t0),
         "seeks": seeks,
         "stalls": stalls,
-        "dropouts": dropouts,
-        "verdicts": build_verdicts(seeks, stalls, dropouts),
+        "verdicts": build_verdicts(seeks, stalls),
     }
 
 
 def analyze_results(results_dir: Path) -> dict:
     telemetry_path = results_dir / "telemetry.jsonl"
-    log_path = results_dir / "vlc-log.ndjson"
     telemetry_lines = telemetry_path.read_text().splitlines() if telemetry_path.exists() else []
-    log_lines = log_path.read_text().splitlines() if log_path.exists() else []
-    return analyze(parse_telemetry(telemetry_lines), parse_log_ndjson(log_lines))
+    return analyze(parse_telemetry(telemetry_lines))
 
 
 def format_report(analysis: dict) -> str:
@@ -507,18 +416,6 @@ def format_report(analysis: dict) -> str:
         lines.append(f"  [{rel}] {st['duration_s']:.1f}s frozen @ {st['positionMs']}ms")
     if not analysis["stalls"]:
         lines.append("  (none)")
-
-    d = analysis["dropouts"]
-    lines += ["", "-- dropout signatures --",
-              f"  flush events: {d['flush_count']}",
-              f"  starting-late events: {d['late_count']}",
-              f"  clock source: {d['clock_source'] or 'unknown'}"]
-    if d["deferring_episodes"]:
-        for i, ep in enumerate(d["deferring_episodes"], 1):
-            maxus = f"{ep['max_deferral_us']:.0f}us" if ep["max_deferral_us"] is not None else "?"
-            lines.append(f"  deferral episode {i}: {ep['duration_s']:.1f}s, {ep['count']} lines, max {maxus}")
-    else:
-        lines.append("  deferral episodes: none")
 
     lines += ["", "-- verdict --"]
     lines += [f"  {v}" for v in analysis["verdicts"]]
@@ -553,18 +450,7 @@ def selftest() -> None:
         {"t": t0 + 10.5, "event": "beat", "positionMs": 150000, "durationMs": 600000, "isPlaying": True, "phase": "playing"},
         {"t": t0 + 11.0, "event": "done"},
     ]
-    log_lines_raw = [
-        json.dumps({"eventMessage": "flushing buffers due to underrun", "timestamp": "2026-07-31 20:31:29.000000-0700"}),
-        json.dumps({"eventMessage": "deferring start by 1500 us", "timestamp": "2026-07-31 20:31:29.500000-0700"}),
-        json.dumps({"eventMessage": "deferring start by 3200 us", "timestamp": "2026-07-31 20:31:30.200000-0700"}),
-        json.dumps({"eventMessage": "starting late for stream", "timestamp": "2026-07-31 20:31:31.000000-0700"}),
-        json.dumps({"eventMessage": "using clock source: audio", "timestamp": "2026-07-31 20:31:31.500000-0700"}),
-        "not json, should be skipped",
-    ]
-
-    log_entries = parse_log_ndjson(log_lines_raw)
-    assert len(log_entries) == 5  # the trailing non-JSON line is skipped
-    analysis = analyze(events, log_entries)
+    analysis = analyze(events)
 
     s = analysis["summary"]
     assert s["file"] == "test.mkv"
@@ -590,19 +476,9 @@ def selftest() -> None:
     assert skip["direction"] == "forward"
     assert skip["latency_s"] is not None and abs(skip["latency_s"] - 0.5) < 1e-6
 
-    d = analysis["dropouts"]
-    assert d["flush_count"] == 1
-    assert d["late_count"] == 1
-    assert d["clock_source"] == "audio"
-    assert len(d["deferring_episodes"]) == 1
-    ep = d["deferring_episodes"][0]
-    assert ep["count"] == 2
-    assert abs(ep["duration_s"] - 0.7) < 1e-6
-    assert abs(ep["max_deferral_us"] - 3200) < 1e-6
-
     verdicts_text = "\n".join(analysis["verdicts"])
-    assert "FAIL" in verdicts_text
     assert "SEEKS:" in verdicts_text
+    assert "STALLS: 1 window(s)" in verdicts_text
 
     report = format_report(analysis)
     assert "Playback Lab Report" in report
@@ -644,7 +520,7 @@ def run_on_simulator(args, repo_root: Path, merged: dict, tmp_dir: Path, results
 
 
 def drive_scenario(args, udid: str, bundle_id: str, tmp_scenario_path: Path, merged: dict, results_dir: Path) -> str:
-    log_path = results_dir / "vlc-log.ndjson"
+    log_path = results_dir / "app-log.ndjson"
     log_proc, log_file = start_log_capture(udid, log_path)
 
     terminal = "timeout"
@@ -731,7 +607,7 @@ def main() -> int:
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="lab config JSON (relative to this script unless absolute)")
     parser.add_argument("--timeout", type=float, help="override the computed run timeout, in seconds")
     parser.add_argument("--app-arg", action="append", default=[],
-                        help="extra launch argument for the app (repeatable), e.g. --app-arg -smbNativeVLC")
+                        help="extra launch argument for the app (repeatable)")
     parser.add_argument("--analyze", metavar="RESULTS_DIR", help="re-run the analyzer on a saved results dir")
     parser.add_argument("--selftest", action="store_true", help="run the analyzer self-test and exit")
     args = parser.parse_args()

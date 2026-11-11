@@ -28,10 +28,8 @@ import ParallaxPlayback
 enum DisplayCriteriaMatcher {
     /// Hint the loaded item's native display mode and wait (bounded) for the
     /// TV's mode switch to settle so the caller starts playback on a stable
-    /// display. AVKit engines only — VLC renders through its own pipeline and
-    /// exposes no AVAsset to derive criteria from. Re-run per stream load: a
-    /// repeat apply with unchanged criteria triggers no switch and returns
-    /// after the short arm window.
+    /// display. Re-run per stream load: a repeat apply with unchanged criteria
+    /// triggers no switch and returns after the short arm window.
     static func prepare(for engine: any PlaybackEngine) async {
         guard let hosting = engine as? AVPlayerHosting,
               let asset = hosting.avPlayer.currentItem?.asset,

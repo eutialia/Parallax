@@ -9,7 +9,7 @@
  * subtitles are to be treated as SDR (see the ASS_YCbCrMatrix comment in
  * ass_types.h), so we hand these bytes on as sRGB / BT.709 primaries and let
  * the compositor deal with the video's own space. This is the same choice mpv
- * and VLC make.
+ * makes.
  */
 
 /*

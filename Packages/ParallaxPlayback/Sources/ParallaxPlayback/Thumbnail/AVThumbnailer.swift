@@ -4,25 +4,22 @@ import Foundation
 import ParallaxCore
 
 /// Source-agnostic still-frame thumbnailer backed by AVFoundation's
-/// `AVAssetImageGenerator`. Same result shape as `VLCThumbnailer`
-/// (`ThumbnailFrame`) so callers can swap engines without caring who
-/// produced the HEIC/JPEG bytes. Intended for containers already routed to
-/// AVKit (probe-proven, hazard-free) over a localhost HTTP bridge — ranged
-/// reads of the `moov` atom plus one nearest-keyframe decode, without spinning
-/// up libvlc.
+/// `AVAssetImageGenerator`. Intended for probe-proven, hazard-free containers
+/// over a localhost HTTP bridge: ranged reads of the `moov` atom plus one
+/// nearest-keyframe decode.
 ///
-/// **Concurrency:** pinned to `@MainActor` to match `VLCThumbnailer`'s surface
-/// (call sites hop once either way). Generation work itself is AVFoundation's
+/// **Concurrency:** pinned to `@MainActor` to match `FrameThumbnailing`.
+/// Generation work itself is AVFoundation's
 /// async API; the hard timeout bounds the WHOLE call — both phases — and
 /// starves the abandoned work so a wedged loopback read cannot leak an
 /// in-flight request.
 @MainActor
 public final class AVThumbnailer {
 
-    /// Output bound, matching `VLCThumbnailer`'s frame tier (`width: 0, height: 320`): the width
-    /// scales from the source aspect. Both engines feed the same tiles and the same disk cache, so
-    /// they must produce the same-size still — a wider AV bound stored several times the pixels per
-    /// entry and quietly invalidated `SMBThumbnailCache`'s "~30–120 KB per HEIC" budget.
+    /// Output bound (`width: 0, height: 320`): the width scales from the source aspect. It matches
+    /// `AVKitEngine`'s backfill still, which feeds the same tiles and disk cache; a wider bound
+    /// stores several times the pixels per entry and breaks `SMBThumbnailCache`'s "~30–120 KB per
+    /// HEIC" budget.
     private static let targetHeight: CGFloat = 320
 
     public init() {}
@@ -86,7 +83,7 @@ public final class AVThumbnailer {
 
 /// One in-flight generation: the AVFoundation pair plus the single continuation its three racers
 /// (the body, the hard deadline, caller cancellation) compete to resolve. MainActor-only, so
-/// "first one wins" needs no lock — the same shape as `VLCThumbnailer.resolve`.
+/// "first one wins" needs no lock.
 @MainActor
 private final class AVThumbnailGeneration {
     private let asset: AVURLAsset
@@ -104,8 +101,7 @@ private final class AVThumbnailGeneration {
         generator.requestedTimeToleranceBefore = .positiveInfinity
         generator.requestedTimeToleranceAfter = .positiveInfinity
         generator.appliesPreferredTrackTransform = true
-        // 0 width lets AVFoundation scale the width from the source aspect (same idea
-        // as VLCThumbnailer's `width: 0` default).
+        // 0 width lets AVFoundation scale the width from the source aspect.
         generator.maximumSize = CGSize(width: 0, height: maximumHeight)
     }
 
@@ -182,7 +178,7 @@ public enum AVThumbnailError: Error, Sendable {
 }
 
 extension AVThumbnailer: FrameThumbnailing {
-    public func frame(from url: URL, at position: Float, container: Container?, timeout: Duration) async throws -> ThumbnailFrame {
+    public func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
         try await thumbnailData(for: url, position: position, timeout: timeout)
     }
 }

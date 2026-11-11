@@ -7,7 +7,7 @@ public enum RawClientError: Error {
 
 /// A download the client never reads: it sends one `GET` with an open-ended `Range` over a raw
 /// socket and then leaves the response unread, so the server's sends park against a full socket
-/// buffer. `reset()` ends it the way libvlc's http input does, with an RST instead of a FIN.
+/// buffer. `reset()` ends it with an RST instead of a FIN, the way a player that drops the connection does.
 ///
 /// A class rather than `~Copyable`: the test holds several in an array, which noncopyable
 /// elements can't. `reset()`/`close()` are idempotent and `deinit` closes, so the descriptor is

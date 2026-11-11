@@ -1,8 +1,8 @@
 import Testing
 import ParallaxPlayback
 
-/// The assertions every concrete `PlaybackEngine` must satisfy, so AVKit and VLCKit, which live
-/// in different packages, run the same checks.
+/// The assertions every concrete `PlaybackEngine` must satisfy, kept apart from any one engine's
+/// suite so a new engine runs the same checks.
 @MainActor
 public enum PlaybackEngineContract {
 
@@ -32,15 +32,5 @@ public enum PlaybackEngineContract {
         }
         let terminal = await iterator.next()
         #expect(terminal == nil, sourceLocation: sourceLocation)
-    }
-
-    public static func identity(
-        _ engine: any PlaybackEngine,
-        id: PlaybackEngineID,
-        capabilities: PlaybackEngineCapabilities,
-        sourceLocation: SourceLocation = #_sourceLocation
-    ) {
-        #expect(engine.id == id, sourceLocation: sourceLocation)
-        #expect(engine.capabilities == capabilities, sourceLocation: sourceLocation)
     }
 }

@@ -41,7 +41,7 @@ A screenshot is ground truth for what was on screen. Translate it into the state
 |---|---|---|
 | What the app shows or does: routing, lists, labels, resume points, errors, retries, auto-advance, sign-in, persistence | A scenario on the host (section 3) | You |
 | Static pixels: size, alignment, clipping, color, material | A `#Preview` of the exact state, rendered with `RenderPreview`; see "Pixels" below | Eutialia judges before and after |
-| Real decoding: a codec, a stream, VLC or AVFoundation behavior | The engine suites (`ParallaxPlayback` on the host, `ParallaxPlaybackVLC` on the simulator) or `scripts/playback-lab` | You |
+| Real decoding: a codec, a stream, AVFoundation behavior | The engine suite (`ParallaxPlayback` on the host) or `scripts/playback-lab` | You |
 | Motion: springs, transitions, timing feel | Nothing automated | Eutialia on device |
 | tvOS focus movement | `swift-focusengine-pro` review | Eutialia on device |
 

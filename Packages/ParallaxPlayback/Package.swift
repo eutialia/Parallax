@@ -44,6 +44,7 @@ let package = Package(
             dependencies: [
                 "ParallaxPlayback",
                 "ParallaxPlaybackTestSupport",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
                 .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             resources: [

@@ -12,7 +12,7 @@ import ParallaxSubtitles
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
-// FakePlaybackEngine, PlaybackEngineCapabilities.avKit, and FakeCapabilityProbe
+// FakePlaybackEngine and FakeCapabilityProbe
 // are imported from ParallaxPlaybackTestSupport.
 
 /// A call ledger a `@Sendable` closure can append to from any executor and a test can read on
@@ -73,14 +73,11 @@ final class SpyNowPlaying: NowPlayingUpdating {
     func clear() { clearCount += 1 }
 }
 
-/// The engine factory's ledger: one distinct `FakePlaybackEngine` per call, tagged with the
-/// id the view model ASKED for, kept in build order.
+/// The engine factory's ledger: one distinct `FakePlaybackEngine` per call, kept in build order.
 ///
-/// The alternative every player suite used to reach for — one fake handed back for every
-/// factory call — silently masks engine rebuilds: the reload's reuse test compares the live
-/// engine's id against the requested one, so a mis-tagged single instance reads as an engine
-/// change and the test then asserts against one object replaying two sessions' calls. Here a
-/// rebuild is simply a second entry.
+/// One fake handed back for every factory call would mask engine rebuilds: the test would
+/// assert against one object replaying two sessions' calls. Here a rebuild is simply a second
+/// entry.
 @Observable
 @MainActor
 final class EngineLedger {
@@ -96,8 +93,8 @@ final class EngineLedger {
     /// Set, every engine built from then on fails its `load` with it.
     var loadError: (any Error)?
 
-    func make(_ id: PlaybackEngineID) -> FakePlaybackEngine {
-        let engine = FakePlaybackEngine(id: id, capabilities: id == .avKit ? .avKit : .vlcKit)
+    func make() -> FakePlaybackEngine {
+        let engine = FakePlaybackEngine()
         engine.loadError = loadError
         engines.append(engine)
         return engine
@@ -119,7 +116,7 @@ func makePlayerVM(
     reporting: StubPlaybackReporting = StubPlaybackReporting(),
     clock: any Clock<Duration> = TestClock(),
     resolve: @escaping PlayerViewModel.ResolveCall,
-    engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
+    engineFactory: @escaping @MainActor @Sendable () -> any PlaybackEngine,
     audioSession: any AudioSessionControlling = NoopAudioSession(),
     nowPlaying: any NowPlayingUpdating = SpyNowPlaying(),
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
@@ -129,8 +126,6 @@ func makePlayerVM(
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
     fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
-    subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
-    subtitleSurface: @escaping @MainActor () -> SubtitleSurface = { PlayerFixtures.phoneSurface },
     fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil },
     rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in }
 ) -> PlayerViewModel {
@@ -149,14 +144,11 @@ func makePlayerVM(
         fetchAdjacent: fetchAdjacent,
         fetchDelivery: fetchDelivery,
         smbResumeStore: SMBTestFixtures.inertResumeStore(),
-        subtitleStyle: subtitleStyle,
-        subtitleSurface: subtitleSurface,
-        engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts,
         fetchArtwork: fetchArtwork
     )
 }
 
-/// Single-engine convenience: the engine factory hands back the same fake for every id.
+/// Single-engine convenience: the engine factory hands back the same fake on every call.
 @MainActor
 func makePlayerVM(
     reporting: StubPlaybackReporting = StubPlaybackReporting(),
@@ -172,15 +164,13 @@ func makePlayerVM(
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
     fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
-    subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
-    subtitleSurface: @escaping @MainActor () -> SubtitleSurface = { PlayerFixtures.phoneSurface },
     fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
 ) -> PlayerViewModel {
     makePlayerVM(
         reporting: reporting,
         clock: clock,
         resolve: resolve,
-        engineFactory: { _, _ in engine },
+        engineFactory: { engine },
         audioSession: audioSession,
         nowPlaying: nowPlaying,
         fetchDetail: fetchDetail,
@@ -188,8 +178,6 @@ func makePlayerVM(
         fetchSegments: fetchSegments,
         fetchAdjacent: fetchAdjacent,
         fetchDelivery: fetchDelivery,
-        subtitleStyle: subtitleStyle,
-        subtitleSurface: subtitleSurface,
         fetchArtwork: fetchArtwork
     )
 }
@@ -238,19 +226,6 @@ enum PlayerFixtures {
         default: "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n"
         }
         return .data(Data(body.utf8))
-    }
-
-    /// The surface an iPhone player assumes before its geometry lands: 852×393 landscape, and
-    /// the phone's 20pt cue.
-    static let phoneSurface = SubtitleSurface(size: CGSize(width: 852, height: 393), cueSize: 20)
-
-    /// VLC's font set per design, as the app would hand it over — a directory and a family named
-    /// after the design, so an asset shows which design it was built for.
-    static let engineSubtitleFonts: @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts = { design in
-        EngineSubtitleFonts(
-            directory: URL(filePath: "/engine-fonts/\(design.rawValue)", directoryHint: .isDirectory),
-            family: "Engine \(design.rawValue)"
-        )
     }
 
     /// The one `MovieDetail` shape every non-episode player test starts from. `chapters` is
@@ -429,8 +404,7 @@ enum PlayerFixtures {
         )
     }
 
-    /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is never in
-    /// AVPlayer's support. The audio codec is the only axis the two
+    /// VC-1 MKV direct-play. The audio codec is the only axis the two
     /// callers differ on (a DTS track vs an AVKit-playable AAC one).
     /// `itemID` is a seam, not decoration: `streamSelection` only carries the standing
     /// stream indices when the resolve belongs to the item being played, so a reload the
@@ -450,18 +424,17 @@ enum PlayerFixtures {
         )
     }
 
-    /// A direct-play MKV (VC-1 → .vlcKit) whose server-preferred subtitle is an
-    /// EXTERNAL sidecar. Drives the double-subtitle fix: activating the external sub
-    /// must deselect the engine's own track, because VLC auto-picks an embedded default
-    /// (and discovers more text tracks as the demux runs) that would otherwise render
-    /// THROUGH the client overlay.
+    /// A direct-play MKV whose server-preferred subtitle is an EXTERNAL sidecar. Drives
+    /// the double-subtitle fix: activating the external sub must deselect the engine's own
+    /// track, because an engine that auto-picks an embedded default would otherwise render
+    /// it THROUGH the client overlay.
     static func resolvedDirectPlayExternalSub() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-1",
             url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
-            videoCodec: .vc1,       // routes to .vlcKit, like the reported case
+            videoCodec: .vc1,
             audioCodec: .aac,
             mediaSourceID: "ms-1",
             playSessionID: "ps-1",
@@ -492,7 +465,7 @@ enum PlayerFixtures {
             url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
-            videoCodec: .vc1,      // routes to .vlcKit, like a real fansub MKV
+            videoCodec: .vc1,
             audioCodec: .aac,
             mediaSourceID: "ms-1",
             playSessionID: "ps-1",
@@ -549,7 +522,7 @@ enum PlayerFixtures {
             url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
-            videoCodec: .vc1,      // routes to .vlcKit
+            videoCodec: .vc1,
             audioCodec: .aac,
             mediaSourceID: "ms-1",
             playSessionID: "ps-1",
@@ -574,17 +547,16 @@ enum PlayerFixtures {
             audio: [],
             subtitles: resolved.mediaStreams
                 .filter { $0.kind == .subtitle }
-                .map {
-                    SubtitleTrack(id: .vlc("vlc-s\($0.index)"),
-                                  displayName: $0.isImageSubtitle ? "PGS" : "SubRip",
-                                  languageCode: $0.language,
+                .map { stream in
+                    SubtitleTrack(id: .avKitOption(stream.index),
+                                  displayName: stream.isImageSubtitle ? "PGS" : "SubRip",
+                                  languageCode: stream.language,
                                   isForced: false)
                 }
         )
     }
 
-    /// A VP9/WebM/Opus direct-play item — container and codec both outside the AVKit
-    /// whitelist, so EngineSelector routes it to .vlcKit.
+    /// A VP9/WebM/Opus direct-play item: container and codec both outside AVPlayer's support.
     static func resolvedVP9WebM() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-2",
@@ -706,7 +678,7 @@ func makeReanchorVM(
 ) async throws -> (vm: PlayerViewModel, engines: EngineLedger) {
     let engines = EngineLedger()
     let vm = makePlayerVM(reporting: reporting, clock: clock, resolve: resolve,
-                          engineFactory: { id, _ in engines.make(id) },
+                          engineFactory: { engines.make() },
                           nowPlaying: nowPlaying,
                           subtitleFetch: subtitleFetch,
                                             rememberTrackSelection: rememberTrackSelection)

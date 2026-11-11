@@ -43,10 +43,10 @@ struct MediaInfoTests {
         #expect(AudioCodec(identifier: identifier) == nil)
     }
 
-    /// The VLC-only codecs' raw values ARE their ffmpeg wire strings — the profile the device
-    /// sends to Jellyfin is built from them, so a rename would silently change the negotiation.
-    @Test("VLC-only video codecs keep their ffmpeg raw values")
-    func videoCodecVLCOnlyRawValues() {
+    /// These codecs' raw values ARE their ffmpeg wire strings, so a rename would silently
+    /// change what they encode to.
+    @Test("non-Apple video codecs keep their ffmpeg raw values")
+    func videoCodecFFmpegRawValues() {
         #expect(VideoCodec.vc1.rawValue == "vc1")
         #expect(VideoCodec.mpeg2video.rawValue == "mpeg2video")
     }

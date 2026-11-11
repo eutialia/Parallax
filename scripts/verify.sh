@@ -21,21 +21,19 @@ PACKAGES=(
     ParallaxSubtitles
     ParallaxFeatures
 )
-# Packages that only build for a simulator; every other directory under Packages/ must be listed above.
-SIMULATOR_ONLY=(
-    ParallaxPlaybackVLC
-)
-
+# Every package under Packages/ must be listed above. A directory without a manifest is not a
+# package: a leftover of ignored build products from another branch must not fail the run.
 UNLISTED=()
 for dir in "$REPO_ROOT"/Packages/*/; do
+    [ -f "$dir/Package.swift" ] || continue
     name=$(basename "$dir")
-    case " ${PACKAGES[*]} ${SIMULATOR_ONLY[*]} " in
+    case " ${PACKAGES[*]} " in
         *" $name "*) ;;
         *) UNLISTED+=("$name") ;;
     esac
 done
 if [ "${#UNLISTED[@]}" -ne 0 ]; then
-    echo "ERROR: add ${UNLISTED[*]} to PACKAGES or SIMULATOR_ONLY in scripts/verify.sh" >&2
+    echo "ERROR: add ${UNLISTED[*]} to PACKAGES in scripts/verify.sh" >&2
     exit 1
 fi
 

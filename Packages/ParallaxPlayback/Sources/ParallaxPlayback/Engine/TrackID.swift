@@ -2,22 +2,16 @@ import Foundation
 
 /// A track's identity, tagged with the namespace it belongs to.
 ///
-/// Three different subsystems hand out track ids that are all "just integers or
-/// strings", and they are NOT interchangeable:
-/// - `avKitOption` — an index into an `AVMediaSelectionGroup.options` array.
-/// - `vlc` — a libvlc elementary-stream id, stringified (the value
-///   `VLCMediaPlayer.currentAudioTrackIndex` / `.currentVideoSubTitleIndex` take).
-/// - `jellyfinStream` — a source-media stream index the Jellyfin server uses for
+/// Two subsystems hand out track ids that are both plain integers, and they are not
+/// interchangeable:
+/// - `avKitOption`: an index into an `AVMediaSelectionGroup.options` array.
+/// - `jellyfinStream`: a source-media stream index the Jellyfin server uses for
 ///   `AudioStreamIndex` / `SubtitleStreamIndex` (the transcode re-resolve path).
 ///
-/// Before this type they were all `String`, so an AVKit option index ("2") and a
-/// Jellyfin stream index ("2") were indistinguishable — feeding one where the
-/// other was expected silently selected the wrong track. Encoding the namespace
-/// makes that a compile-time impossibility: each consumer pattern-matches the
-/// case it owns and ignores the rest.
+/// As bare integers, option 2 and stream 2 selected the wrong track when one was passed for
+/// the other. Each consumer pattern-matches the case it owns and ignores the rest.
 public enum TrackID: Hashable, Sendable {
     case avKitOption(Int)
-    case vlc(String)
     case jellyfinStream(Int)
 }
 
@@ -31,12 +25,6 @@ public extension TrackID {
     /// The AVKit media-selection option index, if this id is in that namespace.
     var avKitOptionIndex: Int? {
         if case let .avKitOption(index) = self { return index }
-        return nil
-    }
-
-    /// The libvlc elementary-stream id, if this id is in that namespace.
-    var vlcTrackID: String? {
-        if case let .vlc(value) = self { return value }
         return nil
     }
 }

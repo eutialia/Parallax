@@ -54,7 +54,7 @@ struct SMBErrorClassificationTests {
         #expect(SMBFileSource.isTransportClass(testCase.error) == testCase.expected)
     }
 
-    /// A stand-in for a VLC/decode failure with no POSIX code — the shape that must never poison
+    /// A stand-in for a decode failure with no POSIX code — the shape that must never poison
     /// via the transport path (and must never look like a lost connection either).
     private struct PlainDecodeError: Error {}
 }

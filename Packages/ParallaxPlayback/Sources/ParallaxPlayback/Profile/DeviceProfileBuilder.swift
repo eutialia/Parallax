@@ -5,9 +5,7 @@ import ParallaxCore
 /// Builds a `DeviceCapabilities` value describing what this device can play.
 ///
 /// HDR and AVPlayer's containers and codecs are probed through the injected
-/// `CapabilityProbe`, so `ParallaxPlayback` stays free of iOS-only APIs. The VLC
-/// tier is the shipped libvlc declaration (`PlaybackCapabilityMatrix.vlc*`) minus
-/// whatever AVPlayer plays.
+/// `CapabilityProbe`, so `ParallaxPlayback` stays free of iOS-only APIs.
 ///
 /// `build()` caches the result after the first probe; `invalidate()` clears
 /// the cache so the next `build()` re-probes. The cache is dropped on two
@@ -50,11 +48,7 @@ public actor DeviceProfileBuilder {
             // default, known to produce a good 1080p transcode. `isExpensive` is deliberately
             // not consulted; cellular/hotspot alone isn't a reason to throttle.
             maxBitrate: networkConstrained ? Self.lowDataBitrateCeiling : Self.lanBitrateCeiling,
-            preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            vlcVideoCodecs: PlaybackCapabilityMatrix.vlcVideoCodecs,
-            vlcAudioCodecs: PlaybackCapabilityMatrix.vlcAudioCodecs,
-            vlcContainers: PlaybackCapabilityMatrix.vlcContainers
+            preferredSubtitleFormats: [.srt, .vtt]
         )
         cached = caps
         return caps

@@ -38,10 +38,7 @@ nonisolated struct SeekHold: Equatable, Sendable {
     /// stands, so it fires only after this long with no beat at all. That is the window no
     /// engine deadline covers: AVKit's clock is a periodic time observer that goes quiet at
     /// rate zero, and its stall watchdog is disarmed on that same edge, so a seek into an
-    /// unbuffered region on a dead link produces one `.buffering` beat and then nothing. (VLC is
-    /// the other way round — its poll keeps beating `.buffering` at a starving seek and its own
-    /// stall watchdog fails the session at 45 s, which clears the hold through the failed
-    /// phase.) A deadline that can only be checked when a beat arrives is exactly the deadline
+    /// unbuffered region on a dead link produces one `.buffering` beat and then nothing. A deadline that can only be checked when a beat arrives is exactly the deadline
     /// that never fires in the case it exists for.
     ///
     /// A healthy session never reaches it. Sized above the longest a healthy session goes
@@ -72,8 +69,7 @@ nonisolated struct SeekHold: Equatable, Sendable {
     ///
     /// `.observed` releases, because it is the engine's clock with no seek of its own
     /// outstanding — even when it landed nowhere near the request. AVKit's load-time resume
-    /// lands on its segment's first frame, and a VLC hold that gave up republishes whatever the
-    /// clock really reads; pinning the bar at an unreachable target over video that is
+    /// lands on its segment's first frame; pinning the bar at an unreachable target over video that is
     /// demonstrably playing elsewhere is the worse lie. `.projected` and `.stale` both hold: neither is evidence the
     /// seek resolved, and that is the only question this type answers.
     ///

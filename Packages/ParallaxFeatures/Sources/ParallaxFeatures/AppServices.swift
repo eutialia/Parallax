@@ -49,11 +49,10 @@ public struct AppServices {
     public let imagePipelineFactory: ImagePipelineFactory
     public let deviceProfileBuilder: DeviceProfileBuilder
     public let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
-    public let playbackEngineFactory: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
+    public let playbackEngineFactory: @MainActor @Sendable () -> any PlaybackEngine
     public let audioSession: any AudioSessionControlling
     let makeNowPlaying: @MainActor @Sendable () -> any NowPlayingUpdating
     let prepareDisplay: @MainActor @Sendable (any PlaybackEngine) async -> Void
-    let engineSubtitleFonts: @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts
     /// Sidecar subtitle bytes travel over the same transport as every Jellyfin request.
     let urlSession: URLSession
     let subtitleFetchTimeout: Duration
@@ -61,8 +60,7 @@ public struct AppServices {
     /// Local resume positions for SMB playback: no server holds them.
     public let smbResumeStore: SMBResumeStore
     /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem` (decodes the share
-    /// path, reads the Keychain password, builds the `smb://` URL + libVLC credential options,
-    /// matches sidecar subs). Shares the graph's `ServerStore` so a tapped file resolves its
+    /// path, reads the Keychain password, matches sidecar subs). Shares the graph's `ServerStore` so a tapped file resolves its
     /// credentials from the same slot it was browsed under, and the graph's pool so its sidecar
     /// lister and probe/subtitle readers ride the warm connections.
     public let smbPlaybackResolver: SMBPlaybackResolver
@@ -159,7 +157,6 @@ public struct AppServices {
         audioSession = environment.audioSession
         makeNowPlaying = environment.makeNowPlaying
         prepareDisplay = environment.prepareDisplay
-        engineSubtitleFonts = environment.engineSubtitleFonts
         urlSession = URLSession(configuration: environment.urlSessionConfiguration)
         subtitleFetchTimeout = environment.subtitleFetchTimeout
         diagnostics = environment.diagnostics
@@ -173,7 +170,6 @@ public struct AppServices {
         )
         mediaArtworkProvider = MediaArtworkProvider(
             thumbnailer: environment.thumbnailer,
-            avThumbnailer: environment.avThumbnailer,
             serverStore: store,
             connections: connections,
             cacheDirectory: environment.cachesDirectory.appending(path: "SMBThumbnails", directoryHint: .isDirectory),

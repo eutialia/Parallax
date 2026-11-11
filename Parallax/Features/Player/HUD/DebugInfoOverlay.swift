@@ -81,7 +81,7 @@ struct DebugInfoOverlay: View {
 
     private var header: some View {
         HStack {
-            Text("DEBUG · \(engineLabel)").bold()
+            Text("DEBUG").bold()
             Spacer()
             Button("Hide debug overlay", systemImage: "xmark", action: onClose)
                 .labelStyle(.iconOnly)
@@ -91,8 +91,7 @@ struct DebugInfoOverlay: View {
     }
 
     /// Plan C (AVKit startup tuning): the play()→first-`.playing` wall-clock metric next
-    /// to a picker for the DEBUG-selected buffering profile driving it. AVKit-only —
-    /// `engineLabel` still reports the true engine in the header.
+    /// to a picker for the DEBUG-selected buffering profile driving it.
     @ViewBuilder
     private var startupSection: some View {
         sectionHeader("STARTUP")
@@ -234,34 +233,6 @@ struct DebugInfoOverlay: View {
                 .foregroundStyle(.yellow)
                 .padding(.top, 2)
         }
-        // Retime control for an ENGINE-rendered track (VLC reports a delay; AVKit
-        // doesn't). Gate on the SELECTION (intent), not `subtitleRenderer` (the
-        // fetched effect): during a sidecar's fetch window the renderer is momentarily
-        // nil, and an effect-keyed gate would flash the engine control for a track
-        // the engine isn't rendering.
-        if vm.selectedSubtitleTrack?.id.jellyfinStreamIndex == nil,
-           let delay = snapshot.subtitleDelayMs {
-            subtitleDelayControl(current: delay)
-        }
-    }
-
-    /// Live subtitle retiming nudge: coarse ±1s and fine ±100ms steps.
-    private func subtitleDelayControl(current: Int) -> some View {
-        HStack(spacing: 8) {
-            Text("delay")
-            Button("−1s") { Task { await vm.setSubtitleDelay(ms: current - 1000) } }
-                .buttonStyle(.bordered)
-            Button("−100") { Task { await vm.setSubtitleDelay(ms: current - 100) } }
-                .buttonStyle(.bordered)
-            Text("\(current) ms").bold().frame(minWidth: 64)
-            Button("+100") { Task { await vm.setSubtitleDelay(ms: current + 100) } }
-                .buttonStyle(.bordered)
-            Button("+1s") { Task { await vm.setSubtitleDelay(ms: current + 1000) } }
-                .buttonStyle(.bordered)
-        }
-        .controlSize(.mini)
-        .tint(.white)
-        .padding(.top, 2)
     }
 
     // MARK: - Row / header builders
@@ -287,14 +258,6 @@ struct DebugInfoOverlay: View {
     }
 
     // MARK: - Derived values
-
-    private var engineLabel: String {
-        switch vm.debugEngineID {
-        case .avKit: "AVKit"
-        case .vlcKit: "VLCKit"
-        case nil: "—"
-        }
-    }
 
     /// The live copy-vs-reencode verdict from the running session's `TranscodingInfo`
     /// (`vm.transcodeDelivery`), folded with the routing method. Direct play needs no
@@ -404,7 +367,7 @@ struct DebugInfoOverlay: View {
 
         let hasHlsSub = streams(.subtitle).contains { $0.subtitleDeliveryMethod?.lowercased() == "hls" }
         if hasHlsSub {
-            return "⚠︎ HLS/WebVTT delivery — known AVFoundation desync; VLC direct-play or burn-in syncs"
+            return "⚠︎ HLS/WebVTT delivery — known AVFoundation desync; burn-in syncs"
         }
         return nil
     }

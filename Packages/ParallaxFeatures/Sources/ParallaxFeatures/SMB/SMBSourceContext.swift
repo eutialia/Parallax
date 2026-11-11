@@ -3,26 +3,20 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxFileBrowse
 
-/// The credential-free connection facts for one browsed SMB item: the share it lives on, the
-/// share-relative path, the `smb://` URL libVLC opens directly, the libVLC credential options,
-/// and the raw password.
+/// The connection facts for one browsed SMB item: the share it lives on, the share-relative
+/// path and the password.
 ///
-/// `password` and `vlcOptions` both carry the secret (the options embed `:smb-pwd=…`). This is a
-/// transient assembly result — NEVER logged or written anywhere. It exists so the playback
-/// resolver and the thumbnail provider build SMB credentials at exactly one site.
+/// `password` is the secret. This is a transient assembly result, never logged or written
+/// anywhere. It exists so the playback resolver and the thumbnail provider build SMB
+/// credentials at exactly one site.
 struct SMBSourceContext: Sendable {
     /// The share the item lives on, decoded from its `ItemID` (the server can host many shares).
     /// Callers that open their own SMB connection (the subtitle lister) need it to build URLs.
     let share: String
     /// Share-relative path, e.g. `"Movies/Film.mkv"`.
     let path: String
-    /// `smb://host/share/path` — credentials are NEVER embedded (they ride `vlcOptions`).
-    let url: URL
     /// The Keychain password, for callers that open their own SMB connection (the subtitle lister).
     let password: String
-    /// Verbatim libVLC media options carrying the credentials (`:smb-user=…`, `:smb-pwd=…`,
-    /// `:smb-domain=…`). Passed straight to playback / the thumbnailer; never logged.
-    let vlcOptions: [String]
 
     /// The pool target for this item's share, signed in as `ref`.
     nonisolated func target(_ ref: SMBServerRef) -> SMBConnectionTarget {
@@ -32,10 +26,9 @@ struct SMBSourceContext: Sendable {
 
 /// Assembles an `SMBSourceContext` from a browsed `Item` + its owning server.
 ///
-/// Mirrors the first four steps every SMB consumer needs: decode the share + share-relative path
-/// back out of the `ItemID`, read the password from the Keychain (slot `token-<id>`), build the
-/// encoded credential-free URL, and derive the libVLC credential options. Shared by `SMBPlaybackResolver`
-/// (playback) and `MediaArtworkProvider` (thumbnails) so credential assembly lives in one place.
+/// Decodes the share and share-relative path back out of the `ItemID` and reads the password
+/// from the Keychain (slot `token-<id>`). Shared by `SMBPlaybackResolver` (playback) and
+/// `MediaArtworkProvider` (thumbnails) so credential assembly lives in one place.
 enum SMBSourceResolver {
     /// The share + share-relative path encoded in the item's ID — decoded with NO Keychain read, so
     /// a caller can build a cache key and check caches before paying for credential assembly. Returns
@@ -61,8 +54,6 @@ enum SMBSourceResolver {
             throw AppError.source(.notFound)
         }
         let password = try await serverStore.smbPassword(for: ref.id)
-        let url = SMBURL.make(host: ref.data.host, share: share, path: path)
-        let vlcOptions = ref.data.vlcCredentialOptions(password: password)
-        return SMBSourceContext(share: share, path: path, url: url, password: password, vlcOptions: vlcOptions)
+        return SMBSourceContext(share: share, path: path, password: password)
     }
 }

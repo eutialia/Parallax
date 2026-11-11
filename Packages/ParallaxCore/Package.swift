@@ -15,7 +15,7 @@ let package = Package(
         // NOT force `type: .dynamic` here: SPM rejects it — a package-test host
         // that also links ParallaxCoreTestSupport gets a static/dynamic name
         // collision on this product. Unrelated to ParallaxSubtitles' `.dynamic`
-        // (libass vs VLCKit symbols).
+        // (libass symbol isolation).
         .library(name: "ParallaxCore", targets: ["ParallaxCore"]),
         .library(name: "ParallaxCoreTestSupport", targets: ["ParallaxCoreTestSupport"]),
         // Zero-dependency CI time scaling for tests. Safe to reach transitively

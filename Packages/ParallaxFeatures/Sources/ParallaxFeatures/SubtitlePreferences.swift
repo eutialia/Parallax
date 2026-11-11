@@ -7,9 +7,8 @@ import ParallaxPlayback
 /// and the Settings screen both read.
 ///
 /// **Client-overlay-only by design.** These values reach the client sidecar renderer
-/// (`SubtitleOverlayView` → `ParallaxSubtitles`) — never the engine-native renderers
-/// (VLC's internal libass for embedded tracks / AVKit legible), which have no styling
-/// API on iOS. For sidecar tracks the reach is format-aware: SRT/VTT carry no look of
+/// (`SubtitleOverlayView` → `ParallaxSubtitles`) — never the engine-native AVKit
+/// legible renderer, which has no styling API on iOS. For sidecar tracks the reach is format-aware: SRT/VTT carry no look of
 /// their own, so this style owns every field of them; authored ASS/SSA is someone
 /// else's typesetting and is never restyled.
 @MainActor

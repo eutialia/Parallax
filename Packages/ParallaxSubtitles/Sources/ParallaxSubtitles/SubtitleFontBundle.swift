@@ -148,10 +148,7 @@ public enum SubtitleFontBundle {
     public static let serifCueFamily = "Noto Serif SemiBold"
     public static let serifCueFileName = "NotoSerif-SemiBold.ttf"
 
-    /// The on-disk directory holding the fonts — what a second libass (VLC's
-    /// internal one) takes as `:ssa-fontsdir`. Fonts only: libass'
-    /// `load_fonts_from_dir` calls `ass_add_font` on every file it finds, so the
-    /// licence text ships in the app's `Resources/Licenses/` instead.
+    /// The on-disk directory holding the fonts.
     public static var directoryURL: URL {
         Bundle.module.url(forResource: fontsDirectoryName, withExtension: nil)
             ?? Bundle.module.bundleURL.appending(path: fontsDirectoryName)
@@ -284,15 +281,6 @@ public enum SubtitleFontBundle {
 
     static func metrics(forFamily family: String) -> SFNTFace.Metrics? {
         facesByFamily[family]?.metrics
-    }
-
-    /// The family name of every face in `url`, in file order — a collection's faces
-    /// included, so an index into this addresses a face inside a `.ttc`.
-    ///
-    /// Public for the app's VLC font directory, which renames one face of a pan-CJK
-    /// collection and has to say WHICH; the file it asks about is always one of these.
-    public static func faceFamilyNames(in url: URL) -> [String] {
-        SFNTFace.faces(of: url).map(\.familyName)
     }
 
     // MARK: - Coverage
