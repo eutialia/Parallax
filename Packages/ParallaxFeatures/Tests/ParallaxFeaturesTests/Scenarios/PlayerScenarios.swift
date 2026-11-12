@@ -393,7 +393,7 @@ struct PlayerScenarios {
         let player = try await world.openPlayer()
         try await world.until { player.nextEpisode?.name == "Severance S1E2" }
         try await world.streamPlays(at: .seconds(49 * 60), of: .seconds(50 * 60))
-        world.engines.loadError = AppError.playback(.unsupportedFormat)
+        world.engines.loadError = AppError.playback(.unsupportedFormat(reason: nil))
         den.holdResponses(to: .encodingKills)
         world.streamEnds()
         // The next episode's start has activated audio, failed its load, and waits on the kill
@@ -847,7 +847,7 @@ struct PlayerScenarios {
             #expect(world.engine.loadedAssets.last?.url.lastPathComponent == "Dune.mp4")
         } else {
             let player = try await world.openPlayerToItsError()
-            #expect(player.phase == .failed(.playback(.unsupportedFormat)))
+            #expect(player.phase == .failed(.playback(.unsupportedFormat(reason: "video: av1"))))
             #expect(world.engines.count == 0)
         }
     }

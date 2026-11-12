@@ -48,6 +48,12 @@ public enum AppError: Error, Sendable {
         }
     }
 
+    /// False when the same attempt is certain to fail the same way, so offering a retry
+    /// would mislead. An unsupported format is decided from the file itself.
+    public var retryCanSucceed: Bool {
+        if case .playback(.unsupportedFormat) = self { false } else { true }
+    }
+
     public var diagnosticDescription: String {
         switch self {
         case .network(let urlError):
@@ -60,6 +66,8 @@ public enum AppError: Error, Sendable {
             return "serverTooOld: \(version ?? "no version")"
         case .source(let failure):
             return "source: \(failure)"
+        case .playback(.unsupportedFormat(let reason)):
+            return "playback: unsupportedFormat" + (reason.map { " (\($0))" } ?? "")
         case .playback(let failure):
             return "playback: \(failure)"
         case .unexpected(let note, let underlying):
@@ -111,7 +119,8 @@ public enum SourceFailure: Sendable {
 
 public enum PlaybackFailure: Sendable {
     case decodeFailed
-    case unsupportedFormat
+    /// `reason` is what refused the file. It goes in the diagnostic, not in the message.
+    case unsupportedFormat(reason: String?)
     case resourceUnavailable
     case audioSessionFailed
     /// The stream never produced a first frame inside the engine's load deadline. Distinct

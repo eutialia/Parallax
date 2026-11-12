@@ -82,7 +82,22 @@ struct SMBDeliveryTests {
 
         await #expect(throws: Unplayable.container(.mkv)) {
             _ = try await SMBDelivery.start(
+                reader: reader, fileName: "clip.mkv", support: .baseline, bridging: false,
+                scope: .loopback, clock: TestClock())
+        }
+
+        #expect(await reader.releases == ["drain"])
+    }
+
+    @Test("a Matroska file the bridge refuses releases the reader before the reason is thrown")
+    func refusedFileReleasesTheReader() async {
+        let reader = FakeReader(data: AppWorld.mkvBytes)
+
+        await #expect {
+            _ = try await SMBDelivery.start(
                 reader: reader, fileName: "clip.mkv", support: .baseline, scope: .loopback, clock: TestClock())
+        } throws: {
+            if case Unplayable.refused(.unreadable) = $0 { true } else { false }
         }
 
         #expect(await reader.releases == ["drain"])

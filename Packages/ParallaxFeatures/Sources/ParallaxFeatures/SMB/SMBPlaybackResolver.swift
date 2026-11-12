@@ -130,7 +130,8 @@ extension Unplayable {
     nonisolated var appError: AppError {
         switch self {
         case .incompleteFile: .playback(.incompleteFile)
-        case .container, .videoCodec, .audioCodec, .directHazards: .playback(.unsupportedFormat)
+        case .container, .videoCodec, .audioCodec, .directHazards, .refused:
+            .playback(.unsupportedFormat(reason: "\(self)"))
         }
     }
 }

@@ -18,7 +18,7 @@ struct PlayerTouchChromeTests {
           arguments: [PlayerViewModel.Phase.playing, .loading])
     func failureReleasesTheSystemChrome(from phase: PlayerViewModel.Phase) {
         var chrome = busyChrome()
-        chrome.phaseChanged(from: phase, to: .failed(.playback(.unsupportedFormat)))
+        chrome.phaseChanged(from: phase, to: .failed(.playback(.unsupportedFormat(reason: nil))))
 
         #expect(chrome.statusBarHidden == false)
         #expect(chrome.systemOverlaysVisible == true)

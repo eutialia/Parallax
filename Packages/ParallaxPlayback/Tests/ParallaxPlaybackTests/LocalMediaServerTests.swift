@@ -42,8 +42,8 @@ struct LocalMediaServerTests {
         _ body: (LocalMediaServer, URL, Data) async throws -> Void
     ) async throws {
         let data = Self.fixture(size)
-        let bridge = LocalMediaServer(reader: InMemoryRandomAccessReader(data: data),
-                                   fileName: "video.mp4", contentType: "video/mp4")
+        let bridge = LocalMediaServer(responder: FileRangeResponder(
+            reader: InMemoryRandomAccessReader(data: data), fileName: "video.mp4", contentType: "video/mp4"))
         let url: URL
         do {
             // Loopback, never the default `.lan` scope: headless CI runners grant no local-network
@@ -213,6 +213,44 @@ struct LocalMediaServerTests {
         }
     }
 
+    private struct Unreadable: Error {}
+
+    /// Two resources and one path whose lookup fails.
+    private struct Catalog: MediaResponder {
+        let entryPath = "first.bin"
+
+        func resource(at path: String) async throws -> ServedResource? {
+            switch path {
+            case "first.bin": ServedResource(Data("first".utf8), contentType: "application/x-first")
+            case "nested/second.bin": ServedResource(Data("second".utf8), contentType: "application/x-second")
+            case "broken.bin": throw Unreadable()
+            default: nil
+            }
+        }
+    }
+
+    @Test("Each path under the token gets its responder's answer: bytes with their type, 404 for none, 500 for a failed lookup")
+    func pathsAreAnsweredByTheResponder() async throws {
+        let server = LocalMediaServer(responder: Catalog())
+        let entry = try await server.start(scope: .loopback)
+        let session = ephemeralHTTPSession()
+        var answers: [String] = []
+        for path in ["first.bin", "nested/second.bin", "missing.bin", "broken.bin", "first.bin"] {
+            let (body, response) = try await session.data(from: entry.deletingLastPathComponent().appending(path: path))
+            let http = try #require(response as? HTTPURLResponse)
+            answers.append("\(http.statusCode) \(http.value(forHTTPHeaderField: "Content-Type") ?? "-") \(String(decoding: body, as: UTF8.self))")
+        }
+        await server.stop()
+
+        #expect(answers == [
+            "200 application/x-first first",
+            "200 application/x-second second",
+            "404 - ",
+            "500 - ",
+            "200 application/x-first first",
+        ])
+    }
+
     @Test("A query string is stripped before the path is matched")
     func queryStringIsIgnored() async throws {
         try await withBridge { _, url, data in
@@ -267,8 +305,8 @@ struct LocalMediaServerTests {
     @Test("stop() refuses new connections")
     func stopRefusesNewConnections() async throws {
         let data = Self.fixture(1024)
-        let bridge = LocalMediaServer(reader: InMemoryRandomAccessReader(data: data),
-                                   fileName: "video.mp4", contentType: "video/mp4")
+        let bridge = LocalMediaServer(responder: FileRangeResponder(
+            reader: InMemoryRandomAccessReader(data: data), fileName: "video.mp4", contentType: "video/mp4"))
         let url = try await bridge.start(scope: .loopback)
         await bridge.stop()
 
@@ -281,8 +319,8 @@ struct LocalMediaServerTests {
 
     @Test("start() is single-shot, and a stopped bridge can never be restarted")
     func startIsSingleShotAndStopIsPermanent() async throws {
-        let bridge = LocalMediaServer(reader: InMemoryRandomAccessReader(data: Self.fixture(16)),
-                                   fileName: "video.mp4", contentType: "video/mp4")
+        let bridge = LocalMediaServer(responder: FileRangeResponder(
+            reader: InMemoryRandomAccessReader(data: Self.fixture(16)), fileName: "video.mp4", contentType: "video/mp4"))
         _ = try await bridge.start(scope: .loopback)
 
         await #expect(throws: LocalMediaServer.ServerError.alreadyStarted) { _ = try await bridge.start(scope: .loopback) }

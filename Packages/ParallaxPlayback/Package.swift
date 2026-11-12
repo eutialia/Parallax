@@ -55,6 +55,10 @@ let package = Package(
             dependencies: [
                 "ParallaxPlayback",
                 "ParallaxPlaybackTestSupport",
+                // The segment tests read MP4 back through libavformat, as an independent reader.
+                .product(name: "AetherLibavformat", package: "FFmpegBuild"),
+                .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
+                .product(name: "AetherLibavutil", package: "FFmpegBuild"),
                 .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
                 .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],

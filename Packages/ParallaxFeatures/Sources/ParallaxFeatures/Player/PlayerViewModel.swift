@@ -948,7 +948,7 @@ public final class PlayerViewModel {
         audioSession: any AudioSessionControlling,
         nowPlaying: any NowPlayingUpdating,
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
-            throw AppError.playback(.unsupportedFormat)
+            throw AppError.playback(.unsupportedFormat(reason: nil))
         },
         subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome,
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
@@ -1184,7 +1184,7 @@ public final class PlayerViewModel {
             itemTitle = d.episode.name
             episodeNumber = d.episode.indexNumber
         case .series, .season:
-            failStart(.playback(.unsupportedFormat), generation: generation)
+            failStart(.playback(.unsupportedFormat(reason: nil)), generation: generation)
             return
         }
 
@@ -3341,7 +3341,7 @@ extension PlayerViewModel {
             deviceProfileBuilder: DeviceProfileBuilder(probe: PreviewCapabilityProbe()),
             clock: ContinuousClock(),
             playbackInfo: NoOpPlaybackReporting(),
-            resolve: { _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
+            resolve: { _, _, _, _ in throw AppError.playback(.unsupportedFormat(reason: nil)) },
             engineFactory: { fatalError("preview VM never starts playback") },
             audioSession: PreviewAudioSession(),
             nowPlaying: PreviewNowPlaying(),

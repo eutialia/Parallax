@@ -118,7 +118,7 @@ struct PlayerReloadQueueTests {
             await gate.wait()
             // The merged reload's own re-resolve fails while the outgoing stream is still
             // mounted — the silent fallback, which owes the menu its pre-pick truth back.
-            if asks.count == 3 { throw AppError.playback(.unsupportedFormat) }
+            if asks.count == 3 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let standing = try #require(vm.selectedAudioTrack)
@@ -247,7 +247,7 @@ struct PlayerReloadQueueTests {
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
             await gate.wait()
-            if asks.count == 2 { throw AppError.playback(.unsupportedFormat) }
+            if asks.count == 2 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let engine = engines.live
@@ -356,7 +356,7 @@ struct PlayerReloadQueueTests {
             asks.append(ask(start, selection))
             await gate.wait()
             // The burn-in's own re-resolve fails with the outgoing stream still mounted.
-            if asks.count == 2 { throw AppError.playback(.unsupportedFormat) }
+            if asks.count == 2 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let standing = try #require(vm.selectedAudioTrack)
@@ -456,7 +456,7 @@ struct PlayerReloadQueueTests {
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
                 // The rollback's own re-resolve fails, with the declined session still mounted.
-                if asks.count == 3 { throw AppError.playback(.unsupportedFormat) }
+                if asks.count == 3 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
                 return PlayerFixtures.resolvedMultiTrackTranscode(burnInDeliveryMethod: nil)
             }
         )
@@ -719,7 +719,7 @@ struct PlayerReloadQueueTests {
             asks.append(ask(start, selection))
             await gate.wait()
             // The FIRST pick's own reload falls back, with a second pick already queued.
-            if asks.count == 2 { throw AppError.playback(.unsupportedFormat) }
+            if asks.count == 2 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let standing = try #require(vm.selectedAudioTrack)
@@ -760,7 +760,7 @@ struct PlayerReloadQueueTests {
             resolve: { _, _, start, selection in
                 asks.append(ask(start, selection))
                 await gate.wait()
-                if asks.count == 2 { throw AppError.playback(.unsupportedFormat) }
+                if asks.count == 2 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
                 return PlayerFixtures.resolvedMultiTrackTranscode()
             }
         )

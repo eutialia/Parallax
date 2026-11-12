@@ -68,7 +68,7 @@ extension AppModel {
             resolve: { _, _, _, _ in
                 // Unreachable on the SMB path — `start(resolvingSMB:)` delegates to
                 // `start(smbItem:)`, which never calls the Jellyfin resolve.
-                throw AppError.playback(.unsupportedFormat)
+                throw AppError.playback(.unsupportedFormat(reason: nil))
             },
             engineFactory: services.playbackEngineFactory,
             audioSession: services.audioSession,

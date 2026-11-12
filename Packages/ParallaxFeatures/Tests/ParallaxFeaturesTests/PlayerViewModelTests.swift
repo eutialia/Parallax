@@ -1600,7 +1600,7 @@ struct PlayerViewModelTests {
                                                      resolve: { _, _, _, _ in
             resolveCalls += 1
             await gate.wait()
-            if resolveCalls > 1 { throw AppError.playback(.unsupportedFormat) }
+            if resolveCalls > 1 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let engine = engines.live
@@ -3689,7 +3689,7 @@ struct PlayerViewModelTests {
     func loadFailureTearsDownSessionLifecycle() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine()
-        engine.loadError = AppError.playback(.unsupportedFormat)
+        engine.loadError = AppError.playback(.unsupportedFormat(reason: nil))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let clock = TestClock()
         let vm = makePlayerVM(
@@ -4372,7 +4372,7 @@ struct PlayerViewModelTests {
                 playbackInfo: StubPlaybackReporting(),
                 resolve: { _, _, _, _ in
                     Issue.record("SMB playback must not call the Jellyfin resolve")
-                    throw AppError.playback(.unsupportedFormat)
+                    throw AppError.playback(.unsupportedFormat(reason: nil))
                 },
                 engineFactory: { engine },
                 audioSession: NoopAudioSession(),

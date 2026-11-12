@@ -37,7 +37,7 @@ struct SMBPlaybackStartTests {
             playbackInfo: reporting,
             resolve: { _, _, _, _ in
                 Issue.record("SMB playback must not call the Jellyfin resolve")
-                throw AppError.playback(.unsupportedFormat)
+                throw AppError.playback(.unsupportedFormat(reason: nil))
             },
             engineFactory: { engine },
             audioSession: audioSession,
