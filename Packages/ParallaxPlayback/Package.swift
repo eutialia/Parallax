@@ -16,12 +16,23 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
+        // Prebuilt FFmpeg, LGPL 2.1, dynamic frameworks. One maintainer, so the pin is exact and
+        // its build.sh is the way to reproduce the binaries.
+        .package(url: "https://github.com/superuser404notfound/FFmpegBuild", exact: "3.14.0"),
     ],
     targets: [
         .target(
             name: "ParallaxPlayback",
             dependencies: [
                 "ParallaxCore",
+                .product(name: "AetherLibavformat", package: "FFmpegBuild"),
+                .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
+                .product(name: "AetherLibavutil", package: "FFmpegBuild"),
+                // Not imported. libavformat and libavcodec load these three at launch, so they
+                // have to be embedded with them.
+                .product(name: "AetherLibswresample", package: "FFmpegBuild"),
+                .product(name: "AetherLibdav1d", package: "FFmpegBuild"),
+                .product(name: "AetherLibzvbi", package: "FFmpegBuild"),
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
