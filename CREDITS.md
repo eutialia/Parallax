@@ -12,6 +12,8 @@ This file mirrors the in-app screen at Settings → About Parallax
 | [Get](https://github.com/kean/Get) | MIT | HTTP transport (via the Jellyfin SDK) |
 | [Nuke](https://github.com/kean/Nuke) | MIT | Image loading & caching |
 | [AMSMB2](https://github.com/amosavian/AMSMB2) | LGPL-2.1 | SMB2/3 client (wraps libsmb2) |
+| [FFmpeg](https://ffmpeg.org) 8.1, prebuilt by [FFmpegBuild](https://github.com/superuser404notfound/FFmpegBuild) (patches and build script in that repository) | LGPL-2.1 | Reads media containers so files AVPlayer cannot open reach it as HLS |
+| — embedded with FFmpeg: [dav1d](https://code.videolan.org/videolan/dav1d) (BSD-2-Clause), [libzvbi](https://github.com/zapping-vbi/zvbi) teletext decoder (MIT) | per component | Loaded by FFmpeg at launch |
 | [SwiftNIO](https://github.com/apple/swift-nio) (+ swift-atomics, swift-collections, swift-system, swift-nio-transport-services) | Apache-2.0 | Local HTTP bridge for SMB playback |
 | [libass](https://github.com/libass/libass) 0.17.5, prebuilt by [mpvkit/libass-build](https://github.com/mpvkit/libass-build) (build scripts MIT) | ISC | Client-side ASS/SSA subtitle renderer |
 | — bundled with libass: [FreeType](https://freetype.org) (FTL), [HarfBuzz](https://github.com/harfbuzz/harfbuzz) (MIT), [FriBidi](https://github.com/fribidi/fribidi) (LGPL-2.1), [libunibreak](https://github.com/adah1972/libunibreak) (zlib) | per component | Font loading, shaping, BiDi, line breaking |
@@ -37,8 +39,9 @@ No single file covers every script, so coverage is a routing problem rather than
 fallback one: the renderer classifies each run of a cue by Unicode script and names the
 face for it explicitly (`ASS_FONTPROVIDER_NONE` leaves libass nothing to fall back to).
 
-LGPL note (AMSMB2/libsmb2): Parallax meets the LGPL relink requirement. The whole app is
-open source, so anyone can modify the library and rebuild it from this repository.
+LGPL note (AMSMB2/libsmb2, FFmpeg): Parallax meets the LGPL relink requirement. The whole app is
+open source, so anyone can modify either library and rebuild it from this repository. FFmpeg
+is also linked dynamically, as separate frameworks inside the app bundle.
 
 ## Jellyfin icon (`JellyfinGlyph`)
 

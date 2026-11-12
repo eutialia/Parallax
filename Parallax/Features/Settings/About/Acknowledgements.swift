@@ -105,6 +105,18 @@ struct Acknowledgement: Identifiable, Hashable {
             url: "github.com/amosavian/AMSMB2"
         ),
         Acknowledgement(
+            name: "FFmpeg",
+            // Prebuilt dynamic frameworks from FFmpegBuild, which also carries its patches
+            // and the build script that reproduces them. dav1d (BSD-2-Clause) and libzvbi's
+            // teletext decoder (MIT) are embedded because FFmpeg loads them. Their texts
+            // ship in the upstream repository linked from CREDITS.md.
+            packageIdentities: ["ffmpegbuild"],
+            role: "Reads media containers so files AVPlayer cannot open reach it as HLS, with dav1d and libzvbi",
+            licenseName: "LGPL-2.1 (+ BSD-2-Clause / MIT components)",
+            license: .lgpl21,
+            url: "ffmpeg.org"
+        ),
+        Acknowledgement(
             name: "SwiftNIO",
             packageIdentities: [
                 "swift-nio", "swift-nio-transport-services",
