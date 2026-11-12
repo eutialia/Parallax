@@ -23,13 +23,14 @@ nonisolated struct SMBDelivery: Sendable {
         reader: any SMBShareReading,
         fileName: String,
         support: AVPlayerSupport,
+        bridging: Bool = true,
         scope: LocalMediaServer.AddressScope = .lan,
         probeDeadline: Duration = MediaDelivery.defaultProbeDeadline,
         clock: any Clock<Duration>
     ) async throws -> SMBDelivery {
         do {
             let delivery = try await MediaDelivery.start(
-                reading: reader, fileName: fileName, support: support, scope: scope,
+                reading: reader, fileName: fileName, support: support, bridging: bridging, scope: scope,
                 probeDeadline: probeDeadline, clock: clock)
             return SMBDelivery(reader: reader, delivery: delivery)
         } catch MediaDelivery.ProbeFailure.timedOut {

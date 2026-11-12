@@ -9,7 +9,7 @@ struct AppErrorTests {
     ]
     private static let sourceFailures: [SourceFailure] = [.notFound, .permissionDenied, .connectionLost]
     private static let playbackFailures: [PlaybackFailure] = [
-        .decodeFailed, .unsupportedFormat, .resourceUnavailable, .audioSessionFailed,
+        .decodeFailed, .unsupportedFormat(reason: nil), .resourceUnavailable, .audioSessionFailed,
         .startupTimedOut,
     ]
     private static let urlErrorCodes: [URLError.Code] = [
@@ -63,10 +63,26 @@ struct AppErrorTests {
         #expect(AppError.playback(failure).userMessage == failure.userMessage)
     }
 
+    @Test("an unsupported format's reason is in the diagnostic and never in the message")
+    func unsupportedFormatReasonStaysInTheDiagnostic() {
+        let error = AppError.playback(.unsupportedFormat(reason: "h264 High 10"))
+
+        #expect(error.diagnosticDescription == "playback: unsupportedFormat (h264 High 10)")
+        #expect(error.userMessage == "This file's format isn't supported on this device.")
+        #expect(AppError.playback(.unsupportedFormat(reason: nil)).diagnosticDescription == "playback: unsupportedFormat")
+        #expect(!error.retryCanSucceed)
+    }
+
     // MARK: - Cross-case invariants
 
     /// A shared message would let one failure masquerade as another — an audio-session failure
     /// once read as a connectivity problem, which sent people to their router instead of Settings.
+    @Test("a retry is ruled out only for a file whose format is unsupported")
+    func retryIsRuledOutOnlyForUnsupportedFormat() {
+        let ruledOut = Self.everyCase.filter { !$0.retryCanSucceed }.map(\.diagnosticDescription)
+        #expect(ruledOut == [AppError.playback(.unsupportedFormat(reason: nil)).diagnosticDescription])
+    }
+
     @Test("every failure reason carries a distinct message")
     func messagesAreDistinctPerReason() {
         let messages = Self.authFailures.map(\.userMessage)

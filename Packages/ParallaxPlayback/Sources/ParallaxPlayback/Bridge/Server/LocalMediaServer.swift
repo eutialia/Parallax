@@ -3,10 +3,10 @@ import Network
 import OSLog
 import ParallaxCore
 
-/// A localhost/LAN HTTP/1.1 range server fronting one `RandomAccessReading`, so `AVPlayer`
-/// can stream a file it cannot open where it lives (`AVPlayer` speaks HTTP, not SMB).
+/// A localhost/LAN HTTP/1.1 range server, so `AVPlayer` can stream a file it cannot open where
+/// it lives (`AVPlayer` speaks HTTP, not SMB). What it serves is its `MediaResponder`'s to say.
 ///
-/// The server serves exactly one file for the life of the session. Access control is a
+/// The server serves one responder for the life of the session. Access control is a
 /// 128-bit random path token. There is no other auth, so the URL must never be persisted
 /// or shared. `stop()` tears the whole thing down.
 ///
@@ -14,17 +14,16 @@ import ParallaxCore
 /// Network.framework delivers listener/connection callbacks on a dedicated serial
 /// `DispatchQueue`; every callback hops back onto the actor via `Task { await self.… }`, so
 /// all mutable state (`lifecycle`, `connections`) is touched only under actor
-/// isolation. The shared `reader` serialises its own access, so multiple simultaneous
-/// connections (AVPlayer probes with concurrent range requests) are independent.
+/// isolation. The responder and its readers serialise their own access, so multiple
+/// simultaneous connections (AVPlayer probes with concurrent range requests) are independent.
 public actor LocalMediaServer {
 
     private static let logger = Log.custom(category: "LocalMediaServer")
 
-    private let reader: any RandomAccessReading
-    private let contentType: String
+    private let responder: any MediaResponder
 
-    /// `/<128-bit-hex-token>/<percent-encoded fileName>` — the only path we answer 200/206 for.
-    private let expectedPath: String
+    /// `/<128-bit-hex-token>/`. Only paths below it reach the responder.
+    private let root: String
 
     /// Serial queue for all Network.framework callbacks. One queue for the listener and every
     /// connection keeps callback ordering simple; real work happens on the actor.
@@ -56,7 +55,7 @@ public actor LocalMediaServer {
     }
 
     /// Session diagnostics: what this server actually cost the source. `bytesRead` counts
-    /// every byte pulled from `reader` on behalf of a client — charged at READ time, so a
+    /// every byte pulled from a served resource's reader on behalf of a client — charged at READ time, so a
     /// chunk the client reset before the send still counts (that's exactly the waste the
     /// number exists to expose). `connections` counts accepted client connections (a
     /// player's probe pattern can open many per session).
@@ -87,14 +86,12 @@ public actor LocalMediaServer {
     /// Request-head cap: reject a head that doesn't terminate within 16 KiB (malformed / abusive).
     static let maxHeadBytes = 16 * 1024
 
-    public init(reader: any RandomAccessReading, fileName: String, contentType: String) {
-        self.reader = reader
-        self.contentType = contentType
+    public init(responder: any MediaResponder) {
+        self.responder = responder
         // 128-bit random token = two UInt64 draws from the system CSPRNG, lower-hex.
         var rng = SystemRandomNumberGenerator()
         let token = String(format: "%016llx%016llx", rng.next() as UInt64, rng.next() as UInt64)
-        let encodedName = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
-        self.expectedPath = "/\(token)/\(encodedName)"
+        self.root = "/\(token)/"
     }
 
     // MARK: - Lifecycle
@@ -169,7 +166,7 @@ public actor LocalMediaServer {
             case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
             case .loopback: "127.0.0.1"
             }
-            guard let url = URL(string: "http://\(host):\(port.rawValue)\(expectedPath)") else {
+            guard let url = URL(string: "http://\(host):\(port.rawValue)\(root)\(responder.entryPath)") else {
                 throw ServerError.noPort
             }
             return url
@@ -333,7 +330,7 @@ public actor LocalMediaServer {
     private func respond(_ connection: NWConnection, to request: ParsedRequest) async throws -> Bool {
         let keepAlive = request.keepAlive
 
-        guard request.path == expectedPath else {
+        guard request.path.hasPrefix(root) else {
             try await send(connection, Self.headerData(status: "404 Not Found", keepAlive: keepAlive))
             return keepAlive
         }
@@ -341,6 +338,20 @@ public actor LocalMediaServer {
             try await send(connection, Self.headerData(status: "405 Method Not Allowed", keepAlive: keepAlive))
             return keepAlive
         }
+        let resource: ServedResource?
+        do {
+            resource = try await responder.resource(at: String(request.path.dropFirst(root.count)))
+        } catch {
+            Self.logger.error("no response for a request: \(error)")
+            try await send(connection, Self.headerData(status: "500 Internal Server Error", keepAlive: keepAlive))
+            return keepAlive
+        }
+        guard let resource else {
+            try await send(connection, Self.headerData(status: "404 Not Found", keepAlive: keepAlive))
+            return keepAlive
+        }
+        let reader = resource.reader
+        let contentType = resource.contentType
 
         let size = try await reader.fileSize
         let isHead = request.method == "HEAD"
@@ -355,7 +366,7 @@ public actor LocalMediaServer {
                     ("Content-Length", "\(size)"),
                 ])
             try await send(connection, headers)
-            if !isHead { try await streamBody(connection, start: 0, length: size) }
+            if !isHead { try await streamBody(connection, from: reader, start: 0, length: size) }
             return keepAlive
         }
 
@@ -379,7 +390,7 @@ public actor LocalMediaServer {
                     ("Content-Length", "\(size)"),
                 ])
             try await send(connection, headers)
-            if !isHead { try await streamBody(connection, start: 0, length: size) }
+            if !isHead { try await streamBody(connection, from: reader, start: 0, length: size) }
             return keepAlive
 
         case let .satisfiable(start, end):
@@ -393,7 +404,7 @@ public actor LocalMediaServer {
                     ("Content-Length", "\(length)"),
                 ])
             try await send(connection, headers)
-            if !isHead { try await streamBody(connection, start: start, length: length) }
+            if !isHead { try await streamBody(connection, from: reader, start: start, length: length) }
             return keepAlive
         }
     }
@@ -428,7 +439,9 @@ public actor LocalMediaServer {
     /// awaits its continuation), so the server never buffers more than one chunk —
     /// TCP/receiver backpressure gates the reader, and an aborted connection surfaces as a
     /// failed send BEFORE the next (bigger) read is charged to the share.
-    private func streamBody(_ connection: NWConnection, start: UInt64, length: UInt64) async throws {
+    private func streamBody(
+        _ connection: NWConnection, from reader: any RandomAccessReading, start: UInt64, length: UInt64
+    ) async throws {
         var offset = start
         var remaining = length
         var chunk = Self.initialChunkSize

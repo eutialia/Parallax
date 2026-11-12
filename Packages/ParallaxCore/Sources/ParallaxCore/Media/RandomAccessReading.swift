@@ -11,7 +11,7 @@ public protocol RandomAccessReading: Sendable {
     func read(offset: UInt64, length: Int) async throws -> Data
 }
 
-/// In-memory backing for tests.
+/// Bytes already in memory, read like a file.
 public struct InMemoryRandomAccessReader: RandomAccessReading {
     private let data: Data
     public init(data: Data) { self.data = data }

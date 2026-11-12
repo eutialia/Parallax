@@ -367,10 +367,12 @@ struct PlayerView: View {
                 details: error.diagnosticDescription,
                 metrics: .forSurface(geo.size)
             ) {
-                Button("Try again", systemImage: "arrow.clockwise") { Task { await vm.retry() } }
-                    .buttonStyle(.glassProminent)
-                    .tint(.white)
-                    .foregroundStyle(Color.playerInk)
+                if error.retryCanSucceed {
+                    Button("Try again", systemImage: "arrow.clockwise") { Task { await vm.retry() } }
+                        .buttonStyle(.glassProminent)
+                        .tint(.white)
+                        .foregroundStyle(Color.playerInk)
+                }
                 #if !os(tvOS)
                 // tvOS has no pasteboard; elsewhere the raw block is one tap from a
                 // bug report.

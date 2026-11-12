@@ -590,10 +590,11 @@ public actor MediaArtworkProvider {
         let delivery: SMBDelivery
         do {
             // Loopback, not LAN: the thumbnailer is strictly on-device, and a VPN's policy layer
-            // resets self-connections to LAN and link-local addresses.
+            // resets self-connections to LAN and link-local addresses. No bridging: the
+            // thumbnailer reads a file, not a playlist.
             delivery = try await SMBDelivery.start(
                 reader: connections.reader(ctx.target(ref), ctx.path), fileName: fileName,
-                support: support, scope: .loopback,
+                support: support, bridging: false, scope: .loopback,
                 probeDeadline: deadline.capped(at: MediaDelivery.defaultProbeDeadline), clock: clock)
         } catch SMBDelivery.ProbeFailure.timedOut(let transportFault) {
             return skipped(Self.earlyExitOutcome(probeTransportFault: transportFault))

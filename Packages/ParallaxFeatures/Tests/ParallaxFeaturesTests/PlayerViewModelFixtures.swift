@@ -120,7 +120,7 @@ func makePlayerVM(
     audioSession: any AudioSessionControlling = NoopAudioSession(),
     nowPlaying: any NowPlayingUpdating = SpyNowPlaying(),
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
-        throw AppError.playback(.unsupportedFormat)
+        throw AppError.playback(.unsupportedFormat(reason: nil))
     },
     subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome = { PlayerFixtures.landingSidecar(for: $0) },
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
@@ -158,7 +158,7 @@ func makePlayerVM(
     audioSession: any AudioSessionControlling = NoopAudioSession(),
     nowPlaying: any NowPlayingUpdating = SpyNowPlaying(),
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
-        throw AppError.playback(.unsupportedFormat)
+        throw AppError.playback(.unsupportedFormat(reason: nil))
     },
     subtitleFetch: @escaping @Sendable (URL) async -> SubtitleFetchOutcome = { PlayerFixtures.landingSidecar(for: $0) },
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },

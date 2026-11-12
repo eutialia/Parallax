@@ -17,6 +17,22 @@ public enum Unplayable: Error, Sendable, Equatable {
     case audioCodec(AudioCodec?)
     /// An MP4 AVPlayer opens and then misplays.
     case directHazards(Set<AVPlayerHazard>)
+    /// A Matroska file the bridge opened and cannot deliver.
+    case refused(BridgeRefusal)
+}
+
+extension Unplayable: CustomStringConvertible {
+    /// One line for the player's error details and the log.
+    public var description: String {
+        switch self {
+        case .incompleteFile: "incomplete file"
+        case .container(let container): "container: \(container?.rawValue ?? "unknown")"
+        case .videoCodec(let codec): "video: \(codec?.rawValue ?? "unknown")"
+        case .audioCodec(let codec): "audio: \(codec?.rawValue ?? "unknown")"
+        case .directHazards(let hazards): "hazards: \(hazards.map { "\($0)" }.sorted().joined(separator: ", "))"
+        case .refused(let refusal): refusal.description
+        }
+    }
 }
 
 public enum DirectPlay {
