@@ -88,6 +88,11 @@ struct MediaDemuxerTests {
         ("frame-numbers-hevc", ["hvc1.1.6.L30.90", "ac-3"]),
         ("he-aac", ["avc1.64000b", "mp4a.40.5"]),
         ("he-aac-v2", ["avc1.64000b", "mp4a.40.29"]),
+        ("flac", ["avc1.64000b", "fLaC"]),
+        ("eac3", ["avc1.64000b", "ec-3"]),
+        ("opus", ["avc1.64000b", "Opus"]),
+        // The fixture's `av1C` holds profile 0 (Main), level 0, the main tier and 8 bits.
+        ("av1", ["av01.0.00M.08", "mp4a.40.2"]),
     ])
     func streamsReportTheirPlaylistCodec(name: String, codecs: [String]) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)
@@ -103,7 +108,6 @@ struct MediaDemuxerTests {
         #expect(streams.map(\.parameters.codecName) == ["h264", "aac", "ac3"])
         #expect(streams.map(\.parameters.playlistCodec) == ["avc1.640014", "mp4a.40.2", "ac-3"])
         #expect(streams.map(\.parameters.sampleRate) == [0, 48000, 48000])
-        #expect(streams.map(\.parameters.samplesPerFrame) == [0, 1024, 1536])
         #expect(streams[0].parameters.pixelSize == (160, 90))
         #expect(streams[0].frameRate == .init(numerator: 24, denominator: 1))
         #expect(streams.map(\.tick) == [1_000_000, 1_000_000, 1_000_000])
@@ -113,6 +117,16 @@ struct MediaDemuxerTests {
         let first = try await demuxer.packets(from: 0, to: 1)
         #expect(first.first { $0.stream == 0 }?.duration == 41_000_000)
         #expect(first.first { $0.stream == 2 }?.duration == 32_000_000)
+    }
+
+    @Test("each audio stream reports its language, its title, its channels and whether the file marks it as the default")
+    func audioStreamsReportTheirTags() async throws {
+        let audio = try await BridgeFixture.demuxer("four-audio-tracks").streams.filter { $0.kind == .audio }
+
+        #expect(audio.map(\.language) == ["eng", "jpn", "jpn", "ger"])
+        #expect(audio.map(\.title) == [nil, "Surround", nil, nil])
+        #expect(audio.map(\.isDefault) == [false, true, false, false])
+        #expect(audio.map(\.parameters.channelCount) == [2, 6, 2, 2])
     }
 
     @Test("a span several keyframes wide equals its one-keyframe spans joined")
@@ -150,9 +164,11 @@ struct MediaDemuxerTests {
 
     @Test("a read error surfaces as the reader's own error, and the next read starts clean")
     func readErrorSurfacesAndDoesNotStick() async throws {
-        let reader = FlakyReader(data: try Self.fixture("h264-ffmpeg", "mkv"))
+        let data = try Self.fixture("h264-ffmpeg", "mkv")
+        let intact = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data)).packets(from: 20, to: 22)
+        // The demuxer keeps what it has read, so the failing read is of a part it has not.
+        let reader = FlakyReader(data: data)
         let demuxer = try await MediaDemuxer.open(reader)
-        let intact = try await demuxer.packets(from: 20, to: 22)
         _ = try await demuxer.packets(from: 0, to: 1)
 
         await reader.setFailing(true)
@@ -162,6 +178,28 @@ struct MediaDemuxerTests {
 
         await reader.setFailing(false)
         #expect(try await demuxer.packets(from: 20, to: 22) == intact)
+    }
+
+    /// Answers every read with at most 100 KB, as a share under strain does.
+    private struct ShortReader: RandomAccessReading {
+        let backing: InMemoryRandomAccessReader
+
+        var fileSize: UInt64 { get async throws { try await backing.fileSize } }
+
+        func read(offset: UInt64, length: Int) async throws -> Data {
+            try await backing.read(offset: offset, length: min(length, 100_000))
+        }
+    }
+
+    @Test("a reader that answers with less than was asked loses no packet")
+    func shortReadsLoseNothing() async throws {
+        let data = try Self.fixture("h264-ffmpeg", "mkv")
+        let whole = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data))
+        let short = try await MediaDemuxer.open(ShortReader(backing: InMemoryRandomAccessReader(data: data)))
+        let count = try await whole.keyframes().count
+
+        #expect(try await short.packets(from: 0, to: count) == whole.packets(from: 0, to: count))
+        #expect(try await short.packets(from: 20, to: 22) == whole.packets(from: 20, to: 22))
     }
 
     @Test("a container that cannot be read in spans is refused at open, by name")

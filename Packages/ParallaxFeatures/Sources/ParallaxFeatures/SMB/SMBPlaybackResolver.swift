@@ -50,13 +50,13 @@ public struct SMBPlaybackResolver {
             subtitleLabels = [:]
         }
 
-        let support = await deviceProfileBuilder.build().avPlayer
+        let device = await deviceProfileBuilder.build()
         let delivery: SMBDelivery
         do {
             delivery = try await SMBDelivery.start(
                 reader: connections.reader(ctx.target(ref), ctx.path),
                 fileName: (ctx.path as NSString).lastPathComponent,
-                support: support, clock: clock)
+                support: device.avPlayer, showsHDR: !device.hdr.isEmpty, clock: clock)
         } catch let reason as Unplayable {
             logger.notice("SMB file unplayable: \(String(describing: reason), privacy: .public) for \(ctx.path, privacy: .public)")
             throw reason.appError

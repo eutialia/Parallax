@@ -19,6 +19,8 @@ public struct MediaDelivery: Sendable {
     /// Reads what it must of `reader` under `probeDeadline`, picks the route, and starts the
     /// server for it. A file AVPlayer opens is served as it is. A Matroska file goes through
     /// the bridge when `bridging` is set, which costs its index and its first segment.
+    /// `showsHDR` is whether AVPlayer shows HDR on this device now: the bridge refuses PQ video
+    /// where it does not.
     ///
     /// Throws the `Unplayable` reason when the file cannot reach AVPlayer, a `ProbeFailure`
     /// when reading gave no verdict, or the server's own error when it cannot bind. The
@@ -27,13 +29,15 @@ public struct MediaDelivery: Sendable {
         reading reader: any RandomAccessReading,
         fileName: String,
         support: AVPlayerSupport,
+        showsHDR: Bool = true,
         bridging: Bool = true,
         scope: LocalMediaServer.AddressScope = .lan,
         probeDeadline: Duration = defaultProbeDeadline,
         clock: any Clock<Duration>
     ) async throws -> MediaDelivery {
         let routed = await race(against: probeDeadline, on: clock) {
-            try await responder(reading: reader, fileName: fileName, support: support, bridging: bridging)
+            try await responder(
+                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR, bridging: bridging)
         }
         guard let routed else { throw ProbeFailure.timedOut }
         let responder: any MediaResponder
@@ -55,12 +59,14 @@ public struct MediaDelivery: Sendable {
 
     /// What serves the file. Throws an `Unplayable`, or the reader's own error.
     private static func responder(
-        reading reader: any RandomAccessReading, fileName: String, support: AVPlayerSupport, bridging: Bool
+        reading reader: any RandomAccessReading, fileName: String, support: AVPlayerSupport, showsHDR: Bool,
+        bridging: Bool
     ) async throws -> any MediaResponder {
         switch DirectPlay.verdict(for: try await MediaProbe.probe(reader), support: support) {
         case .unplayable(.container(.mkv)) where bridging:
             do {
-                return try await BridgeSession.open(reader)
+                return try await BridgeSession.open(
+                    reader, support: support, showsHDR: showsHDR)
             } catch let refusal as BridgeRefusal {
                 throw Unplayable.refused(refusal)
             }

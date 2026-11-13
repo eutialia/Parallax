@@ -154,14 +154,20 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — CodecProfiles (unchanged)
 
-    @Test("CodecProfile gates H.264 to 8-bit 4:2:0 profiles (excludes High 10)")
-    func h264ProfileGuard() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: caps())
+    @Test("CodecProfile gates H.264 to 8-bit 4:2:0 profiles, and High 10 where a 10-bit frame decoded", arguments: [
+        (false, "high|main|baseline|constrained baseline"),
+        (true, "high|main|baseline|constrained baseline|high 10"),
+    ])
+    func h264ProfileGuard(decodesH264High10: Bool, profiles: String) {
+        let support = AVPlayerSupport(
+            containers: Self.withoutAV1.containers, videoCodecs: Self.withoutAV1.videoCodecs,
+            audioCodecs: Self.withoutAV1.audioCodecs, decodesH264High10: decodesH264High10)
+        let profile = DeviceProfileTranslator.deviceProfile(from: caps(avPlayer: support))
         let codecs = profile.codecProfiles ?? []
         let h264 = codecs.first { $0.codec == "h264" && $0.type == .video }
         let condition = h264?.conditions?.first { $0.property == .videoProfile }
         #expect(condition?.condition == .equalsAny)
-        #expect(condition?.value == "high|main|baseline|constrained baseline")
+        #expect(condition?.value == profiles)
     }
 
     @Test("CodecProfile constrains HEVC bit depth to ≤ 10")

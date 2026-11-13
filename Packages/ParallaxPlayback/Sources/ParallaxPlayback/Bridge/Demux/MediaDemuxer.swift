@@ -17,6 +17,11 @@ struct DemuxedStream: Sendable {
     let tick: Int64
     /// Frames per second as the container declares it. Nil for audio, and when it says nothing.
     let frameRate: FrameRate?
+    /// As the container spells it: "jpn", "en". Nil when it names none.
+    let language: String?
+    let title: String?
+    /// The container marks the stream as the one to play when the viewer chose none.
+    let isDefault: Bool
 
     struct FrameRate: Sendable, Equatable {
         let numerator: Int64
@@ -137,21 +142,15 @@ actor MediaDemuxer {
     /// the upper one, so pictures that display before their keyframe stay with it. Audio belongs
     /// by time: every packet timed in `[lower, upper)`. The first span also takes whatever is
     /// timed before its keyframe. Neighboring spans therefore share no packet and drop none.
-    func packets(from lower: Int, to upper: Int) throws -> [DemuxedPacket] {
-        try read(from: lower, to: upper, stoppingAtFirstOf: nil)
-    }
-
-    /// Whether the span holds a packet of `stream`. The read stops at the first one, so a yes
-    /// costs a cluster and a no costs the span.
-    func holdsPacket(of stream: Int, from lower: Int, to upper: Int) throws -> Bool {
-        try read(from: lower, to: upper, stoppingAtFirstOf: stream).last?.stream == stream
-    }
-
-    private func read(from lower: Int, to upper: Int, stoppingAtFirstOf wanted: Int?) throws -> [DemuxedPacket] {
+    ///
+    /// With `takingLaterAudio`, audio has no upper time: the span also takes the audio timed
+    /// after it that the read comes by. That is for the span an audio track ends in.
+    func packets(from lower: Int, to upper: Int, takingLaterAudio: Bool = false) throws -> [DemuxedPacket] {
         let keyframes = try keyframes()
         precondition(keyframes.indices.contains(lower) && lower < upper && upper <= keyframes.count)
         let lowerTime = lower == 0 ? Int64.min : keyframes[lower].time
         let upperTime = upper == keyframes.count ? Int64.max : keyframes[upper].time
+        let audioUpperTime = takingLaterAudio ? Int64.max : upperTime
 
         // Real muxers store audio up to a cluster ahead of the keyframe it plays with, so the
         // read starts at the nearest entry that sits earlier in the file. It starts there by
@@ -187,8 +186,8 @@ actor MediaDemuxer {
             } else if pendingAudio.contains(stream) {
                 // A frame with no time of its own follows the one before it in its lace.
                 if let time {
-                    if time >= upperTime { pendingAudio.remove(stream) }
-                    audioBelonged[stream] = time >= lowerTime && time < upperTime
+                    if time >= audioUpperTime { pendingAudio.remove(stream) }
+                    audioBelonged[stream] = time >= lowerTime && time < audioUpperTime
                 }
                 belongs = audioBelonged[stream] ?? false
             } else {
@@ -201,7 +200,6 @@ actor MediaDemuxer {
                     duration: packet.pointee.duration > 0 ? nanoseconds(packet.pointee.duration, of: stream) : nil,
                     isKeyframe: isKeyframe,
                     data: Data(bytes: bytes, count: Int(packet.pointee.size))))
-                if stream == wanted { break }
             }
             if videoEnded {
                 // An audio track that ends early never reaches the boundary. Without a limit
@@ -213,7 +211,32 @@ actor MediaDemuxer {
         return collected
     }
 
+    /// Which of `streams` have a packet timed at or after keyframe `index` and stored at or
+    /// after it. A stream that runs on shows one within a moment of the keyframe, so the read
+    /// is short when all of them do. It gives up on the rest once the video is `interleaveLimit`
+    /// past the keyframe.
+    func streams(_ streams: Set<Int>, continuingPastKeyframe index: Int) throws -> Set<Int> {
+        let keyframe = try keyframes()[index]
+        try check(av_seek_frame(context, -1, keyframe.position, AVSEEK_FLAG_BYTE))
+        var continuing: Set<Int> = []
+        while continuing != streams {
+            let status = av_read_frame(context, packet)
+            if status == DemuxerSource.Code.endOfFile, !source.hasFailed { break }
+            try check(status)
+            defer { av_packet_unref(packet) }
+            guard packet.pointee.pts != Self.noTime else { continue }
+            let from = Int(packet.pointee.stream_index)
+            let time = nanoseconds(packet.pointee.pts, of: from)
+            if streams.contains(from), time >= keyframe.time { continuing.insert(from) }
+            if from == videoStream, time >= keyframe.time + Self.interleaveLimit { break }
+        }
+        return continuing
+    }
+
     private static let audioSearchLimit = 4 << 20
+    /// Nanoseconds. Muxers store a stream's packets within a cluster of the video they play
+    /// with, and a cluster holds five seconds at most.
+    private static let interleaveLimit: Int64 = 5_000_000_000
     private static let nanoseconds = AVRational(num: 1, den: 1_000_000_000)
     /// `AV_NOPTS_VALUE`, which does not import into Swift.
     private static let noTime = Int64.min
@@ -303,11 +326,17 @@ private struct Opened {
             default: .other
             }
             let rate = stream.avg_frame_rate
+            func tag(_ key: String) -> String? {
+                av_dict_get(stream.metadata, key, nil, 0).map { String(cString: $0.pointee.value) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+            }
             return DemuxedStream(
                 index: index, kind: kind, parameters: parameters,
                 tick: av_rescale_q(1, stream.time_base, nanoseconds),
                 frameRate: kind == .video && rate.num > 0 && rate.den > 0
-                    ? .init(numerator: Int64(rate.num), denominator: Int64(rate.den)) : nil)
+                    ? .init(numerator: Int64(rate.num), denominator: Int64(rate.den)) : nil,
+                language: tag("language").flatMap { $0 == "und" ? nil : $0 }, title: tag("title"),
+                isDefault: stream.disposition & AV_DISPOSITION_DEFAULT != 0)
         }
         streams = described.compactMap(\.self)
         guard streams.count == described.count else {

@@ -110,6 +110,22 @@ MATRIX = [
         "mux": ["-movflags", "+faststart"],
     },
     {
+        "name": "h264high10-aac.mp4",
+        "why": "10-bit H.264 decode on device: High 10 at level 5.0, like the library files the bridge refuses where the probe decodes no frame of it",
+        "video": ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le", "-profile:v", "high10",
+                  "-level", "5.0", "-b:v", "4M", "-g", "48"],
+        "audio": [dict(codec="aac", layout=STEREO, bitrate="256k", default=True)],
+        "mux": ["-movflags", "+faststart"],
+    },
+    {
+        "name": "hevc12-aac.mp4",
+        "why": "12-bit HEVC decode on device: Main 12, the range-extensions profile of the library files the bridge refuses",
+        "video": ["-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p12le", "-x265-params", X265_SHORT,
+                  "-tag:v", "hvc1"],
+        "audio": [dict(codec="aac", layout=STEREO, bitrate="256k", default=True)],
+        "mux": ["-movflags", "+faststart"],
+    },
+    {
         "name": "av1-opus.mkv",
         "why": "long-GOP AV1 seek behavior",
         "video": ["-c:v", "libsvtav1", "-preset", "10", "-crf", "40", "-svtav1-params", "keyint=240"],

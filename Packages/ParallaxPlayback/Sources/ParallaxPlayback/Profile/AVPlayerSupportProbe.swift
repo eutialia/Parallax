@@ -6,14 +6,15 @@ import ParallaxCore
 /// (`AVURLAsset.isPlayableExtendedMIMEType`, `AVURLAsset.audiovisualMIMETypes()`,
 /// `VTIsHardwareDecodeSupported`) and tests supply literals.
 ///
-/// The answers are codec-family level: the MIME check says yes to profiles AVPlayer cannot
-/// decode (H.264 High 10, AV1 12-bit), so profile and bit-depth gates stay in the Jellyfin
-/// device profile's CodecProfile conditions.
+/// The MIME check answers for a codec family and says yes to profiles some devices cannot
+/// decode. 10-bit H.264 is the one asked separately, by decoding a frame of it; the other
+/// profile and bit-depth gates stay in the Jellyfin device profile's CodecProfile conditions.
 public enum AVPlayerSupportProbe {
     public static func probe(
         isPlayable: (String) -> Bool,
         mimeTypes: Set<String>,
-        decodesInHardware: (CMVideoCodecType) -> Bool
+        decodesInHardware: (CMVideoCodecType) -> Bool,
+        decodesH264High10: Bool
     ) -> AVPlayerSupport {
         // Codecs are asked under MP4 only, and the answer stands for MOV, which carries the
         // same codecs. Video past H.264 also needs a hardware decoder: the MIME check speaks
@@ -30,7 +31,8 @@ public enum AVPlayerSupportProbe {
             }),
             audioCodecs: Set(AudioCodec.allCases.filter { codec in
                 isPlayable("audio/mp4; codecs=\"\(mp4Spelling(codec))\"")
-            })
+            }),
+            decodesH264High10: decodesH264High10
         )
     }
 

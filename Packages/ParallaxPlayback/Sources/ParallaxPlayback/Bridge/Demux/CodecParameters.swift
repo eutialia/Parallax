@@ -31,20 +31,73 @@ final class CodecParameters: @unchecked Sendable {
     /// How many frames a picture can be stored ahead of the ones that display before it.
     var reorderDepth: Int { Int(pointer.pointee.video_delay) }
     var sampleRate: Int { Int(pointer.pointee.sample_rate) }
-    /// Zero when the frame length is not known.
-    var samplesPerFrame: Int {
-        // libavformat leaves AC-3 at zero. A frame is always six blocks of 256 samples.
-        pointer.pointee.codec_id == AV_CODEC_ID_AC3 ? 1536 : Int(pointer.pointee.frame_size)
+    /// The HLS name of the video's transfer function: "PQ" for HDR10 and Dolby Vision over PQ, "HLG",
+    /// and "SDR" for everything else. AVPlayer reads the function from the video itself and
+    /// fails an item whose playlist says otherwise.
+    var videoRange: String {
+        switch pointer.pointee.color_trc {
+        case AVCOL_TRC_SMPTE2084: "PQ"
+        case AVCOL_TRC_ARIB_STD_B67: "HLG"
+        default: "SDR"
+        }
     }
 
-    /// The profile in the Dolby Vision record the container carries for the stream. Nil for a
-    /// stream with no such record.
-    var dolbyVisionProfile: Int? {
+    var channelCount: Int { Int(pointer.pointee.ch_layout.nb_channels) }
+
+    /// What a playlist's `CHANNELS` says: the channel count, or "16/JOC" for E-AC-3 that
+    /// carries Dolby Atmos objects. libavcodec tells Atmos from the first frames it decodes
+    /// while the file opens.
+    var playlistChannels: String {
+        pointer.pointee.codec_id == AV_CODEC_ID_EAC3 && pointer.pointee.profile == AV_PROFILE_EAC3_DDP_ATMOS
+            ? "16/JOC" : "\(channelCount)"
+    }
+
+    /// The samples one frame holds, which is the same for every frame of a stream. The
+    /// container records it for AAC. For the rest libavcodec's parser reads it from the header
+    /// of `frame`, one whole frame of the stream. Zero when neither knows.
+    func samplesPerFrame(readingHeaderOf frame: Data) -> Int {
+        if pointer.pointee.frame_size > 0 { return Int(pointer.pointee.frame_size) }
+        guard let parser = av_parser_init(Int32(pointer.pointee.codec_id.rawValue)) else { return 0 }
+        defer { av_parser_close(parser) }
+        var context = avcodec_alloc_context3(nil)
+        defer { avcodec_free_context(&context) }
+        guard let context, avcodec_parameters_to_context(context, pointer) >= 0 else { return 0 }
+        parser.pointee.flags |= PARSER_FLAG_COMPLETE_FRAMES
+        // The parser reads past the end of its input by up to this much.
+        let padded = frame + Data(count: Int(AV_INPUT_BUFFER_PADDING_SIZE))
+        var parsed: UnsafeMutablePointer<UInt8>?
+        var parsedSize: Int32 = 0
+        padded.withUnsafeBytes {
+            _ = av_parser_parse2(
+                parser, context, &parsed, &parsedSize, $0.bindMemory(to: UInt8.self).baseAddress,
+                Int32(frame.count), Int64.min, Int64.min, 0)
+        }
+        return Int(parser.pointee.duration)
+    }
+
+    /// The Dolby Vision record the container carries for the stream. Nil for a stream with none.
+    private var dolbyVisionRecord: AVDOVIDecoderConfigurationRecord? {
         let record = av_packet_side_data_get(
             pointer.pointee.coded_side_data, pointer.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF)
-        return record?.pointee.data.map {
-            Int(UnsafeRawPointer($0).load(as: AVDOVIDecoderConfigurationRecord.self).dv_profile)
+        return record?.pointee.data.map { UnsafeRawPointer($0).load(as: AVDOVIDecoderConfigurationRecord.self) }
+    }
+
+    var dolbyVisionProfile: Int? { dolbyVisionRecord.map { Int($0.dv_profile) } }
+
+    /// The Dolby Vision layer a playlist's `SUPPLEMENTAL-CODECS` names over the HEVC its
+    /// `CODECS` does: "dvh1.08.06/db1p" for profile 8.1 at level 6, whose base layer is HDR10, and
+    /// "dvh1.08.06/db4h" for 8.4, whose base is HLG. Nil for every other stream, which plays
+    /// as its HEVC base: Apple's players take no other profile that has one.
+    var dolbyVisionCodec: String? {
+        guard pointer.pointee.codec_id == AV_CODEC_ID_HEVC, let record = dolbyVisionRecord, record.dv_profile == 8,
+              record.rpu_present_flag == 1
+        else { return nil }
+        let brand = switch record.dv_bl_signal_compatibility_id {
+        case 1: "db1p"
+        case 4: "db4h"
+        default: nil as String?
         }
+        return brand.map { String(format: "dvh1.08.%02d/%@", record.dv_level, $0) }
     }
 
     /// The codec and its profile as libavcodec names them, and the Dolby Vision profile when
@@ -64,8 +117,8 @@ final class CodecParameters: @unchecked Sendable {
         switch pointer.pointee.codec_id {
         case AV_CODEC_ID_H264:
             // An `avcC` record: version, then the profile, constraint and level bytes. Baseline,
-            // Main and High are the profiles Apple's decoders take.
-            guard extradata.count >= 4, extradata[0] == 1, [66, 77, 100].contains(extradata[1]) else { return nil }
+            // Main and High are the profiles every Apple decoder takes, and High 10 some.
+            guard extradata.count >= 4, extradata[0] == 1, [66, 77, 100, 110].contains(extradata[1]) else { return nil }
             return String(format: "avc1.%02x%02x%02x", extradata[1], extradata[2], extradata[3])
         case AV_CODEC_ID_HEVC:
             // An `hvcC` record: version, a byte of profile space, tier and profile, four bytes
@@ -90,6 +143,21 @@ final class CodecParameters: @unchecked Sendable {
             return [1, 4, 28].contains(pointer.pointee.profile) ? "mp4a.40.\(pointer.pointee.profile + 1)" : nil
         case AV_CODEC_ID_AC3:
             return "ac-3"
+        case AV_CODEC_ID_EAC3:
+            return "ec-3"
+        case AV_CODEC_ID_FLAC:
+            return "fLaC"
+        case AV_CODEC_ID_OPUS:
+            return "Opus"
+        case AV_CODEC_ID_AV1:
+            // An `av1C` record: a marker and version byte, then the profile and level, then the
+            // tier and the bits that give the depth. Main is the profile Apple's decoders take.
+            guard extradata.count >= 4, extradata[0] == 0x81 else { return nil }
+            let profile = extradata[1] >> 5, level = extradata[1] & 0x1f
+            guard profile == 0 else { return nil }
+            let isHighTier = extradata[2] & 0x80 != 0
+            let depth = extradata[2] & 0x40 == 0 ? 8 : extradata[2] & 0x20 == 0 ? 10 : 12
+            return String(format: "av01.%d.%02d%@.%02d", profile, level, isHighTier ? "H" : "M", depth)
         default:
             return nil
         }
