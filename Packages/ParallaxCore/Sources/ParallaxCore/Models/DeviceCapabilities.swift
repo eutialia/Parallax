@@ -5,11 +5,17 @@ public struct AVPlayerSupport: Sendable, Hashable {
     public let containers: Set<Container>
     public let videoCodecs: Set<VideoCodec>
     public let audioCodecs: Set<AudioCodec>
+    /// 10-bit H.264, which some Apple decoders take and others turn into a black picture.
+    public let decodesH264High10: Bool
 
-    public init(containers: Set<Container>, videoCodecs: Set<VideoCodec>, audioCodecs: Set<AudioCodec>) {
+    public init(
+        containers: Set<Container>, videoCodecs: Set<VideoCodec>, audioCodecs: Set<AudioCodec>,
+        decodesH264High10: Bool = false
+    ) {
         self.containers = containers
         self.videoCodecs = videoCodecs
         self.audioCodecs = audioCodecs
+        self.decodesH264High10 = decodesH264High10
     }
 
     // Apple's HLS Authoring Specification allows H.264, HEVC, Dolby Vision and AV1 video and

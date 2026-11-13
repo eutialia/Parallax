@@ -61,14 +61,17 @@ struct MediaDeliveryTests {
         let video = try await Self.text(at: delivery.url.deletingLastPathComponent().appendingPathComponent("v.m3u8"))
         await delivery.stop()
 
-        #expect(master.contains(#"CODECS="avc1.640014,mp4a.40.2",RESOLUTION=160x90"#))
+        #expect(master.contains(#"CODECS="avc1.640014,mp4a.40.2,ac-3",RESOLUTION=160x90"#))
         #expect(video.split(separator: "\n").filter { $0.hasSuffix(".m4s") }
             == ["v-0.m4s", "v-1.m4s", "v-2.m4s", "v-3.m4s", "v-4.m4s", "v-5.m4s"])
     }
 
     @Test("a Matroska file the bridge cannot deliver fails with the bridge's reason", arguments: [
-        ("refused-flac-audio", BridgeRefusal.noDeliverableAudio(names: ["flac"])),
+        ("refused-dts-audio", BridgeRefusal.noDeliverableAudio(names: ["dts DTS"])),
         ("refused-dolby-vision-5", .videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
+        // The baseline device has no AV1 or 10-bit H.264 decoder.
+        ("av1", .videoCodec(name: "av1 Main")),
+        ("h264-high10", .videoCodec(name: "h264 High 10")),
     ])
     func refusedMatroskaFileThrowsTheBridgesReason(name: String, reason: BridgeRefusal) async throws {
         let reader = try Self.fixture(name)
@@ -92,8 +95,8 @@ struct MediaDeliveryTests {
     }
 
     @Test("a refusal reads as one line that names what the file holds", arguments: [
-        ("refused-high10-video", "video: h264 High 10"),
-        ("refused-flac-audio", "audio: flac"),
+        ("h264-high10", "video: h264 High 10"),
+        ("refused-dts-audio", "audio: dts DTS"),
         ("refused-one-keyframe", "no keyframe index"),
     ])
     func refusalReadsAsOneLine(name: String, line: String) async throws {
@@ -102,6 +105,31 @@ struct MediaDeliveryTests {
             _ = try await MediaDelivery.start(
                 reading: reader, fileName: "clip.mkv", support: .baseline, scope: .loopback, clock: TestClock())
         } throws: { "\($0)" == line }
+    }
+
+    @Test("a PQ file is refused with a reason where HDR does not show and bridged where it does, and HLG is bridged on both")
+    func pqFileNeedsAnHDRDisplay() async throws {
+        let reader = try Self.fixture("hdr-pq")
+        await #expect {
+            _ = try await MediaDelivery.start(
+                reading: reader, fileName: "clip.mkv", support: .baseline, showsHDR: false, scope: .loopback,
+                clock: TestClock())
+        } throws: { "\($0)" == "video: PQ, and this display shows no HDR" }
+
+        let delivery = try await MediaDelivery.start(
+            reading: reader, fileName: "clip.mkv", support: .baseline, showsHDR: true, scope: .loopback,
+            clock: TestClock())
+        let master = try await Self.text(at: delivery.url)
+        await delivery.stop()
+        #expect(master.contains("VIDEO-RANGE=PQ"))
+
+        // AVPlayer plays HLG where HDR does not show, measured on a Mac with an SDR display.
+        let hlg = try await MediaDelivery.start(
+            reading: try Self.fixture("hdr-hlg"), fileName: "clip.mkv", support: .baseline, showsHDR: false,
+            scope: .loopback, clock: TestClock())
+        let hlgMaster = try await Self.text(at: hlg.url)
+        await hlg.stop()
+        #expect(hlgMaster.contains("VIDEO-RANGE=HLG"))
     }
 
     private struct ShareGone: Error {}

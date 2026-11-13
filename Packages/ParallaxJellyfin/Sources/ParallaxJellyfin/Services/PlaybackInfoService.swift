@@ -122,8 +122,8 @@ public actor PlaybackInfoService {
 
         // Diagnostic: what are we actually handing the engine? video
         // profile + bit depth distinguish a decodable stream from one the
-        // device/simulator can't handle (e.g. 10-bit H.264 that iOS won't
-        // hardware-decode), and `method` shows direct-play vs HLS. URL is
+        // device/simulator can't handle (e.g. 10-bit H.264 where the probe
+        // decoded no frame of it), and `method` shows direct-play vs HLS. URL is
         // hashed because it embeds ApiKey.
         let videoStream = source.mediaStreams?.first(where: { $0.type == .video })
         Log.playback.info(

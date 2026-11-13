@@ -23,6 +23,7 @@ nonisolated struct SMBDelivery: Sendable {
         reader: any SMBShareReading,
         fileName: String,
         support: AVPlayerSupport,
+        showsHDR: Bool = true,
         bridging: Bool = true,
         scope: LocalMediaServer.AddressScope = .lan,
         probeDeadline: Duration = MediaDelivery.defaultProbeDeadline,
@@ -30,7 +31,8 @@ nonisolated struct SMBDelivery: Sendable {
     ) async throws -> SMBDelivery {
         do {
             let delivery = try await MediaDelivery.start(
-                reading: reader, fileName: fileName, support: support, bridging: bridging, scope: scope,
+                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR, bridging: bridging,
+                scope: scope,
                 probeDeadline: probeDeadline, clock: clock)
             return SMBDelivery(reader: reader, delivery: delivery)
         } catch MediaDelivery.ProbeFailure.timedOut {

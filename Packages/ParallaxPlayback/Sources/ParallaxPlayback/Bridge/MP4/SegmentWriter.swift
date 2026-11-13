@@ -79,6 +79,11 @@ enum SegmentWriter {
         try check(avformat_alloc_output_context2(&allocated, nil, "mp4", nil))
         guard let context = allocated else { throw .outOfMemory }
         defer { avformat_free_context(context) }
+        // The muxer writes the Dolby Vision record into the sample entry only past official
+        // compliance, and only where the playlist names the layer.
+        if rendition.supplementalCodec != nil {
+            context.pointee.strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL
+        }
 
         guard let stream = avformat_new_stream(context, nil) else { throw .outOfMemory }
         try check(avcodec_parameters_copy(stream.pointee.codecpar, rendition.stream.parameters.pointer))
@@ -86,7 +91,9 @@ enum SegmentWriter {
         // Left to itself the muxer stores HEVC as `hev1`, which AVPlayer does not play.
         stream.pointee.codecpar.pointee.codec_tag = rendition.codec.utf8.prefix(4).reversed()
             .reduce(0) { $0 << 8 | UInt32($1) }
-        stream.pointee.codecpar.pointee.frame_size = Int32(rendition.stream.parameters.samplesPerFrame)
+        if rendition.stream.kind == .audio, let frame = rendition.clock.grid?.step {
+            stream.pointee.codecpar.pointee.frame_size = Int32(frame)
+        }
         let timescale = AVRational(num: 1, den: Int32(rendition.clock.timescale))
         stream.pointee.time_base = timescale
 
@@ -129,16 +136,37 @@ enum SegmentWriter {
         var buffer: UnsafeMutablePointer<UInt8>?
         let size = avio_get_dyn_buf(context.pointee.pb, &buffer)
         guard let buffer, size > 0 else { throw .noFragment }
-        let bytes = Data(bytes: buffer, count: Int(size))
-        guard let fragmentStart = offsetOfFirstBox("moof", in: bytes) else { throw .noFragment }
+        var bytes = Data(bytes: buffer, count: Int(size))
+        guard let fragmentStart = offsetOfBox("moof", in: bytes) else { throw .noFragment }
+        try redate(&bytes, fragmentAt: fragmentStart, samples)
         return (bytes, fragmentStart)
+    }
+
+    /// With an edit list and `frag_discont`, the muxer dates a fragment by its first sample's
+    /// presentation time, and the edit list takes the rendition's lead off it. That holds where
+    /// the first sample decoded is the first shown. A later open-GOP keyframe is shown after
+    /// pictures it decodes before, and its fragment would play late by them, so the fragment
+    /// is dated by its earliest presentation time instead.
+    private static func redate(_ bytes: inout Data, fragmentAt moof: Int, _ samples: [Sample]) throws(Failure) {
+        guard let traf = offsetOfBox("traf", in: bytes, inside: moof),
+              let tfdt = offsetOfBox("tfdt", in: bytes, inside: traf),
+              // Version 1: a 64-bit decode time after the header, version and flags.
+              bytes[bytes.startIndex + tfdt + 8] == 1,
+              let earliest = samples.map(\.presentation).min(), earliest >= 0
+        else { throw .noFragment }
+        let time = bytes.startIndex + tfdt + 12
+        bytes.replaceSubrange(time..<time + 8, with: withUnsafeBytes(of: UInt64(earliest).bigEndian) { Data($0) })
     }
 
     private static let flags = "frag_custom+delay_moov+default_base_moof+frag_discont"
 
-    private static func offsetOfFirstBox(_ type: String, in bytes: Data) -> Int? {
-        var offset = 0
-        while offset + 8 <= bytes.count {
+    /// The offset of the first box of `type` at the top level, or among the children of the box
+    /// at `parent`.
+    private static func offsetOfBox(_ type: String, in bytes: Data, inside parent: Int? = nil) -> Int? {
+        let end = parent.map { $0 + bytes[bytes.startIndex + $0..<bytes.startIndex + $0 + 4].reduce(0) { $0 << 8 | Int($1) } }
+            ?? bytes.count
+        var offset = parent.map { $0 + 8 } ?? 0
+        while offset + 8 <= min(end, bytes.count) {
             let header = bytes[bytes.startIndex + offset..<bytes.startIndex + offset + 8]
             let size = header.prefix(4).reduce(0) { $0 << 8 | Int($1) }
             if String(decoding: header.suffix(4), as: UTF8.self) == type { return offset }

@@ -5,6 +5,11 @@ import ParallaxCore
 
 /// The media bridge's fixtures, written by `scripts/gen-demux-fixtures.sh`.
 enum BridgeFixture {
+    /// A device with every decoder the bridge asks about, for tests not about the device.
+    static let everyDecoder = AVPlayerSupport(
+        containers: [.mp4, .mov, .hls], videoCodecs: Set(VideoCodec.allCases),
+        audioCodecs: Set(AudioCodec.allCases), decodesH264High10: true)
+
     static func data(_ name: String, _ ext: String = "mkv") throws -> Data {
         let url = try #require(Bundle.module.url(
             forResource: name, withExtension: ext, subdirectory: "Fixtures/demux"))

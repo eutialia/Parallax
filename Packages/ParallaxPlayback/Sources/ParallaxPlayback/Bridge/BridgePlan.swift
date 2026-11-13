@@ -1,10 +1,14 @@
 import Foundation
+import ParallaxCore
 
 /// One track as AVPlayer sees it: the stream it copies and the clock its samples are timed on.
 struct Rendition: Sendable {
     let stream: DemuxedStream
     /// The RFC 6381 string a playlist's `CODECS` carries.
     let codec: String
+    /// The Dolby Vision layer a playlist's `SUPPLEMENTAL-CODECS` names, whose record the init
+    /// segment then carries: "dvh1.08.06/db1p". Nil for a stream played as it is.
+    let supplementalCodec: String?
     let clock: MediaClock
     /// Ticks by which every decode time precedes its rank among the presentation times: the
     /// stream's reorder depth in frames. libavformat refuses a sample that displays before it
@@ -13,9 +17,10 @@ struct Rendition: Sendable {
     let decodeLead: Int64
 }
 
-enum RenditionID: String, Sendable, CaseIterable {
-    case video = "v"
-    case audio = "a"
+enum RenditionID: Sendable, Equatable {
+    case video
+    /// A place in the plan's list of audio tracks.
+    case audio(Int)
 }
 
 /// Why a file cannot go through the bridge. Every reason is known when the file is opened.
@@ -23,9 +28,13 @@ public enum BridgeRefusal: Error, Equatable, Sendable {
     /// Fewer than two index entries, so there is nowhere to cut the file into segments.
     case noCues
     case noDuration
-    /// A codec, or a profile of one, that the bridge does not deliver: "mpeg4 Simple Profile",
-    /// "h264 High 10".
+    /// A codec, or a profile of one, that the bridge does not deliver or this device does not
+    /// decode: "mpeg4 Simple Profile", "h264 High 10", "av1 Main".
     case videoCodec(name: String)
+    /// HDR video, "PQ", on a device that shows no HDR: an SDR screen, a mirrored one, an Apple
+    /// TV whose output is SDR. AVPlayer refuses an HDR playlist there before it loads a
+    /// segment, and a playlist that calls the video SDR fails at its first segment.
+    case hdrVideo(range: String)
     /// No audio stream that is both in a codec the bridge delivers and present at the start of
     /// the file. `names` are the codecs the file does have.
     case noDeliverableAudio(names: [String])
@@ -43,6 +52,7 @@ extension BridgeRefusal: CustomStringConvertible {
         case .noCues: "no keyframe index"
         case .noDuration: "no duration"
         case .videoCodec(let name): "video: \(name)"
+        case .hdrVideo(let range): "video: \(range), and this display shows no HDR"
         case .noDeliverableAudio(let names): "audio: \(names.isEmpty ? "none" : names.joined(separator: ", "))"
         case .segmentTooLarge(let bytes): "a segment of \(bytes >> 20) MB"
         case .unreadable(let detail): "unreadable: \(detail)"
@@ -56,8 +66,8 @@ struct BridgePlan: Sendable {
     struct Track: Sendable {
         let rendition: Rendition
         let initSegment: Data
-        /// The video's segments cover the file. The audio's stop at the last segment that
-        /// holds audio, and that one lasts until the file ends.
+        /// The video's segments cover the file. The audio's stop at the last segment the
+        /// audio reaches. That one lasts until the file ends and holds all the audio left.
         let segments: [Segment]
     }
 
@@ -71,7 +81,13 @@ struct BridgePlan: Sendable {
     }
 
     let video: Track
-    let audio: Track
+    /// The audio tracks the bridge delivers, in file order. Never empty.
+    let audio: [Track]
+    /// The place in `audio` of the track that plays when the viewer chose none: the first the
+    /// file marks as its default, or the first.
+    let defaultAudio: Int
+    /// The codecs of the audio tracks the bridge left out: "truehd", "dts DTS-HD MA".
+    let omittedAudio: [String]
     /// Bits per second of the densest segment, all streams of the file counted.
     let peakBitrate: Int
 
@@ -80,22 +96,29 @@ struct BridgePlan: Sendable {
     static let targetSegmentLength: Int64 = 2_000_000_000
     static let defaultSegmentByteLimit: Int64 = 64 << 20
 
-    func track(_ id: RenditionID) -> Track {
+    func track(_ id: RenditionID) -> Track? {
         switch id {
         case .video: video
-        case .audio: audio
+        case .audio(let place): audio.indices.contains(place) ? audio[place] : nil
         }
     }
 
     /// Reads the index and the first segment. Throws a `BridgeRefusal`, the reader's own error,
     /// or the `SegmentWriter.Failure` that stopped an init segment.
-    init(reading demuxer: MediaDemuxer, segmentByteLimit: Int64 = defaultSegmentByteLimit) async throws {
+    init(
+        reading demuxer: MediaDemuxer, support: AVPlayerSupport, showsHDR: Bool,
+        segmentByteLimit: Int64 = defaultSegmentByteLimit
+    ) async throws {
         let keyframes = try await demuxer.keyframes()
         guard keyframes.count >= 2 else { throw BridgeRefusal.noCues }
         guard let duration = demuxer.duration else { throw BridgeRefusal.noDuration }
         let videoStream = demuxer.streams[demuxer.videoStream]
-        guard let videoCodec = videoStream.parameters.playlistCodec else {
+        guard let videoCodec = videoStream.parameters.playlistCodec, Self.decodes(videoCodec, on: support) else {
             throw BridgeRefusal.videoCodec(name: videoStream.parameters.displayName)
+        }
+        // HLG plays where HDR does not show, measured on a Mac with an SDR display.
+        guard showsHDR || videoStream.parameters.videoRange != "PQ" else {
+            throw BridgeRefusal.hdrVideo(range: videoStream.parameters.videoRange)
         }
 
         let starts = keyframes.indices.reduce(into: [Int]()) { starts, index in
@@ -112,15 +135,18 @@ struct BridgePlan: Sendable {
         }
 
         let opening = try await demuxer.packets(from: spans[0].lowerBound, to: spans[0].upperBound)
-        func firstTime(of stream: Int) -> Int64? {
-            opening.lazy.filter { $0.stream == stream }.compactMap(\.presentationTime).min()
-        }
+        func packets(of stream: DemuxedStream) -> [DemuxedPacket] { opening.filter { $0.stream == stream.index } }
+        func firstTime(of stream: DemuxedStream) -> Int64? { packets(of: stream).compactMap(\.presentationTime).min() }
+        guard let videoStart = firstTime(of: videoStream) else { throw SegmentWriter.Failure.untimedSample }
         let audioStreams = demuxer.streams.filter { $0.kind == .audio }
-        guard let videoStart = firstTime(of: videoStream.index) else { throw SegmentWriter.Failure.untimedSample }
-        guard let (audioStream, audioCodec, audioStart) = audioStreams.lazy.compactMap({ stream in
-            stream.parameters.playlistCodec.flatMap { codec in firstTime(of: stream.index).map { (stream, codec, $0) } }
-        }).first
-        else { throw BridgeRefusal.noDeliverableAudio(names: audioStreams.map(\.parameters.displayName)) }
+        let delivered = audioStreams.compactMap { stream in
+            stream.parameters.playlistCodec.flatMap { codec in
+                firstTime(of: stream).map { (stream: stream, codec: codec, start: $0) }
+            }
+        }
+        guard let audioStart = delivered.map(\.start).min() else {
+            throw BridgeRefusal.noDeliverableAudio(names: audioStreams.map(\.parameters.displayName))
+        }
 
         let videoGrid = videoStream.frameRate.flatMap { rate -> MediaClock.Grid? in
             let (step, remainder) = (Self.videoTimescale * rate.denominator)
@@ -138,18 +164,18 @@ struct BridgePlan: Sendable {
         let origin = max(0, leadTime - min(videoStart, audioStart))
 
         let videoRendition = Rendition(
-            stream: videoStream, codec: videoCodec,
+            stream: videoStream, codec: videoCodec, supplementalCodec: videoStream.parameters.dolbyVisionCodec,
             clock: MediaClock(timescale: Self.videoTimescale, origin: origin, grid: videoGrid),
             decodeLead: decodeLead)
-        let audioParameters = audioStream.parameters
-        let audioRendition = Rendition(
-            stream: audioStream, codec: audioCodec,
-            clock: MediaClock(
-                timescale: Int64(audioParameters.sampleRate), origin: origin,
-                grid: audioParameters.samplesPerFrame > 0
-                    ? .init(anchor: audioStart, step: Int64(audioParameters.samplesPerFrame), tolerance: .max)
-                    : nil),
-            decodeLead: 0)
+        let audioRenditions = delivered.map { stream, codec, start in
+            let frame = stream.parameters.samplesPerFrame(readingHeaderOf: packets(of: stream)[0].data)
+            return Rendition(
+                stream: stream, codec: codec, supplementalCodec: nil,
+                clock: MediaClock(
+                    timescale: Int64(stream.parameters.sampleRate), origin: origin,
+                    grid: frame > 0 ? .init(anchor: start, step: Int64(frame), tolerance: .max) : nil),
+                decodeLead: 0)
+        }
         let clock = videoRendition.clock
         // Muxers disagree on Duration. ffmpeg writes the time the last sample ends; mkvmerge
         // writes the length, which is the same thing only for a file that starts at zero. A
@@ -160,27 +186,42 @@ struct BridgePlan: Sendable {
         let segments = zip(spans, zip(boundaries, boundaries.dropFirst())).map {
             Segment(entries: $0, seconds: clock.seconds(at: $1.1) - clock.seconds(at: $1.0), end: $1.1)
         }
-        // AVPlayer waits for good at an audio segment it cannot get, and ends the item where
-        // the shorter rendition ends. So the audio's list stops at its last segment with
-        // audio, and that segment is stretched to the end of the file.
-        let lastWithAudio = try await Self.lastIndex(below: spans.count) {
-            try await demuxer.holdsPacket(
-                of: audioStream.index, from: spans[$0].lowerBound, to: spans[$0].upperBound)
-        }
-        let audioSegments = segments[..<lastWithAudio] + [Segment(
-            entries: spans[lastWithAudio],
-            seconds: clock.seconds(at: end) - clock.seconds(at: boundaries[lastWithAudio]), end: end)]
         video = Track(
             rendition: videoRendition,
-            initSegment: try SegmentWriter.initSegment(
-                for: videoRendition, describedBy: opening.filter { $0.stream == videoStream.index }),
+            initSegment: try SegmentWriter.initSegment(for: videoRendition, describedBy: packets(of: videoStream)),
             segments: segments)
-        audio = Track(
-            rendition: audioRendition,
-            initSegment: try SegmentWriter.initSegment(
-                for: audioRendition, describedBy: opening.filter { $0.stream == audioStream.index }),
-            segments: Array(audioSegments))
+        // AVPlayer waits for good at an audio segment it cannot get, and ends the item where
+        // the shorter rendition ends. So a track's list stops at the last segment its audio
+        // reaches, and that segment is stretched to the end of the file.
+        let last = spans.count - 1
+        let reachingTheEnd = try await demuxer.streams(
+            Set(delivered.map(\.stream.index)), continuingPastKeyframe: spans[last].lowerBound)
+        var audio: [Track] = []
+        for rendition in audioRenditions {
+            let stream = rendition.stream.index
+            let lastWithAudio = reachingTheEnd.contains(stream) ? last : try await Self.lastIndex(below: last) {
+                try await demuxer.streams([stream], continuingPastKeyframe: spans[$0].lowerBound) == [stream]
+            }
+            audio.append(Track(
+                rendition: rendition,
+                initSegment: try SegmentWriter.initSegment(for: rendition, describedBy: packets(of: rendition.stream)),
+                segments: segments[..<lastWithAudio] + [Segment(
+                    entries: spans[lastWithAudio],
+                    seconds: clock.seconds(at: end) - clock.seconds(at: boundaries[lastWithAudio]), end: end)]))
+        }
+        self.audio = audio
+        defaultAudio = delivered.firstIndex { $0.stream.isDefault } ?? 0
+        omittedAudio = audioStreams.filter { stream in !delivered.contains { $0.stream.index == stream.index } }
+            .map(\.parameters.displayName)
         peakBitrate = zip(bytes, segments).map { Int(Double($0 * 8) / max($1.seconds, 0.001)) }.max() ?? 0
+    }
+
+    /// Whether the device decodes a video codec string the bridge delivers. AV1 and 10-bit
+    /// H.264 (profile 110, `6e`) have a decoder on some devices only.
+    private static func decodes(_ codec: String, on support: AVPlayerSupport) -> Bool {
+        if codec.hasPrefix("av01") { return support.videoCodecs.contains(.av1) }
+        if codec.hasPrefix("avc1.6e") { return support.decodesH264High10 }
+        return true
     }
 
     /// The last index `holds` is true for, when it is true at zero and, once false, false to

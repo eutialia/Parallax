@@ -78,7 +78,8 @@ struct AVPlayerSupportProbeTests {
         let support = AVPlayerSupportProbe.probe(
             isPlayable: { device.playable.contains($0) },
             mimeTypes: device.mimeTypes,
-            decodesInHardware: { device.hardware.contains($0) }
+            decodesInHardware: { device.hardware.contains($0) },
+            decodesH264High10: false
         )
         #expect(support == device.support)
     }
@@ -90,12 +91,14 @@ struct AVPlayerSupportProbeTests {
         let support = AVPlayerSupportProbe.probe(
             isPlayable: { _ in true },
             mimeTypes: Self.systemMIMETypes.union(["video/x-matroska", "video/webm", "video/mp2t", "video/avi"]),
-            decodesInHardware: { _ in true }
+            decodesInHardware: { _ in true },
+            decodesH264High10: true
         )
         #expect(support == AVPlayerSupport(
             containers: [.mp4, .mov, .hls],
             videoCodecs: [.h264, .hevc, .av1, .vp9],
-            audioCodecs: Set(AudioCodec.allCases)
+            audioCodecs: Set(AudioCodec.allCases),
+            decodesH264High10: true
         ))
     }
 
@@ -107,7 +110,8 @@ struct AVPlayerSupportProbeTests {
         let support = AVPlayerSupportProbe.probe(
             isPlayable: AVURLAsset.isPlayableExtendedMIMEType,
             mimeTypes: Set(AVURLAsset.audiovisualMIMETypes()),
-            decodesInHardware: { _ in true }
+            decodesInHardware: { _ in true },
+            decodesH264High10: false
         )
         #expect(support.containers.isSuperset(of: [.mp4, .mov, .hls]))
         #expect(support.videoCodecs.isSuperset(of: [.h264, .hevc]))

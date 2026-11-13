@@ -2,7 +2,7 @@
 # Regenerates the media bridge's fixtures: small MKVs, ffprobe's packet list for the two the
 # demuxer and segment tests compare against, a clip whose picture is its own frame number, and
 # files the bridge has to refuse.
-# Usage: scripts/gen-demux-fixtures.sh    (needs macOS, ffmpeg with libx264 and libx265, ffprobe, mkvmerge and python3)
+# Usage: scripts/gen-demux-fixtures.sh    (needs macOS, ffmpeg with libx264 and libx265, ffprobe, mkvmerge, dovi_tool and python3)
 set -euo pipefail
 
 OUT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)/Packages/ParallaxPlayback/Tests/ParallaxPlaybackTests/Fixtures/demux"
@@ -79,19 +79,19 @@ ffmpeg -v error -y \
     -bitexact -fflags +bitexact \
     "$OUT/audio-ends-two-segments-early.mkv"
 
-refused() {
+clip() {
     local name=$1; shift
     ffmpeg -v error -y \
         -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
         -t 2 -map 0:v -map 1:a "$@" -bitexact -fflags +bitexact "$OUT/$name.mkv"
 }
 x264=(-c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -b:v 100k)
-refused refused-mpeg4-video -c:v mpeg4 -g 12 -b:v 100k -c:a aac -b:a 24k
-refused refused-flac-audio "${x264[@]}" -c:a flac
-# Codecs the bridge delivers, in profiles no Apple device decodes.
-refused refused-high10-video -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p10le -b:v 100k -c:a aac -b:a 24k
+clip refused-mpeg4-video -c:v mpeg4 -g 12 -b:v 100k -c:a aac -b:a 24k
+clip refused-dts-audio "${x264[@]}" -c:a dca -strict -2 -ac 2
+# 10-bit H.264, which the bridge delivers to a device that decodes it.
+clip h264-high10 -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p10le -b:v 100k -c:a aac -b:a 24k
 # AAC Low Delay, object type 23, which only AudioToolbox's encoder writes.
-refused refused-ld-aac "${x264[@]}" -c:a aac_at -profile:a 22 -ac 2
+clip refused-ld-aac "${x264[@]}" -c:a aac_at -profile:a 22 -ac 2
 # HE-AAC and HE-AAC v2, object types 5 and 29, which the bridge delivers. Four seconds make two
 # segments.
 for profile in "he-aac 4" "he-aac-v2 28"; do
@@ -99,6 +99,47 @@ for profile in "he-aac 4" "he-aac-v2 28"; do
     ffmpeg -v error -y \
         -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
         -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a aac_at -profile:a "$2" -ac 2 -bitexact -fflags +bitexact "$OUT/$1.mkv"
+done
+# The other audio codecs the bridge delivers, and AV1 video.
+for codec in "flac flac" "eac3 eac3 -b:a 96k" "opus libopus -b:a 32k"; do
+    set -- $codec
+    name=$1; shift
+    ffmpeg -v error -y \
+        -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+        -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a "$@" -ac 2 -bitexact -fflags +bitexact "$OUT/$name.mkv"
+done
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 4 -map 0:v -map 1:a -c:v libsvtav1 -preset 10 -g 12 -svtav1-params "lp=1" -pix_fmt yuv420p \
+    -c:a aac -b:a 24k -bitexact -fflags +bitexact "$OUT/av1.mkv" 2>/dev/null
+# Four audio tracks, each with its own tone: untitled English AAC at 440 Hz, the file's default
+# track in AC-3 5.1 at 880 Hz with a title, DTS, which the bridge leaves out, and untitled FLAC
+# at 660 Hz whose language is "ger", the older of the two codes for German, which mkvmerge writes.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000" -f lavfi -i "sine=frequency=880:sample_rate=48000" \
+    -f lavfi -i "sine=frequency=660:sample_rate=48000" \
+    -t 6 -map 0:v -map 1:a -map 2:a -map 1:a -map 3:a "${x264[@]}" \
+    -c:a:0 aac -b:a:0 64k -ac:a:0 2 -c:a:1 ac3 -b:a:1 192k -ac:a:1 6 \
+    -c:a:2 dca -strict -2 -ac:a:2 2 -c:a:3 flac -ac:a:3 2 \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=jpn -metadata:s:a:1 title=Surround \
+    -metadata:s:a:2 language=jpn -metadata:s:a:3 language=ger \
+    -disposition:a:0 0 -disposition:a:1 default -disposition:a:2 0 -disposition:a:3 0 \
+    -bitexact -fflags +bitexact "$OUT/four-audio-tracks.mkv"
+# Pixels a third wider than they are tall: 160 by 90 stored, 213 by 90 shown.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 2 -map 0:v -map 1:a -vf setsar=4/3 "${x264[@]}" -c:a aac -b:a 24k -bitexact -fflags +bitexact "$OUT/anamorphic.mkv"
+# HDR video as its transfer function alone: PQ, which HDR10 and Dolby Vision use, and HLG. The
+# picture is the test pattern. The declared function is all a playlist reads.
+for range in "pq smpte2084" "hlg arib-std-b67"; do
+    set -- $range
+    ffmpeg -v error -y \
+        -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+        -t 2 -map 0:v -map 1:a \
+        -c:v libx265 -preset veryfast -pix_fmt yuv420p10le \
+        -x265-params "keyint=12:log-level=error:colorprim=bt2020:transfer=$2:colormatrix=bt2020nc" \
+        -c:a aac -b:a 24k -bitexact -fflags +bitexact "$OUT/hdr-$1.mkv"
 done
 # Dolby Vision profile 5. No encoder here writes it, so the record is written by hand: a `dvcC`
 # box added to the sample entry of a plain Main 10 MP4, which ffmpeg then carries into Matroska.
@@ -137,13 +178,31 @@ open(sys.argv[2], "wb").write(data)
 PYTHON
 ffmpeg -v error -y -i "$OUT/dolby-vision-5.mp4" -map 0 -c copy -bitexact -fflags +bitexact "$OUT/refused-dolby-vision-5.mkv"
 rm "$OUT/main10.mp4" "$OUT/dolby-vision-5.mp4"
-refused refused-one-keyframe "${x264[@]}" -g 1000 -c:a aac -b:a 24k
+# Dolby Vision profile 8.1, over an HDR10 base layer, 8.4, over an HLG one, and 8.2, over an SDR
+# one, which Apple's players do not take as Dolby Vision. An RPU is on every frame: AVPlayer shows
+# nothing of a stream whose record promises RPUs it does not carry. The colour goes into the
+# stream itself, where mkvmerge reads the base layer's kind from.
+ffmpeg -v error -y -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 2 -c:a aac -b:a 24k "$OUT/tone.m4a"
+# Name, the RPU's profile, then the transfer function and primaries as H.265 numbers them.
+for dolby in "8-1 8.1 16 9" "8-4 8.4 18 9" "8-2 8.1 1 1"; do
+    set -- $dolby
+    printf '{"cm_version": "V40", "length": 48, "profile": "%s", "level6": {"max_display_mastering_luminance": 1000, "min_display_mastering_luminance": 1, "max_content_light_level": 1000, "max_frame_average_light_level": 400}}' "$2" > "$OUT/rpu.json"
+    dovi_tool generate -j "$OUT/rpu.json" -o "$OUT/rpu.bin" > /dev/null
+    ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -t 2 \
+        -c:v libx265 -preset veryfast -pix_fmt yuv420p10le -x265-params "keyint=12:log-level=error" \
+        -bsf:v "hevc_metadata=colour_primaries=$4:transfer_characteristics=$3:matrix_coefficients=$4" -f hevc "$OUT/base.hevc"
+    dovi_tool inject-rpu -i "$OUT/base.hevc" --rpu-in "$OUT/rpu.bin" -o "$OUT/dolby-vision.hevc" > /dev/null
+    mkvmerge -q -o "$OUT/dolby-vision-$1.mkv" --default-duration 0:24fps "$OUT/dolby-vision.hevc" "$OUT/tone.m4a"
+    rm "$OUT/rpu.json" "$OUT/rpu.bin" "$OUT/base.hevc" "$OUT/dolby-vision.hevc"
+done
+rm "$OUT/tone.m4a"
+clip refused-one-keyframe "${x264[@]}" -g 1000 -c:a aac -b:a 24k
 # A live recording: no Cues and no Duration. libavformat still indexes the keyframes it passes
 # while opening the file, so the missing length is what gives it away.
-refused refused-no-duration "${x264[@]}" -c:a aac -b:a 24k -live 1
+clip refused-no-duration "${x264[@]}" -c:a aac -b:a 24k -live 1
 # A file whose times start at ten minutes, as a cut from a longer recording does. mkvmerge
 # writes Duration as the length (4 s), where ffmpeg writes the last end time.
-refused late-start-source "${x264[@]}" -c:a aac -b:a 24k -t 4
+clip late-start-source "${x264[@]}" -c:a aac -b:a 24k -t 4
 mkvmerge --quiet --deterministic 0 -o "$OUT/late-start.mkv" \
     --sync 0:600000 --sync 1:600000 "$OUT/late-start-source.mkv"
 rm "$OUT/late-start-source.mkv"
