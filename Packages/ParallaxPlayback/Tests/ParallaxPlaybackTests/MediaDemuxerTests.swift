@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 import ParallaxCore
 import ParallaxTestScaling
@@ -66,7 +67,7 @@ struct MediaDemuxerTests {
 
     @Test(
         "spans fetched out of order add up to exactly the file's packets",
-        arguments: ["h264-ffmpeg", "h264-mkvmerge"], Order.allCases)
+        arguments: ["h264-ffmpeg", "h264-mkvmerge", "long-span"], Order.allCases)
     func spansFetchedOutOfOrderAddUpToTheFile(name: String, order: Order) async throws {
         let demuxer = try await MediaDemuxer.open(
             InMemoryRandomAccessReader(data: Self.fixture(name, "mkv")))
@@ -80,6 +81,124 @@ struct MediaDemuxerTests {
         let joined = (0..<count).flatMap { spans[$0] ?? [] }
 
         #expect(Self.samples(joined) == (try Self.expectedSamples(name)))
+    }
+
+    /// Every cluster of the file, by an EBML walk of its Segment: where it starts and its time,
+    /// in milliseconds as both fixtures store it.
+    private static func clusters(in data: Data) -> [(position: Int64, milliseconds: Int64)] {
+        let bytes = [UInt8](data)
+        func vint(at offset: Int, keepingMarker: Bool) -> (value: Int64, length: Int) {
+            let length = bytes[offset].leadingZeroBitCount + 1
+            let first = keepingMarker ? Int64(bytes[offset]) : Int64(bytes[offset]) & (0xFF >> length)
+            return (bytes[offset + 1..<offset + length].reduce(first) { $0 << 8 | Int64($1) }, length)
+        }
+        func element(at offset: Int) -> (id: Int64, data: Int, size: Int) {
+            let id = vint(at: offset, keepingMarker: true)
+            let size = vint(at: offset + id.length, keepingMarker: false)
+            return (id.value, offset + id.length + size.length, Int(size.value))
+        }
+        let header = element(at: 0)
+        let segment = element(at: header.data + header.size)
+        var found: [(position: Int64, milliseconds: Int64)] = []
+        var offset = segment.data
+        while offset < min(segment.data + segment.size, bytes.count) {
+            let child = element(at: offset)
+            if child.id == 0x1F43_B675 {
+                let first = element(at: child.data)
+                let timestamp = first.id == 0xBF ? element(at: first.data + first.size) : first
+                if timestamp.id == 0xE7 {
+                    let value = bytes[timestamp.data..<timestamp.data + timestamp.size].reduce(Int64(0)) { $0 << 8 | Int64($1) }
+                    found.append((Int64(offset), value))
+                }
+            }
+            offset = child.data + child.size
+        }
+        return found
+    }
+
+    @Test("an audio read starts only where a cluster does, from wherever in the span before the search begins",
+          arguments: ["h264-ffmpeg", "h264-mkvmerge", "long-span"])
+    func clusterSearchFindsOnlyClusters(name: String) async throws {
+        let data = try Self.fixture(name, "mkv")
+        let clusters = Self.clusters(in: data)
+        try #require(clusters.count > 4)
+        let demuxer = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data))
+        let keyframes = try await demuxer.keyframes()
+
+        for (previous, keyframe) in zip(keyframes, keyframes.dropFirst()) {
+            for offset in stride(from: previous.position, to: keyframe.position, by: 4096) {
+                let expected = clusters.first {
+                    $0.position >= offset && $0.position < keyframe.position
+                        && (previous.time...keyframe.time).contains($0.milliseconds * 1_000_000)
+                }?.position
+                #expect(try await demuxer.clusterStart(from: offset, before: keyframe, after: previous.time) == expected)
+            }
+        }
+    }
+
+    /// Serves the file and keeps where each read started.
+    private final class OffsetsReader: RandomAccessReading {
+        let backing: InMemoryRandomAccessReader
+        private let offsets = Mutex<[Int64]>([])
+
+        init(data: Data) { backing = InMemoryRandomAccessReader(data: data) }
+
+        var fileSize: UInt64 { get async throws { try await backing.fileSize } }
+
+        func read(offset: UInt64, length: Int) async throws -> Data {
+            offsets.withLock { $0.append(Int64(offset)) }
+            return try await backing.read(offset: offset, length: length)
+        }
+
+        func takeOffsets() -> [Int64] { offsets.withLock { defer { $0 = [] }; return $0 } }
+    }
+
+    @Test("the audio of the segment after a 32-second keyframe interval is read from at most eight seconds of it back")
+    func audioAfterALongSpanReadsEightSecondsBack() async throws {
+        let data = try Self.fixture("long-span", "mkv")
+        let reader = OffsetsReader(data: data)
+        // Blocks of 4 KB, and few enough kept that what the open read is gone again.
+        let demuxer = try await MediaDemuxer.open(SessionBlockCache(
+            reader: reader, size: UInt64(data.count), blockSize: 4096, bytesKept: 64 << 10))
+        let keyframes = try await demuxer.keyframes()
+        try #require(keyframes[1].time == 32_000_000_000)
+        _ = reader.takeOffsets()
+
+        let audio = try await demuxer.packets(1, from: 1, to: 2)
+
+        let eightSeconds = (keyframes[1].position - keyframes[0].position) / 4
+        let first = try #require(reader.takeOffsets().min())
+        #expect(first >= keyframes[1].position - eightSeconds - 4096)
+        #expect(first < keyframes[1].position)
+        #expect(audio == (try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data)).packets(1, from: 1, to: 2)))
+    }
+
+    @Test("audio after a long span with no cluster in the eight seconds before its keyframe starts at the nearest cluster further back, not at the span's start")
+    func audioReadLooksFurtherBackForACluster() async throws {
+        let data = try Self.fixture("sparse-clusters", "mkv")
+        let reader = OffsetsReader(data: data)
+        let demuxer = try await MediaDemuxer.open(SessionBlockCache(
+            reader: reader, size: UInt64(data.count), blockSize: 4096, bytesKept: 64 << 10))
+        let keyframes = try await demuxer.keyframes()
+        try #require(keyframes[1].time == 50_000_000_000)
+        _ = reader.takeOffsets()
+
+        let audio = try await demuxer.packets(1, from: 1, to: 2)
+
+        // The cluster at 30 s is three fifths into the span, and the search for it reads from
+        // twice as far back as the window that missed it: past the span's first quarter.
+        let span = keyframes[1].position - keyframes[0].position
+        let first = try #require(reader.takeOffsets().min())
+        #expect(first > keyframes[0].position + span / 4)
+        #expect(audio == (try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data)).packets(1, from: 1, to: 2)))
+    }
+
+    @Test("an audio read looks back no further than the span before its keyframe, whose entries may share a time")
+    func audioLookbackStaysWithinTheSpan() {
+        let before = IndexedKeyframe(time: 50_000_000_000, position: 3 << 30)
+        #expect(MediaDemuxer.audioLookback(before: before, after: IndexedKeyframe(time: 50_000_000_000, position: 1 << 30)) == 2 << 30)
+        // Eight of the span's ten seconds.
+        #expect(MediaDemuxer.audioLookback(before: before, after: IndexedKeyframe(time: 40_000_000_000, position: 2 << 30)) == (8 << 30) / 10)
     }
 
     @Test("a stream's codec string names its sample entry and profile", arguments: [

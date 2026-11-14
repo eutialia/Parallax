@@ -2,6 +2,7 @@ import Foundation
 import Network
 import OSLog
 import ParallaxCore
+import Synchronization
 
 /// A localhost/LAN HTTP/1.1 range server, so `AVPlayer` can stream a file it cannot open where
 /// it lives (`AVPlayer` speaks HTTP, not SMB). What it serves is its `MediaResponder`'s to say.
@@ -19,6 +20,7 @@ import ParallaxCore
 public actor LocalMediaServer {
 
     private static let logger = Log.custom(category: "LocalMediaServer")
+    private static let requestLog = Log.retained(category: "BridgeRequests")
 
     private let responder: any MediaResponder
 
@@ -57,7 +59,8 @@ public actor LocalMediaServer {
     /// Session diagnostics: what this server actually cost the source. `bytesRead` counts
     /// every byte pulled from a served resource's reader on behalf of a client — charged at READ time, so a
     /// chunk the client reset before the send still counts (that's exactly the waste the
-    /// number exists to expose). `connections` counts accepted client connections (a
+    /// number exists to expose). A streamed body counts what its producer had fetched when the
+    /// response ended; a bridge's own opening reads are not a client's. `connections` counts accepted client connections (a
     /// player's probe pattern can open many per session).
     public struct Stats: Sendable {
         public let bytesRead: UInt64
@@ -70,6 +73,11 @@ public actor LocalMediaServer {
     public var stats: Stats {
         Stats(bytesRead: statsBytesRead, connections: statsConnections)
     }
+
+    /// Every request answered so far, in the order each ended.
+    private(set) var records: [RequestRecord] = []
+    /// Starts timing a request on the server's clock.
+    private let stopwatch: @Sendable () -> @Sendable () -> Duration
 
     /// Body chunk ceiling: read + send the file in slices so the whole file is never buffered.
     /// Package-internal so the multi-chunk tests size their fixtures off the real ceiling instead
@@ -86,8 +94,9 @@ public actor LocalMediaServer {
     /// Request-head cap: reject a head that doesn't terminate within 16 KiB (malformed / abusive).
     static let maxHeadBytes = 16 * 1024
 
-    public init(responder: any MediaResponder) {
+    public init(responder: any MediaResponder, clock: any Clock<Duration> = ContinuousClock()) {
         self.responder = responder
+        stopwatch = Self.stopwatch(on: clock)
         // 128-bit random token = two UInt64 draws from the system CSPRNG, lower-hex.
         var rng = SystemRandomNumberGenerator()
         let token = String(format: "%016llx%016llx", rng.next() as UInt64, rng.next() as UInt64)
@@ -200,6 +209,14 @@ public actor LocalMediaServer {
         }
     }
 
+    private static func stopwatch<C: Clock>(on clock: C) -> @Sendable () -> @Sendable () -> Duration
+    where C.Duration == Duration {
+        {
+            let start = clock.now
+            return { start.duration(to: clock.now) }
+        }
+    }
+
     /// Runs `body` on `queue` and resumes with its result — the hop that keeps Network.framework's
     /// blocking create/start/cancel calls off the cooperative pool (see `queue`).
     private func offPool<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
@@ -242,12 +259,22 @@ public actor LocalMediaServer {
     /// the head is malformed, or the socket errors/EOFs. AVPlayer reuses one connection for
     /// many range requests, so looping (not one-shot) is required.
     private func serve(_ connection: NWConnection) async {
+        let input = ConnectionInput(connection)
+        input.start()
         do {
             while !isStopped {
-                guard let head = try await readRequestHead(connection) else { break }
+                guard let head = await input.nextHead() else { break }
                 guard let request = Self.parse(head) else { break } // malformed → close, no response
-                let keepAlive = try await respond(connection, to: request)
-                if !keepAlive { break }
+                let elapsed = stopwatch()
+                var exchange = Exchange()
+                defer { record(request, exchange, after: elapsed()) }
+                do {
+                    let keepAlive = try await respond(connection, input, to: request, &exchange, elapsed)
+                    if !keepAlive { break }
+                } catch {
+                    if exchange.ending == .complete { exchange.ending = .dropped }
+                    throw error
+                }
             }
         } catch {
             // receive/send failure or EOF — normal connection teardown, nothing actionable.
@@ -256,27 +283,26 @@ public actor LocalMediaServer {
         remove(connection)
     }
 
-    // MARK: - Request reading / parsing
-
-    /// Accumulates bytes until the `\r\n\r\n` head terminator, returning the head (through the
-    /// terminator). Returns `nil` on EOF-before-head or if the head exceeds `maxHeadBytes`.
-    /// Any pipelined bytes past the terminator are dropped — AVPlayer's GET/HEAD carry no body
-    /// and it waits for each response before sending the next request.
-    private func readRequestHead(_ connection: NWConnection) async throws -> Data? {
-        var buffer = Data()
-        let terminator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // CRLFCRLF
-        while buffer.count < Self.maxHeadBytes {
-            let (chunk, isComplete) = try await receive(connection, maximumLength: Self.maxHeadBytes - buffer.count)
-            if let chunk, !chunk.isEmpty {
-                buffer.append(chunk)
-                if let found = buffer.range(of: terminator) {
-                    return buffer.subdata(in: buffer.startIndex..<found.upperBound)
-                }
-            }
-            if isComplete { return nil } // EOF before a complete head
-        }
-        return nil // head exceeded the cap → malformed
+    /// What one request has cost so far.
+    private struct Exchange {
+        var status = 0
+        var firstByte: Duration?
+        var bytesSent = 0
+        var bytesFetched = 0
+        var ending = RequestRecord.Ending.complete
     }
+
+    private func record(_ request: ParsedRequest, _ exchange: Exchange, after duration: Duration) {
+        let path = request.path.hasPrefix(root) ? String(request.path.dropFirst(root.count)) : nil
+        let record = RequestRecord(
+            resource: path.flatMap(responder.role(of:)) ?? "unknown", status: exchange.status,
+            firstByte: exchange.firstByte, duration: duration, bytesSent: exchange.bytesSent,
+            bytesFetched: exchange.bytesFetched, ending: exchange.ending)
+        records.append(record)
+        Self.requestLog.info("\(record)")
+    }
+
+    // MARK: - Request reading / parsing
 
     private struct ParsedRequest {
         let method: String
@@ -327,15 +353,18 @@ public actor LocalMediaServer {
     // MARK: - Response
 
     /// Answers one request, returning whether the connection should stay open.
-    private func respond(_ connection: NWConnection, to request: ParsedRequest) async throws -> Bool {
+    private func respond(
+        _ connection: NWConnection, _ input: ConnectionInput, to request: ParsedRequest,
+        _ exchange: inout Exchange, _ elapsed: @Sendable () -> Duration
+    ) async throws -> Bool {
         let keepAlive = request.keepAlive
 
         guard request.path.hasPrefix(root) else {
-            try await send(connection, Self.headerData(status: "404 Not Found", keepAlive: keepAlive))
+            try await sendHead(connection, 404, "Not Found", keepAlive: keepAlive, &exchange)
             return keepAlive
         }
         guard request.method == "GET" || request.method == "HEAD" else {
-            try await send(connection, Self.headerData(status: "405 Method Not Allowed", keepAlive: keepAlive))
+            try await sendHead(connection, 405, "Method Not Allowed", keepAlive: keepAlive, &exchange)
             return keepAlive
         }
         let resource: ServedResource?
@@ -343,18 +372,27 @@ public actor LocalMediaServer {
             resource = try await responder.resource(at: String(request.path.dropFirst(root.count)))
         } catch {
             Self.logger.error("no response for a request: \(error)")
-            try await send(connection, Self.headerData(status: "500 Internal Server Error", keepAlive: keepAlive))
+            exchange.ending = .failed(afterBytes: 0, by: error)
+            try await sendHead(connection, 500, "Internal Server Error", keepAlive: keepAlive, &exchange)
             return keepAlive
         }
         guard let resource else {
-            try await send(connection, Self.headerData(status: "404 Not Found", keepAlive: keepAlive))
+            try await sendHead(connection, 404, "Not Found", keepAlive: keepAlive, &exchange)
             return keepAlive
         }
-        let reader = resource.reader
         let contentType = resource.contentType
+        let isHead = request.method == "HEAD"
+        let reader: any RandomAccessReading
+        switch resource.body {
+        case .ranged(let ranged):
+            reader = ranged
+        case .streamed(let produce):
+            return try await stream(
+                connection, input, isHead ? nil : produce(), contentType: contentType, keepAlive: keepAlive,
+                &exchange, elapsed)
+        }
 
         let size = try await reader.fileSize
-        let isHead = request.method == "HEAD"
 
         guard let rangeSpec = request.rangeSpec else {
             // No Range → 200 full body.
@@ -365,8 +403,9 @@ public actor LocalMediaServer {
                     ("Accept-Ranges", "bytes"),
                     ("Content-Length", "\(size)"),
                 ])
+            exchange.status = 200
             try await send(connection, headers)
-            if !isHead { try await streamBody(connection, from: reader, start: 0, length: size) }
+            if !isHead { try await streamBody(connection, from: reader, start: 0, length: size, &exchange, elapsed) }
             return keepAlive
         }
 
@@ -375,6 +414,7 @@ public actor LocalMediaServer {
             let headers = Self.headerData(
                 status: "416 Range Not Satisfiable", keepAlive: keepAlive,
                 fields: [("Content-Range", "bytes */\(size)")])
+            exchange.status = 416
             try await send(connection, headers)
             return keepAlive
 
@@ -389,8 +429,9 @@ public actor LocalMediaServer {
                     ("Accept-Ranges", "bytes"),
                     ("Content-Length", "\(size)"),
                 ])
+            exchange.status = 200
             try await send(connection, headers)
-            if !isHead { try await streamBody(connection, from: reader, start: 0, length: size) }
+            if !isHead { try await streamBody(connection, from: reader, start: 0, length: size, &exchange, elapsed) }
             return keepAlive
 
         case let .satisfiable(start, end):
@@ -403,8 +444,9 @@ public actor LocalMediaServer {
                     ("Content-Range", "bytes \(start)-\(end)/\(size)"),
                     ("Content-Length", "\(length)"),
                 ])
+            exchange.status = 206
             try await send(connection, headers)
-            if !isHead { try await streamBody(connection, from: reader, start: start, length: length) }
+            if !isHead { try await streamBody(connection, from: reader, start: start, length: length, &exchange, elapsed) }
             return keepAlive
         }
     }
@@ -440,7 +482,8 @@ public actor LocalMediaServer {
     /// TCP/receiver backpressure gates the reader, and an aborted connection surfaces as a
     /// failed send BEFORE the next (bigger) read is charged to the share.
     private func streamBody(
-        _ connection: NWConnection, from reader: any RandomAccessReading, start: UInt64, length: UInt64
+        _ connection: NWConnection, from reader: any RandomAccessReading, start: UInt64, length: UInt64,
+        _ exchange: inout Exchange, _ elapsed: @Sendable () -> Duration
     ) async throws {
         var offset = start
         var remaining = length
@@ -449,8 +492,9 @@ public actor LocalMediaServer {
             let want = Int(min(UInt64(chunk), remaining))
             let data = try await reader.read(offset: offset, length: want)
             statsBytesRead += UInt64(data.count)
+            exchange.bytesFetched += data.count
             if data.isEmpty { break } // pread EOF — stop rather than spin
-            try await send(connection, data)
+            try await sendBody(connection, data, counting: data.count, &exchange, elapsed)
             offset += UInt64(data.count)
             remaining -= UInt64(data.count)
             if data.count < want { break } // short read = EOF
@@ -458,18 +502,82 @@ public actor LocalMediaServer {
         }
     }
 
+    /// Answers with a body made as it is sent: `200`, chunked, one chunk per piece, and any
+    /// `Range` ignored, since the length is not known up front. The first piece is made before
+    /// any header, so a failure up to there is still a `500`. A failure after it closes the
+    /// connection without the last chunk, so the client never takes a cut-off body as whole.
+    /// With no producer, for `HEAD`, only the headers go out.
+    private func stream(
+        _ connection: NWConnection, _ input: ConnectionInput, _ producer: (any BodyProducer)?,
+        contentType: String, keepAlive: Bool, _ exchange: inout Exchange, _ elapsed: @Sendable () -> Duration
+    ) async throws -> Bool {
+        let headers = Self.headerData(
+            status: "200 OK", keepAlive: keepAlive, fields: [("Content-Type", contentType)], chunked: true)
+        guard let producer else {
+            exchange.status = 200
+            try await send(connection, headers)
+            return keepAlive
+        }
+        input.whileStreaming { producer.cancel() }
+        defer {
+            input.doneStreaming()
+            producer.cancel()
+            exchange.bytesFetched = producer.bytesFetched
+            statsBytesRead += UInt64(producer.bytesFetched)
+        }
+        var piece: Data?
+        do {
+            piece = try await producer.next()
+        } catch {
+            if input.hasEnded {
+                exchange.ending = .dropped
+                return false
+            }
+            Self.logger.error("no first piece for a request: \(error)")
+            exchange.ending = .failed(afterBytes: 0, by: error)
+            try await sendHead(connection, 500, "Internal Server Error", keepAlive: keepAlive, &exchange)
+            return keepAlive
+        }
+        exchange.status = 200
+        try await send(connection, headers)
+        do {
+            while let data = piece {
+                try await sendBody(
+                    connection, Data("\(String(data.count, radix: 16))\r\n".utf8) + data + Data("\r\n".utf8),
+                    counting: data.count, &exchange, elapsed)
+                piece = try await producer.next()
+            }
+        } catch {
+            if input.hasEnded {
+                exchange.ending = .dropped
+            } else {
+                Self.logger.error("a streamed body stopped: \(error)")
+                exchange.ending = .failed(afterBytes: exchange.bytesSent, by: error)
+            }
+            return false
+        }
+        try await send(connection, Data("0\r\n\r\n".utf8))
+        return keepAlive
+    }
+
     // MARK: - Network.framework bridging
 
-    private func receive(_ connection: NWConnection, maximumLength: Int) async throws -> (Data?, Bool) {
-        try await withCheckedThrowingContinuation { continuation in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) { data, _, isComplete, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: (data, isComplete))
-                }
-            }
-        }
+    /// A response with no body.
+    private func sendHead(
+        _ connection: NWConnection, _ status: Int, _ reason: String, keepAlive: Bool, _ exchange: inout Exchange
+    ) async throws {
+        exchange.status = status
+        try await send(connection, Self.headerData(status: "\(status) \(reason)", keepAlive: keepAlive))
+    }
+
+    /// `bytes` of the body, which `data` carries with any framing around them.
+    private func sendBody(
+        _ connection: NWConnection, _ data: Data, counting bytes: Int, _ exchange: inout Exchange,
+        _ elapsed: @Sendable () -> Duration
+    ) async throws {
+        try await send(connection, data)
+        exchange.firstByte = exchange.firstByte ?? elapsed()
+        exchange.bytesSent += bytes
     }
 
     private func send(_ connection: NWConnection, _ data: Data) async throws {
@@ -482,11 +590,18 @@ public actor LocalMediaServer {
 
     // MARK: - Header formatting
 
-    private static func headerData(status: String, keepAlive: Bool, fields: [(String, String)] = []) -> Data {
+    /// `chunked` for a body whose length is not known: its end is the last chunk.
+    private static func headerData(
+        status: String, keepAlive: Bool, fields: [(String, String)] = [], chunked: Bool = false
+    ) -> Data {
         var head = "HTTP/1.1 \(status)\r\n"
         for (name, value) in fields { head += "\(name): \(value)\r\n" }
-        // A status with no explicit body length still needs Content-Length: 0 for keep-alive.
-        if !fields.contains(where: { $0.0 == "Content-Length" }) { head += "Content-Length: 0\r\n" }
+        if chunked {
+            head += "Transfer-Encoding: chunked\r\n"
+        } else if !fields.contains(where: { $0.0 == "Content-Length" }) {
+            // A status with no explicit body length still needs Content-Length: 0 for keep-alive.
+            head += "Content-Length: 0\r\n"
+        }
         head += "Connection: \(keepAlive ? "keep-alive" : "close")\r\n\r\n"
         return Data(head.utf8)
     }
@@ -507,5 +622,83 @@ private final class ReadyGuard: @unchecked Sendable {
         if fired { return }
         fired = true
         body()
+    }
+}
+
+/// What a client has sent that is not yet read. One `receive` stays outstanding for the
+/// connection's life, so a client that closes or resets is seen at once, even while a response
+/// is still being made; bytes that arrive ahead of time, a pipelined request, wait here.
+private final class ConnectionInput: Sendable {
+    private struct State {
+        var buffered = Data()
+        var hasEnded = false
+        var waiter: CheckedContinuation<Void, Never>?
+        var onEnd: (@Sendable () -> Void)?
+    }
+
+    private let connection: NWConnection
+    private let state = Mutex(State())
+    private static let terminator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // CRLFCRLF
+
+    init(_ connection: NWConnection) { self.connection = connection }
+
+    var hasEnded: Bool { state.withLock { $0.hasEnded } }
+
+    func start() { receiveNext() }
+
+    private func receiveNext() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [self] data, _, isComplete, error in
+            let (ended, waiter, onEnd) = state.withLock { state in
+                if let data { state.buffered.append(data) }
+                // More unread than a request head may be is a client to stop listening to.
+                state.hasEnded = isComplete || error != nil || state.buffered.count > LocalMediaServer.maxHeadBytes
+                defer {
+                    state.waiter = nil
+                    if state.hasEnded { state.onEnd = nil }
+                }
+                return (state.hasEnded, state.waiter, state.hasEnded ? state.onEnd : nil)
+            }
+            waiter?.resume()
+            onEnd?()
+            if !ended { receiveNext() }
+        }
+    }
+
+    /// The next request head, through its terminator. Nil when the connection ends first or the
+    /// head runs past `maxHeadBytes`.
+    func nextHead() async -> Data? {
+        while true {
+            let head = state.withLock { state -> Data?? in
+                if let found = state.buffered.range(of: Self.terminator) {
+                    let head = state.buffered.subdata(in: state.buffered.startIndex..<found.upperBound)
+                    state.buffered = state.buffered.subdata(in: found.upperBound..<state.buffered.endIndex)
+                    return .some(head)
+                }
+                return state.hasEnded || state.buffered.count >= LocalMediaServer.maxHeadBytes ? .some(nil) : .none
+            }
+            if let head { return head }
+            await withCheckedContinuation { continuation in
+                let ready = state.withLock { state in
+                    let ready = state.hasEnded || state.buffered.range(of: Self.terminator) != nil
+                        || state.buffered.count >= LocalMediaServer.maxHeadBytes
+                    if !ready { state.waiter = continuation }
+                    return ready
+                }
+                if ready { continuation.resume() }
+            }
+        }
+    }
+
+    /// Calls `onEnd` once if the connection ends before `doneStreaming`, at once if it already has.
+    func whileStreaming(_ onEnd: @escaping @Sendable () -> Void) {
+        let ended = state.withLock { state in
+            if !state.hasEnded { state.onEnd = onEnd }
+            return state.hasEnded
+        }
+        if ended { onEnd() }
+    }
+
+    func doneStreaming() {
+        state.withLock { $0.onEnd = nil }
     }
 }

@@ -38,8 +38,10 @@ public enum BridgeRefusal: Error, Equatable, Sendable {
     /// No audio stream that is both in a codec the bridge delivers and present at the start of
     /// the file. `names` are the codecs the file does have.
     case noDeliverableAudio(names: [String])
-    /// One segment's stretch of the file is larger than a segment may be: it is built in memory.
-    case segmentTooLarge(bytes: Int64)
+    /// The index stops: after its last entry more of the file runs than any keyframe interval
+    /// does, with nowhere to start a segment. `after` is that entry, in whole seconds from the
+    /// first keyframe.
+    case indexGap(after: Int)
     /// The file's own bytes stopped the bridge: a container libavformat cannot read, no video,
     /// a first sample with no time. `detail` is the failure as the bridge names it.
     case unreadable(detail: String)
@@ -54,7 +56,8 @@ extension BridgeRefusal: CustomStringConvertible {
         case .videoCodec(let name): "video: \(name)"
         case .hdrVideo(let range): "video: \(range), and this display shows no HDR"
         case .noDeliverableAudio(let names): "audio: \(names.isEmpty ? "none" : names.joined(separator: ", "))"
-        case .segmentTooLarge(let bytes): "a segment of \(bytes >> 20) MB"
+        case .indexGap(let after):
+            "no keyframe index after \(after / 3600):\(String(format: "%02d:%02d", after / 60 % 60, after % 60))"
         case .unreadable(let detail): "unreadable: \(detail)"
         }
     }
@@ -94,7 +97,15 @@ struct BridgePlan: Sendable {
     static let videoTimescale: Int64 = 120_000
     /// A segment is at least this long. Index entries closer together are merged.
     static let targetSegmentLength: Int64 = 2_000_000_000
-    static let defaultSegmentByteLimit: Int64 = 64 << 20
+    /// Longer than any keyframe interval a real encode has: the longest in a 74-movie library
+    /// was 282 s, and the file whose index stops ran 5,401 s past its last entry.
+    static let defaultIndexGapLimit: Duration = .seconds(600)
+
+    /// How far into the first span the plan reads for an audio stream to show. Audio that starts
+    /// with the video is in the first cluster; a stream that has shown nothing by here is left
+    /// out. The first span of a measured movie was 224 MB, too much to read inside the open's
+    /// deadline.
+    static let openingByteLimit = 16 << 20
 
     func track(_ id: RenditionID) -> Track? {
         switch id {
@@ -103,11 +114,11 @@ struct BridgePlan: Sendable {
         }
     }
 
-    /// Reads the index and the first segment. Throws a `BridgeRefusal`, the reader's own error,
+    /// Reads the index and the file's opening. Throws a `BridgeRefusal`, the reader's own error,
     /// or the `SegmentWriter.Failure` that stopped an init segment.
     init(
         reading demuxer: MediaDemuxer, support: AVPlayerSupport, showsHDR: Bool,
-        segmentByteLimit: Int64 = defaultSegmentByteLimit
+        indexGapLimit: Duration = defaultIndexGapLimit
     ) async throws {
         let keyframes = try await demuxer.keyframes()
         guard keyframes.count >= 2 else { throw BridgeRefusal.noCues }
@@ -130,19 +141,35 @@ struct BridgePlan: Sendable {
             (span.upperBound < keyframes.count ? keyframes[span.upperBound].position : demuxer.fileSize)
                 - keyframes[span.lowerBound].position
         }
-        if let largest = bytes.max(), largest > segmentByteLimit {
-            throw BridgeRefusal.segmentTooLarge(bytes: largest)
+        // Muxers disagree on Duration. ffmpeg writes the time the last sample ends; mkvmerge
+        // writes the length, which is the same thing only for a file that starts at zero. A
+        // value at or before the last segment's start can only be a length.
+        let lastStart = keyframes[spans[spans.count - 1].lowerBound].time
+        let end = duration > lastStart ? duration : keyframes[0].time + duration
+        let lastEntry = keyframes[keyframes.count - 1].time
+        if Duration.nanoseconds(end - lastEntry) > indexGapLimit {
+            throw BridgeRefusal.indexGap(after: Int((lastEntry - keyframes[0].time) / 1_000_000_000))
         }
 
-        let opening = try await demuxer.packets(from: spans[0].lowerBound, to: spans[0].upperBound)
+        let audioStreams = demuxer.streams.filter { $0.kind == .audio }
+        // The earliest picture shown is within the reorder depth of the keyframe, and audio
+        // runs in time order. An init segment is written from one MP4 sample, which may join
+        // several frames.
+        let opening = try await demuxer.opening(
+            before: spans[0].upperBound, videoPackets: videoStream.parameters.reorderDepth + 1,
+            audioPackets: CodecParameters.mostFramesPerSample,
+            of: Set(audioStreams.filter { $0.parameters.playlistCodec != nil }.map(\.index)),
+            byteLimit: Self.openingByteLimit)
         func packets(of stream: DemuxedStream) -> [DemuxedPacket] { opening.filter { $0.stream == stream.index } }
         func firstTime(of stream: DemuxedStream) -> Int64? { packets(of: stream).compactMap(\.presentationTime).min() }
         guard let videoStart = firstTime(of: videoStream) else { throw SegmentWriter.Failure.untimedSample }
-        let audioStreams = demuxer.streams.filter { $0.kind == .audio }
-        let delivered = audioStreams.compactMap { stream in
-            stream.parameters.playlistCodec.flatMap { codec in
-                firstTime(of: stream).map { (stream: stream, codec: codec, start: $0) }
-            }
+        // A stream the opening holds less than one MP4 sample of has no init segment.
+        let delivered = audioStreams.compactMap { stream -> (stream: DemuxedStream, codec: String, start: Int64, frame: Int)? in
+            guard let codec = stream.parameters.playlistCodec, let start = firstTime(of: stream) else { return nil }
+            let opened = packets(of: stream)
+            let frame = stream.parameters.samplesPerFrame(readingHeaderOf: opened[0].data)
+            guard opened.count >= stream.parameters.framesPerSample(of: frame) else { return nil }
+            return (stream, codec, start, frame)
         }
         guard let audioStart = delivered.map(\.start).min() else {
             throw BridgeRefusal.noDeliverableAudio(names: audioStreams.map(\.parameters.displayName))
@@ -167,21 +194,20 @@ struct BridgePlan: Sendable {
             stream: videoStream, codec: videoCodec, supplementalCodec: videoStream.parameters.dolbyVisionCodec,
             clock: MediaClock(timescale: Self.videoTimescale, origin: origin, grid: videoGrid),
             decodeLead: decodeLead)
-        let audioRenditions = delivered.map { stream, codec, start in
-            let frame = stream.parameters.samplesPerFrame(readingHeaderOf: packets(of: stream)[0].data)
-            return Rendition(
+        let audioRenditions = delivered.map { stream, codec, start, frame in
+            Rendition(
                 stream: stream, codec: codec, supplementalCodec: nil,
                 clock: MediaClock(
                     timescale: Int64(stream.parameters.sampleRate), origin: origin,
-                    grid: frame > 0 ? .init(anchor: start, step: Int64(frame), tolerance: .max) : nil),
+                    grid: frame > 0
+                        ? .init(
+                            anchor: start, step: Int64(frame), tolerance: .max,
+                            framesPerSample: Int64(stream.parameters.framesPerSample(of: frame)))
+                        : nil),
                 decodeLead: 0)
         }
+        let audioClocks = Dictionary(uniqueKeysWithValues: audioRenditions.map { ($0.stream.index, $0.clock) })
         let clock = videoRendition.clock
-        // Muxers disagree on Duration. ffmpeg writes the time the last sample ends; mkvmerge
-        // writes the length, which is the same thing only for a file that starts at zero. A
-        // value at or before the last segment's start can only be a length.
-        let lastStart = keyframes[spans[spans.count - 1].lowerBound].time
-        let end = duration > lastStart ? duration : keyframes[0].time + duration
         let boundaries = spans.map { keyframes[$0.lowerBound].time } + [end]
         let segments = zip(spans, zip(boundaries, boundaries.dropFirst())).map {
             Segment(entries: $0, seconds: clock.seconds(at: $1.1) - clock.seconds(at: $1.0), end: $1.1)
@@ -194,13 +220,12 @@ struct BridgePlan: Sendable {
         // the shorter rendition ends. So a track's list stops at the last segment its audio
         // reaches, and that segment is stretched to the end of the file.
         let last = spans.count - 1
-        let reachingTheEnd = try await demuxer.streams(
-            Set(delivered.map(\.stream.index)), continuingPastKeyframe: spans[last].lowerBound)
+        let reachingTheEnd = try await demuxer.streams(audioClocks, continuingPastKeyframe: spans[last].lowerBound)
         var audio: [Track] = []
         for rendition in audioRenditions {
             let stream = rendition.stream.index
             let lastWithAudio = reachingTheEnd.contains(stream) ? last : try await Self.lastIndex(below: last) {
-                try await demuxer.streams([stream], continuingPastKeyframe: spans[$0].lowerBound) == [stream]
+                try await demuxer.streams([stream: rendition.clock], continuingPastKeyframe: spans[$0].lowerBound) == [stream]
             }
             audio.append(Track(
                 rendition: rendition,

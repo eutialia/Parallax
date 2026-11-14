@@ -38,12 +38,12 @@ public enum DiagnosticsVitals {
 
     /// Bytes remaining before this process hits its jetsam limit: `task_vm_info.limit_bytes_remaining`,
     /// the same field `os_proc_available_memory` reads. Read here because macOS has no such function.
-    static func available() -> Int {
+    public static func available() -> Int {
         vmInfo().map { Int($0.limit_bytes_remaining) } ?? 0
     }
 
     /// Current physical footprint — the same figure jetsam scores the process on.
-    static func footprint() -> Int {
+    public static func footprint() -> Int {
         vmInfo().map { Int($0.phys_footprint) } ?? 0
     }
 

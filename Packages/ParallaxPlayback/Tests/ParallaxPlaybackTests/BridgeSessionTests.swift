@@ -9,14 +9,14 @@ import ParallaxTestScaling
 @Suite("BridgeSession", .scaledTimeLimit())
 struct BridgeSessionTests {
 
-    private static func session(_ name: String) async throws -> BridgeSession {
-        let demuxer = try await BridgeFixture.demuxer(name)
-        return BridgeSession(demuxer: demuxer, plan: try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true))
+    private static func session(_ name: String, fragmentLimits: FragmentLimits = .standard) async throws -> BridgeSession {
+        try await BridgeSession.open(
+            InMemoryRandomAccessReader(data: BridgeFixture.data(name)), support: BridgeFixture.everyDecoder, showsHDR: true,
+            fragmentLimits: fragmentLimits)
     }
 
     private static func bytes(_ session: BridgeSession, _ path: String) async throws -> Data {
-        let reader = try #require(try await session.resource(at: path)).reader
-        return try await reader.read(offset: 0, length: Int(try await reader.fileSize))
+        try await #require(try await session.resource(at: path)).bytes()
     }
 
     @Test(
@@ -39,6 +39,68 @@ struct BridgeSessionTests {
         // Video starts at 104.33 ms (12,520 of 120,000) and audio 21.0 ms before it, at 83.33 ms
         // (4,000 of 48,000): the source's own offset between the two.
         #expect(readBack.map(\.presentation).sorted() == source.indices.map { first + Int64($0) * step })
+    }
+
+    /// An MP4 sample of E-AC-3 holds six blocks, so the muxer joins frames of three into pairs,
+    /// and libavformat's demuxer splits them again on reading. The fixture's 375 frames fall 125
+    /// to a two-second segment, and the last has no partner.
+    @Test(
+        "an E-AC-3 rendition of three-block frames, a frame per fragment, holds every frame but an unpaired last one, evenly spaced",
+        arguments: [FragmentLimits.standard, FragmentLimits(bytes: 1, duration: .seconds(Int64.max))])
+    func shortEAC3FramesArePairedAcrossSegments(fragmentLimits: FragmentLimits) async throws {
+        let session = try await Self.session("eac3-three-blocks", fragmentLimits: fragmentLimits)
+        let segments = try #require(session.plan.audio.first).segments
+        var file = try await Self.bytes(session, "a0-init.mp4")
+        for index in segments.indices {
+            file += try await Self.bytes(session, "a0-\(index).m4s")
+        }
+
+        let readBack = try readBackSamples(of: file, pathExtension: "mp4")
+        let first = try #require(readBack.first?.presentation)
+
+        #expect(readBack.count == 374)
+        #expect(readBack.map(\.presentation) == readBack.indices.map { first + Int64($0) * 768 })
+    }
+
+    /// The fixture's 126 frames end on a pair that starts before the segment boundary at 2 s and
+    /// ends after it, so the track's audio ends in the first segment.
+    @Test("an E-AC-3 track of three-block frames that ends on a pair across a segment boundary lists only segments that build")
+    func shortEAC3PairAcrossTheLastBoundary() async throws {
+        let session = try await Self.session("eac3-three-blocks-ends-early")
+        let segments = try #require(session.plan.audio.first).segments
+        var file = try await Self.bytes(session, "a0-init.mp4")
+        for index in segments.indices {
+            file += try await Self.bytes(session, "a0-\(index).m4s")
+        }
+
+        let readBack = try readBackSamples(of: file, pathExtension: "mp4")
+        let first = try #require(readBack.first?.presentation)
+
+        #expect(segments.count == 1)
+        #expect(readBack.count == 126)
+        #expect(readBack.map(\.presentation) == readBack.indices.map { first + Int64($0) * 768 })
+    }
+
+    /// The fixture's header declares 23.976 frames a second. Its first two seconds run at 59.94.
+    @Test(
+        "video faster than its declared rate keeps each frame at its own time, a frame per fragment or not",
+        arguments: [FragmentLimits.standard, FragmentLimits(bytes: 1, duration: .seconds(Int64.max))])
+    func videoFasterThanDeclaredKeepsItsTimes(fragmentLimits: FragmentLimits) async throws {
+        let session = try await Self.session("rate-above-declared", fragmentLimits: fragmentLimits)
+        var file = try await Self.bytes(session, "v-init.mp4")
+        for index in session.plan.video.segments.indices {
+            file += try await Self.bytes(session, "v-\(index).m4s")
+        }
+        let demuxer = try await BridgeFixture.demuxer("rate-above-declared")
+        let source = try await demuxer.packets(from: 0, to: demuxer.keyframes().count)
+            .filter { $0.stream == 0 }.compactMap(\.presentationTime).sorted()
+
+        let readBack = try readBackSamples(of: file, pathExtension: "mp4").map(\.presentation).sorted()
+        let offsets = zip(readBack, source).map { Double($0) / 120_000 - Double($1) / 1e9 }
+
+        #expect(readBack.count == source.count)
+        // A millisecond: the container's tick.
+        #expect((offsets.max() ?? 0) - (offsets.min() ?? 0) <= 0.001)
     }
 
     /// AVPlayer keeps playing video over audio it cannot decode and reports nothing, so the
@@ -132,6 +194,10 @@ struct BridgeSessionTests {
             recorded.withLock { $0.append(path) }
             return try await session.resource(at: path)
         }
+
+        func role(of path: String) -> String? {
+            session.role(of: path)
+        }
     }
 
     private struct ShownFrame: CustomStringConvertible {
@@ -185,15 +251,144 @@ struct BridgeSessionTests {
             }
         }
         #expect(reader.bytesRead <= reader.data.count)
-        // The file is 1.4 MB. Read 256 KB at a time it took six requests.
-        #expect(reader.requests <= 3)
+        // The file is 1.4 MB, six blocks of 256 KB. The headers, the index and the last
+        // segment's audio are read alone, before any segment; the rest in two.
+        #expect(reader.requests <= 5)
+    }
+
+    @Test("segments asked for all at once, each read by a demuxer of its own, are the ones asked for one by one, and no part of the file is read twice")
+    func segmentsAskedForAtOnceMatchOneByOne() async throws {
+        let paths = { (plan: BridgePlan) in
+            ([(RenditionID.video, plan.video)] + plan.audio.indices.map { (RenditionID.audio($0), plan.audio[$0]) })
+                .flatMap { id, track in track.segments.indices.map { BridgeResource.mediaSegment(id, $0).path } }
+        }
+        let oneByOne = try await Self.session("four-audio-tracks")
+        var expected: [String: Data] = [:]
+        for path in paths(oneByOne.plan) { expected[path] = try await Self.bytes(oneByOne, path) }
+
+        let reader = CountingReader(data: try BridgeFixture.data("four-audio-tracks"))
+        let session = try await BridgeSession.open(reader, support: BridgeFixture.everyDecoder, showsHDR: true)
+        let atOnce = try await withThrowingTaskGroup(of: (String, Data).self) { group in
+            for path in paths(session.plan) { group.addTask { (path, try await Self.bytes(session, path)) } }
+            return try await group.reduce(into: [:]) { $0[$1.0] = $1.1 }
+        }
+
+        #expect(atOnce == expected)
+        #expect(reader.bytesRead <= reader.data.count)
+    }
+
+    @Test("the first fragment of a 32-second segment is handed over before the segment's last packet is read")
+    func firstFragmentComesBeforeTheSegmentIsRead() async throws {
+        let reader = CountingReader(data: try BridgeFixture.data("long-span"))
+        // Blocks of 4 KB, few kept, and fragments of 16 KB: the segment is 141 KB.
+        let session = try await BridgeSession.open(
+            reader, support: BridgeFixture.everyDecoder, showsHDR: true, blockSize: 4096, bytesKept: 64 << 10,
+            fragmentLimits: FragmentLimits(bytes: 16 << 10, duration: .seconds(Int64.max)))
+        try #require(session.plan.video.segments[0].entries == 0..<1)
+        guard case .streamed(let produce) = try #require(try await session.resource(at: "v-0.m4s")).body else {
+            Issue.record("a media segment is streamed")
+            return
+        }
+        _ = reader.takeFurthest()
+
+        let producer = produce()
+        let first = try await producer.next()
+        let furthest = reader.takeFurthest()
+        producer.cancel()
+
+        #expect(first?.isEmpty == false)
+        #expect(furthest < session.keyframes[1].position)
+    }
+
+    @Test("a segment read cancelled after its first fragment fetches at most one more read, and returns")
+    func cancelledSegmentStopsItsRead() async throws {
+        let reader = CountingReader(data: try BridgeFixture.data("long-span"))
+        let session = try await BridgeSession.open(
+            reader, support: BridgeFixture.everyDecoder, showsHDR: true, blockSize: 4096, bytesKept: 64 << 10,
+            fragmentLimits: FragmentLimits(bytes: 16 << 10, duration: .seconds(Int64.max)))
+        guard case .streamed(let produce) = try #require(try await session.resource(at: "v-0.m4s")).body else {
+            Issue.record("a media segment is streamed")
+            return
+        }
+
+        let producer = produce()
+        _ = try await producer.next()
+        producer.cancel()
+        let readAtCancel = reader.bytesRead
+        await session.reads.allReturned()
+
+        #expect(session.reads.count == 0)
+        #expect(reader.bytesRead - readAtCancel <= SessionBlockCache.defaultBlocksPerRead * 4096)
+        #expect(session.report(of: []).bytesFetched == reader.bytesRead)
+    }
+
+    @Test("the report at stop sums the request log: bytes served and read, the slowest first byte, the drops and the largest segment")
+    func reportSumsTheRequestLog() {
+        func record(_ resource: String, sent: Int, firstByte: Int?, _ ending: RequestRecord.Ending = .complete) -> RequestRecord {
+            RequestRecord(
+                resource: resource, status: 200, firstByte: firstByte.map { .milliseconds($0) }, duration: .seconds(1),
+                bytesSent: sent, bytesFetched: sent, ending: ending)
+        }
+        let peaks = BridgeMemory.Peaks(bridge: 40 << 20, footprint: 300 << 20, lowestHeadroom: 2 << 30)
+        let report = BridgeReport(
+            records: [
+                record("master.m3u8", sent: 900, firstByte: 1),
+                record("v-0.m4s", sent: 3 << 20, firstByte: 120),
+                record("a0-0.m4s", sent: 1 << 20, firstByte: 1_400, .dropped),
+                record("v-1.m4s", sent: 0, firstByte: nil, .failed(afterBytes: 0, reason: "timed out")),
+            ],
+            bytesFetched: 6 << 20, memory: peaks, readsRunning: 1)
+
+        #expect(report.requests == 4)
+        #expect(report.bytesServed == (4 << 20) + 900)
+        #expect(report.worstFirstByte == .milliseconds(1_400))
+        #expect(report.dropped == 1)
+        #expect(report.largestSegment == 3 << 20)
+        #expect(report.description == "bridge: 4 requests, 4 MB served, 6 MB read (1.50x), worst first byte 1400 ms, "
+            + "1 dropped, largest segment 3 MB, bridge peak 40 MB, footprint peak 300 MB, lowest headroom 2048 MB, "
+            + "1 reads not returned")
+    }
+
+    @Test("a segment whose read failed is read whole when it is asked for again")
+    func segmentAfterAFailedReadIsWhole() async throws {
+        let data = try BridgeFixture.data("h264-mkvmerge")
+        let reader = FailingOnceReader(data: data)
+        // Few blocks kept, so the second ask reads the share again.
+        let session = try await BridgeSession.open(
+            reader, support: BridgeFixture.everyDecoder, showsHDR: true, blockSize: 4096, bytesKept: 16 << 10)
+        let expected = try await Self.bytes(Self.session("h264-mkvmerge"), "v-3.m4s")
+
+        reader.failNextRead()
+        await #expect(throws: (any Error).self) { try await Self.bytes(session, "v-3.m4s") }
+        #expect(try await Self.bytes(session, "v-3.m4s") == expected)
+    }
+
+    private final class FailingOnceReader: RandomAccessReading {
+        struct Dropped: Error {}
+        let data: Data
+        private let failing = Mutex(false)
+
+        init(data: Data) { self.data = data }
+
+        func failNextRead() { failing.withLock { $0 = true } }
+
+        var fileSize: UInt64 { get async throws { UInt64(data.count) } }
+
+        func read(offset: UInt64, length: Int) async throws -> Data {
+            if failing.withLock({ defer { $0 = false }; return $0 }) { throw Dropped() }
+            return try await InMemoryRandomAccessReader(data: data).read(offset: offset, length: length)
+        }
     }
 
     private final class CountingReader: RandomAccessReading {
         let data: Data
         private let count = Mutex((bytes: 0, requests: 0))
+        /// The furthest byte read since the last `takeFurthest`.
+        private let furthest = Mutex<Int64>(0)
         var bytesRead: Int { count.withLock { $0.bytes } }
         var requests: Int { count.withLock { $0.requests } }
+
+        func takeFurthest() -> Int64 { furthest.withLock { defer { $0 = 0 }; return $0 } }
 
         init(data: Data) { self.data = data }
 
@@ -202,6 +397,7 @@ struct BridgeSessionTests {
         func read(offset: UInt64, length: Int) async throws -> Data {
             let read = try await InMemoryRandomAccessReader(data: data).read(offset: offset, length: length)
             count.withLock { $0 = (bytes: $0.bytes + read.count, requests: $0.requests + 1) }
+            furthest.withLock { $0 = max($0, Int64(offset) + Int64(read.count)) }
             return read
         }
     }
@@ -214,10 +410,8 @@ struct BridgeSessionTests {
         let output: AVPlayerItemVideoOutput
         let player: AVPlayer
 
-        init(_ name: String) async throws {
-            let demuxer = try await BridgeFixture.demuxer(name)
-            responder = RecordingResponder(
-                BridgeSession(demuxer: demuxer, plan: try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true)))
+        init(_ name: String, fragmentLimits: FragmentLimits = .standard) async throws {
+            responder = RecordingResponder(try await BridgeSessionTests.session(name, fragmentLimits: fragmentLimits))
             server = LocalMediaServer(responder: responder)
             let item = AVPlayerItem(url: try await server.start(scope: .loopback))
             // Three seconds keeps AVPlayer from fetching all of a minute-long file.
@@ -257,9 +451,16 @@ struct BridgeSessionTests {
     @MainActor
     @Test(
         "AVPlayer shows each source frame at its own time, from the start and after a seek past what it had buffered",
-        arguments: ["frame-numbers", "frame-numbers-hevc"])
-    func avPlayerShowsEachSourceFrameAtItsTime(name: String) async throws {
-        let fixture = try await LoadedFixture(name)
+        arguments: [
+            ("frame-numbers", FragmentLimits.standard), ("frame-numbers-hevc", .standard),
+            // The opening holds pictures shown later than its last: they must not be ranked.
+            ("deep-pyramid-hevc", .standard),
+            // Each picture in a fragment of its own: every fragment after a segment's first is
+            // dated by the writer, open-GOP pictures included.
+            ("frame-numbers-hevc", FragmentLimits(bytes: 1, duration: .seconds(Int64.max))),
+        ])
+    func avPlayerShowsEachSourceFrameAtItsTime(name: String, fragmentLimits: FragmentLimits) async throws {
+        let fixture = try await LoadedFixture(name, fragmentLimits: fragmentLimits)
         let responder = fixture.responder
 
         let fromStart = await fixture.framesShown(for: .seconds(4))

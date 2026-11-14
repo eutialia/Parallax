@@ -24,16 +24,33 @@ struct MediaClock: Sendable, Equatable {
         /// several frames into one block stores a time for the first only, and the rest drift
         /// from the grid by a rounding error each.
         let tolerance: Int64
+        /// Frames the muxer joins into one MP4 sample: two or more for E-AC-3 frames of fewer than
+        /// six blocks, one otherwise. Counted from the anchor.
+        let framesPerSample: Int64
+
+        init(anchor: Int64, step: Int64, tolerance: Int64, framesPerSample: Int64 = 1) {
+            self.anchor = anchor
+            self.step = step
+            self.tolerance = tolerance
+            self.framesPerSample = framesPerSample
+        }
     }
 
     func ticks(at source: Int64) -> Int64 {
         let plain = Self.rounded(Int128(source + origin) * Int128(timescale), over: Self.second)
         guard let grid else { return plain }
-        let slot = Self.rounded(
-            Int128(source - grid.anchor) * Int128(timescale), over: Int128(grid.step) * Self.second)
-        let slotTime = grid.anchor + Self.rounded(Int128(slot) * Int128(grid.step) * Self.second, over: Int128(timescale))
-        guard abs(source - slotTime) <= grid.tolerance else { return plain }
+        let slot = slot(at: source, on: grid)
+        guard abs(source - time(ofSlot: slot, on: grid)) <= grid.tolerance else { return plain }
         return Self.rounded(Int128(grid.anchor + origin) * Int128(timescale), over: Self.second) + slot * grid.step
+    }
+
+    /// The source time of the first frame of the MP4 sample the frame at `source` goes into:
+    /// `source` itself, unless the grid joins frames.
+    func sampleStart(at source: Int64) -> Int64 {
+        guard let grid, grid.framesPerSample > 1 else { return source }
+        let slot = slot(at: source, on: grid)
+        let count = grid.framesPerSample
+        return time(ofSlot: slot - (slot % count + count) % count, on: grid)
     }
 
     func seconds(at source: Int64) -> Double {
@@ -41,6 +58,14 @@ struct MediaClock: Sendable, Equatable {
     }
 
     private static let second: Int128 = 1_000_000_000
+
+    private func slot(at source: Int64, on grid: Grid) -> Int64 {
+        Self.rounded(Int128(source - grid.anchor) * Int128(timescale), over: Int128(grid.step) * Self.second)
+    }
+
+    private func time(ofSlot slot: Int64, on grid: Grid) -> Int64 {
+        grid.anchor + Self.rounded(Int128(slot) * Int128(grid.step) * Self.second, over: Int128(timescale))
+    }
 
     private static func rounded(_ numerator: Int128, over denominator: Int128) -> Int64 {
         let doubled = 2 * numerator + (numerator < 0 ? -denominator : denominator)

@@ -74,4 +74,49 @@ struct SegmentWriterTests {
         #expect(zip(readBack, readBack.dropFirst()).allSatisfy { $0.decode < $1.decode })
         #expect(readBack.allSatisfy { $0.decode <= $0.presentation })
     }
+
+    @Test("a segment written one sample per fragment reads back as the same segment written as one fragment",
+          arguments: [
+              "anamorphic", "audio-ends-early", "audio-ends-two-segments-early", "av1", "dolby-vision-8-1",
+              "dolby-vision-8-2", "dolby-vision-8-4", "eac3", "eac3-three-blocks", "flac", "four-audio-tracks", "frame-numbers",
+              "frame-numbers-hevc", "h264-ffmpeg", "h264-high10", "h264-mkvmerge", "hdr-hlg", "hdr-pq",
+              "he-aac", "he-aac-v2", "late-start", "long-span", "opus",
+          ])
+    func fragmentsAddUpToTheWholeSegment(name: String) async throws {
+        let demuxer = try await BridgeFixture.demuxer(name)
+        let plan = try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true)
+        let everySample = FragmentLimits(bytes: 1, duration: .seconds(Int64.max))
+
+        for track in [plan.video] + plan.audio {
+            let rendition = track.rendition
+            for (index, segment) in track.segments.enumerated() {
+                let packets = try await demuxer.packets(
+                    rendition.stream.index, from: segment.entries.lowerBound, to: segment.entries.upperBound,
+                    clock: rendition.clock)
+                let end = rendition.stream.kind == .video ? nil : segment.end
+                let whole = try SegmentWriter.mediaSegment(for: rendition, packets: packets, lastingUntil: end, limits: .whole)
+                let split = try SegmentWriter.mediaSegment(for: rendition, packets: packets, lastingUntil: end, limits: everySample)
+                #expect(
+                    try readBackSamples(of: track.initSegment + split, pathExtension: "mp4")
+                        == readBackSamples(of: track.initSegment + whole, pathExtension: "mp4"),
+                    "\(rendition.codec) segment \(index)")
+            }
+        }
+    }
+
+    @Test("a picture shown earlier than one already given its decode time fails the segment")
+    func pictureReorderedPastTheLookaheadFails() async throws {
+        let demuxer = try await BridgeFixture.demuxer("h264-mkvmerge")
+        let plan = try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true)
+        let segment = plan.video.segments[1]
+        let packets = try await demuxer.packets(0, from: segment.entries.lowerBound, to: segment.entries.upperBound)
+        let earliest = try #require(packets.indices.min { packets[$0].presentationTime! < packets[$1].presentationTime! })
+        // The segment's earliest picture moved behind every other: by then decode times past
+        // it are given out.
+        let reordered = packets.enumerated().filter { $0.offset != earliest }.map(\.element) + [packets[earliest]]
+
+        #expect(throws: SegmentWriter.Failure.reorderedTooFar) {
+            _ = try SegmentWriter.mediaSegment(for: plan.video.rendition, packets: reordered)
+        }
+    }
 }

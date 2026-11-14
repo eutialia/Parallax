@@ -33,3 +33,18 @@ enum BridgeFixture {
         let isKeyframe: Bool
     }
 }
+
+extension ServedResource {
+    /// The whole body, as a client that reads it to the end gets it.
+    func bytes() async throws -> Data {
+        switch body {
+        case .ranged(let reader):
+            return try await reader.read(offset: 0, length: Int(try await reader.fileSize))
+        case .streamed(let produce):
+            let producer = produce()
+            var body = Data()
+            while let piece = try await producer.next() { body.append(piece) }
+            return body
+        }
+    }
+}

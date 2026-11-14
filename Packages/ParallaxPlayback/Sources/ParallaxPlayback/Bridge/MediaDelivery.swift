@@ -6,6 +6,8 @@ import Synchronization
 public struct MediaDelivery: Sendable {
     public let url: URL
     private let server: LocalMediaServer
+    private let bridge: BridgeSession?
+    private let clock: any Clock<Duration>
 
     public static let defaultProbeDeadline: Duration = .seconds(4)
 
@@ -18,7 +20,7 @@ public struct MediaDelivery: Sendable {
 
     /// Reads what it must of `reader` under `probeDeadline`, picks the route, and starts the
     /// server for it. A file AVPlayer opens is served as it is. A Matroska file goes through
-    /// the bridge when `bridging` is set, which costs its index and its first segment.
+    /// the bridge when `bridging` is set, which costs its index and its opening.
     /// `showsHDR` is whether AVPlayer shows HDR on this device now: the bridge refuses PQ video
     /// where it does not.
     ///
@@ -48,9 +50,11 @@ public struct MediaDelivery: Sendable {
         } catch {
             throw ProbeFailure.unreadable(error)
         }
-        let server = LocalMediaServer(responder: responder)
+        let server = LocalMediaServer(responder: responder, clock: clock)
         do {
-            return MediaDelivery(url: try await server.start(scope: scope), server: server)
+            return MediaDelivery(
+                url: try await server.start(scope: scope), server: server, bridge: responder as? BridgeSession,
+                clock: clock)
         } catch {
             await server.stop()
             throw error
@@ -80,8 +84,15 @@ public struct MediaDelivery: Sendable {
     }
 
     /// Idempotent. The reader is released by its owner, after this returns.
+    ///
+    /// A bridged delivery then writes what it cost, once its segment reads have returned. A read
+    /// parked in a stuck source read is left to the reader's release after 2 s.
     public func stop() async {
         await server.stop()
+        guard let bridge, bridge.reads.stop() else { return }
+        _ = await Self.race(against: .seconds(2), on: clock) { await bridge.reads.allReturned() }
+        let report = bridge.report(of: await server.records)
+        BridgeReport.log.notice("\(report)")
     }
 
     /// What the session cost the source. Readable after `stop()` too.

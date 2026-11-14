@@ -73,22 +73,25 @@ private struct FileResult {
     /// Seconds by which a sample's time strays from where the video's first segment puts the
     /// file's timeline, worst per codec.
     var timingStray: [String: Double] = [:]
+    /// The most bytes one built segment came to, by "video" and "audio".
+    var largestBuilt: [String: Int] = [:]
 
     init(sweeping url: URL, place: Int) async {
         self.place = place
         do {
             // A pass of its own measures the stages, so the outcome comes from the app's entry point.
             let stages = try CountingFileReader(url)
-            if let demuxer = try? await MediaDemuxer.open(stages) {
+            let whole = try? await MediaDemuxer.open(stages)
+            if let whole {
                 openBytes = stages.bytesRead
-                _ = try? await demuxer.keyframes()
+                _ = try? await whole.keyframes()
                 indexBytes = stages.bytesRead - openBytes
             }
             let reader = try CountingFileReader(url)
             let session = try await BridgeSession.open(reader, support: BridgeFixture.everyDecoder, showsHDR: true)
             planBytes = reader.bytesRead - openBytes - indexBytes
             let plan = session.plan
-            let keyframes = try await session.demuxer.keyframes()
+            let keyframes = session.keyframes
             deliveredAudio = plan.audio.map { track in
                 let channels = track.rendition.stream.parameters.playlistChannels
                 return track.rendition.codec + (channels.hasSuffix("JOC") ? " \(channels)" : "")
@@ -97,25 +100,58 @@ private struct FileResult {
 
             let tracks = [(RenditionID.video, plan.video)] + plan.audio.indices.map { (RenditionID.audio($0), plan.audio[$0]) }
             var found: String?
+            // The plan describes each track from the file's opening alone. Described from the
+            // whole first span instead, it must come out the same.
+            if let whole {
+                // A track of a codec the bridge delivers is left out only when the opening read
+                // saw no packet of it.
+                let deliverable = whole.streams.count { $0.kind == .audio && $0.parameters.playlistCodec != nil }
+                if plan.audio.count < deliverable {
+                    found = "\(deliverable - plan.audio.count) deliverable audio tracks left out"
+                }
+                let first = plan.video.segments[0].entries
+                let packets = try await whole.packets(from: first.lowerBound, to: first.upperBound)
+                for (_, track) in tracks {
+                    let described = packets.filter { $0.stream == track.rendition.stream.index }
+                    if try SegmentWriter.initSegment(for: track.rendition, describedBy: described) != track.initSegment {
+                        found = found ?? "\(track.rendition.codec) init segment: not the first span's"
+                    }
+                }
+            }
+            let fileSize = Int64(try await reader.fileSize)
+            let fileBytes = { (segment: BridgePlan.Segment) in
+                (segment.entries.upperBound < keyframes.count ? keyframes[segment.entries.upperBound].position : fileSize)
+                    - keyframes[segment.entries.lowerBound].position
+            }
             // The bridge's time less the source's, for the video's first sample. Every sample of
             // every track keeps it: that is one timeline, with nothing drifting.
             var timeline: Double?
             for (id, track) in tracks {
-                // The last segment is where an audio track that ends early takes all its audio left.
-                let places = [(0, "first"), (track.segments.count / 2, "middle"), (track.segments.count - 1, "last")]
+                // The last segment is where an audio track that ends early takes all its audio
+                // left. The one after the longest span starts its audio read furthest back.
+                let segments = track.segments
+                let last = segments.count - 1
+                let largest = segments.indices.max { fileBytes(segments[$0]) < fileBytes(segments[$1]) } ?? 0
+                let longest = segments.indices.max { segments[$0].seconds < segments[$1].seconds } ?? 0
+                let places = [
+                    (0, "first"), (segments.count / 2, "middle"), (last, "last"), (largest, "largest"),
+                    (min(longest + 1, last), "after the longest"),
+                ]
+                let initSegment = try await Self.bytes(session, BridgeResource.initSegment(id).path)
                 for (index, place) in Dictionary(places, uniquingKeysWith: { first, _ in first }).sorted(by: { $0.key < $1.key }) {
-                    let segment = track.segments[index]
-                    let built = try await Self.bytes(session, BridgeResource.initSegment(id).path)
-                        + Self.bytes(session, BridgeResource.mediaSegment(id, index).path)
+                    let segment = segments[index]
+                    let (readBack, built) = try await Self.samples(of: session, BridgeResource.mediaSegment(id, index).path, after: initSegment)
+                    let kind = id == .video ? "video" : "audio"
+                    largestBuilt[kind] = max(largestBuilt[kind] ?? 0, built)
                     let source = try SourcePackets(
                         of: url, stream: track.rendition.stream.index, videoStream: plan.video.rendition.stream.index,
+                        clock: track.rendition.clock,
                         from: index == 0 ? nil : keyframes[segment.entries.lowerBound].time,
                         to: segment.entries.upperBound == keyframes.count || index == track.segments.count - 1 && id != .video
                             ? nil : keyframes[segment.entries.upperBound].time,
                         readingUntil: segment.entries.upperBound == keyframes.count
                             ? nil : keyframes[segment.entries.upperBound].time)
-                    let readBack = try readBackSamples(of: built, pathExtension: "mp4")
-                    let name = "\(id == .video ? "video" : "audio") \(track.rendition.codec) segment \(place)"
+                    let name = "\(kind) \(track.rendition.codec) segment \(place)"
                     guard readBack.map(\.md5) == source.packets.map(\.md5) else {
                         found = found ?? "\(name): \(readBack.count) samples for \(source.packets.count)"
                         continue
@@ -143,8 +179,26 @@ private struct FileResult {
     }
 
     private static func bytes(_ session: BridgeSession, _ path: String) async throws -> Data {
-        let reader = try #require(try await session.resource(at: path)).reader
-        return try await reader.read(offset: 0, length: Int(try await reader.fileSize))
+        try await #require(try await session.resource(at: path)).bytes()
+    }
+
+    /// A segment's samples, read back a fragment at a time behind its init segment, so no
+    /// segment is held whole: the largest run to 50 MB. With the bytes it came to.
+    private static func samples(
+        of session: BridgeSession, _ path: String, after initSegment: Data
+    ) async throws -> (samples: [ReadbackSample], bytes: Int) {
+        guard case .streamed(let produce) = try #require(try await session.resource(at: path)).body else {
+            throw ReadbackFailure(code: -22)
+        }
+        let producer = produce()
+        defer { producer.cancel() }
+        var samples: [ReadbackSample] = []
+        var bytes = 0
+        while let fragment = try await producer.next() {
+            bytes += fragment.count
+            samples += try readBackSamples(of: initSegment + fragment, pathExtension: "mp4")
+        }
+        return (samples, bytes)
     }
 }
 
@@ -167,7 +221,13 @@ private struct SourcePackets {
     /// after. The read stops once the video is ten seconds past `readingUntil`: muxers store
     /// audio within a cluster, five seconds at most, of the video it plays with. The bridge
     /// gives up 4 MB past it, so audio stored further on shows here as a mismatch.
-    init(of url: URL, stream: Int, videoStream: Int, from lower: Int64?, to upper: Int64?, readingUntil end: Int64?) throws {
+    ///
+    /// Audio frames an MP4 sample joins, by `clock`, are timed by the sample's start, and an
+    /// unfinished last sample is left out.
+    init(
+        of url: URL, stream: Int, videoStream: Int, clock: MediaClock, from lower: Int64?, to upper: Int64?,
+        readingUntil end: Int64?
+    ) throws {
         var context: UnsafeMutablePointer<AVFormatContext>?
         let opened = avformat_open_input(&context, url.path, nil, nil)
         guard opened >= 0, let context else { throw ReadbackFailure(code: opened) }
@@ -190,6 +250,7 @@ private struct SourcePackets {
         }
         let (lowerTime, upperTime) = (lower ?? .min, upper ?? .max)
         var collected: [Packet] = []
+        var sampleStarts: [Int64?] = []
         var videoStarted = false
         var videoEnded = false
         var audioEnded = false
@@ -209,7 +270,7 @@ private struct SourcePackets {
                 belongs = videoStarted && !videoEnded
             } else {
                 // A frame with no time of its own follows the one before it in its lace.
-                if let time, !audioEnded {
+                if let time = time.map(clock.sampleStart(at:)), !audioEnded {
                     audioEnded = time >= upperTime
                     audioBelongs = time >= lowerTime && time < upperTime
                 }
@@ -220,9 +281,13 @@ private struct SourcePackets {
                     md5: Insecure.MD5.hash(data: Data(bytes: data, count: Int(packet.pointee.size)))
                         .map { String(format: "%02x", $0) }.joined(),
                     isKeyframe: isKeyframe, seconds: time.map { Double($0) / 1e9 }))
+                sampleStarts.append(time.map(clock.sampleStart(at:)) ?? sampleStarts.last ?? nil)
             }
         }
-        packets = collected
+        let framesPerSample = Int(clock.grid?.framesPerSample ?? 1)
+        let lastSample = sampleStarts.reversed().prefix { $0 == sampleStarts.last }.count
+        let unfinished = upper == nil && stream != videoStream && lastSample < framesPerSample ? lastSample : 0
+        packets = Array(collected.dropLast(unfinished))
     }
 }
 
@@ -272,7 +337,7 @@ private struct SweepReport {
         let outcomes = results.map { result -> String in
             switch result.outcome {
             case .matches: "matches"
-            case .refused(.segmentTooLarge): "refused: segment too large"
+            case .refused(.indexGap): "refused: index stops"
             case .refused(let refusal): "refused: \(refusal)"
             case .mismatch: "mismatch"
             case .failed(let error): "failed: \(error)"
@@ -301,6 +366,9 @@ private struct SweepReport {
             "SWEEP read to open: \(spread(results.map(\.openBytes)))",
             "SWEEP read for the index: \(spread(results.map(\.indexBytes)))",
             "SWEEP read for the plan: \(spread(delivered.map(\.planBytes)))",
+            "SWEEP largest segment built: " + ["video", "audio"].map { kind in
+                "\(kind) \((results.compactMap { $0.largestBuilt[kind] }.max() ?? 0) >> 20) MB"
+            }.joined(separator: ", "),
         ] + unexplained.map { "SWEEP unexplained \($0)" }
     }
 }

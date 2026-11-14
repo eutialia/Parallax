@@ -49,6 +49,28 @@ struct BridgePlanTests {
             grid: .init(anchor: -21_000_000, step: 1024, tolerance: .max)))
     }
 
+    @Test("the plan describes and places each stream from the start of the first segment as it would from the whole of it",
+          arguments: [
+              "anamorphic", "audio-ends-early", "audio-ends-two-segments-early", "av1", "dolby-vision-8-1",
+              "dolby-vision-8-2", "dolby-vision-8-4", "eac3", "flac", "four-audio-tracks", "frame-numbers",
+              "frame-numbers-hevc", "h264-ffmpeg", "h264-high10", "h264-mkvmerge", "hdr-hlg", "hdr-pq",
+              "he-aac", "he-aac-v2", "late-start", "long-span", "opus", "deep-pyramid-hevc", "sparse-clusters",
+          ])
+    func openingReadStandsForTheFirstSegment(name: String) async throws {
+        let demuxer = try await BridgeFixture.demuxer(name)
+        let plan = try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true)
+        let first = plan.video.segments[0].entries
+        let whole = try await demuxer.packets(from: first.lowerBound, to: first.upperBound)
+
+        for track in [plan.video] + plan.audio {
+            let packets = whole.filter { $0.stream == track.rendition.stream.index }
+            #expect(try SegmentWriter.initSegment(for: track.rendition, describedBy: packets) == track.initSegment)
+            if let grid = track.rendition.clock.grid {
+                #expect(grid.anchor == packets.compactMap(\.presentationTime).min())
+            }
+        }
+    }
+
     @Test("a file the bridge cannot deliver is refused with the reason", arguments: [
         ("refused-mpeg4-video", BridgeRefusal.videoCodec(name: "mpeg4 Simple Profile")),
         ("refused-dolby-vision-5", .videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
@@ -99,14 +121,17 @@ struct BridgePlanTests {
         #expect(plan.audio[0].rendition.clock.grid?.step == samples)
     }
 
-    @Test("a segment larger than the limit is refused with its size")
-    func oversizedSegmentIsRefused() async throws {
-        let demuxer = try await BridgeFixture.demuxer("h264-mkvmerge")
-        // Six segments share 930,719 bytes, so the largest holds at least a sixth of them.
-        await #expect {
-            _ = try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true, segmentByteLimit: 100_000)
-        } throws: {
-            if case BridgeRefusal.segmentTooLarge(let bytes) = $0 { (155_120...930_719).contains(bytes) } else { false }
+    @Test("a file whose index stops is refused where it stops, and a long keyframe interval in the middle plays",
+          arguments: [("index-stops", 32 as Int?), ("long-span", nil)])
+    func indexThatStopsIsRefused(name: String, stopsAfter: Int?) async throws {
+        // Both files have a 32 s keyframe interval from the start. In one the index then stops.
+        let demuxer = try await BridgeFixture.demuxer(name)
+        let plan = { try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true, indexGapLimit: .seconds(20)) }
+        if let stopsAfter {
+            await #expect(throws: BridgeRefusal.indexGap(after: stopsAfter)) { _ = try await plan() }
+            #expect("\(BridgeRefusal.indexGap(after: 3725))" == "no keyframe index after 1:02:05")
+        } else {
+            #expect(try await plan().video.segments.first?.entries == 0..<1)
         }
     }
 }
