@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import ParallaxTestScaling
 import ParallaxCore
@@ -227,6 +228,10 @@ struct LocalMediaServerTests {
             default: nil
             }
         }
+
+        func role(of path: String) -> String? {
+            ["first.bin", "nested/second.bin", "broken.bin"].contains(path) ? path : nil
+        }
     }
 
     @Test("Each path under the token gets its responder's answer: bytes with their type, 404 for none, 500 for a failed lookup")
@@ -240,6 +245,8 @@ struct LocalMediaServerTests {
             let http = try #require(response as? HTTPURLResponse)
             answers.append("\(http.statusCode) \(http.value(forHTTPHeaderField: "Content-Type") ?? "-") \(String(decoding: body, as: UTF8.self))")
         }
+        await untilSettled { await server.records.count == 5 }
+        let records = await server.records
         await server.stop()
 
         #expect(answers == [
@@ -249,6 +256,11 @@ struct LocalMediaServerTests {
             "500 - ",
             "200 application/x-first first",
         ])
+        // A path that names nothing is logged as unknown, never by its name.
+        #expect(records.map { "\($0.resource) \($0.status)" } == [
+            "first.bin 200", "nested/second.bin 200", "unknown 404", "broken.bin 500", "first.bin 200",
+        ])
+        #expect(records[3].ending == .failed(afterBytes: 0, by: Unreadable()))
     }
 
     @Test("A query string is stripped before the path is matched")
@@ -299,6 +311,11 @@ struct LocalMediaServerTests {
             let stats = await bridge.stats
             #expect(stats.bytesRead == 4096)
             #expect(stats.connections == 1)
+
+            await untilSettled { await bridge.records.count == 1 }
+            let record = try #require(await bridge.records.first)
+            #expect(record.resource == "file" && record.status == 206 && record.ending == .complete)
+            #expect(record.bytesSent == 4096 && record.bytesFetched == 4096 && record.firstByte != nil)
         }
     }
 
@@ -408,6 +425,204 @@ struct LocalMediaServerTests {
             #expect(response.suffix(10) == data.subdata(in: 0..<10))
         }
     }
+
+    // MARK: - Streamed bodies
+
+    /// Hands out its pieces, then ends, fails, or waits until it is cancelled.
+    private final class ScriptedProducer: BodyProducer {
+        enum Then: Sendable { case end, fail, wait }
+
+        private let pieces: [Data]
+        private let then: Then
+        private let state = Mutex<(next: Int, cancelled: Bool, waiter: CheckedContinuation<Void, Never>?)>((0, false, nil))
+
+        init(_ pieces: [String], then: Then) {
+            self.pieces = pieces.map { Data($0.utf8) }
+            self.then = then
+        }
+
+        var wasCancelled: Bool { state.withLock { $0.cancelled } }
+
+        /// The pieces handed out, as if each were read from a file.
+        var bytesFetched: Int {
+            pieces.prefix(state.withLock { $0.next }).reduce(0) { $0 + $1.count }
+        }
+
+        func next() async throws -> Data? {
+            let index = state.withLock { state in
+                defer { state.next += 1 }
+                return state.next
+            }
+            if index < pieces.count { return pieces[index] }
+            switch then {
+            case .end: return nil
+            case .fail: throw Unreadable()
+            case .wait:
+                await withCheckedContinuation { continuation in
+                    let cancelled = state.withLock { state in
+                        if !state.cancelled { state.waiter = continuation }
+                        return state.cancelled
+                    }
+                    if cancelled { continuation.resume() }
+                }
+                throw CancellationError()
+            }
+        }
+
+        func cancel() {
+            let waiter = state.withLock { state in
+                state.cancelled = true
+                defer { state.waiter = nil }
+                return state.waiter
+            }
+            waiter?.resume()
+        }
+    }
+
+    /// One streamed path, whose producers it keeps.
+    private final class Streaming: MediaResponder {
+        let entryPath = "segment.m4s"
+        private let pieces: [String]
+        private let then: ScriptedProducer.Then
+        private let made = Mutex<[ScriptedProducer]>([])
+
+        init(_ pieces: [String], then: ScriptedProducer.Then) {
+            self.pieces = pieces
+            self.then = then
+        }
+
+        var producers: [ScriptedProducer] { made.withLock { $0 } }
+
+        func role(of path: String) -> String? {
+            path == entryPath ? path : nil
+        }
+
+        func resource(at path: String) async throws -> ServedResource? {
+            guard path == entryPath else { return nil }
+            return ServedResource(contentType: "video/mp4") {
+                let producer = ScriptedProducer(self.pieces, then: self.then)
+                self.made.withLock { $0.append(producer) }
+                return producer
+            }
+        }
+    }
+
+    /// The server's records once every connection has closed. Its clock never moves, so each
+    /// record's times are zero.
+    @discardableResult
+    private func withServer(_ responder: Streaming, _ body: (URL) async throws -> Void) async throws -> [RequestRecord] {
+        let server = LocalMediaServer(responder: responder, clock: TestClock())
+        let url = try await server.start(scope: .loopback)
+        do {
+            try await body(url)
+        } catch {
+            await server.stop()
+            throw error
+        }
+        await untilSettled { await server.liveConnectionCount == 0 }
+        let records = await server.records
+        await server.stop()
+        return records
+    }
+
+    private static func record(
+        _ status: Int, sent: Int, firstByte: Duration? = .zero, _ ending: RequestRecord.Ending = .complete
+    ) -> RequestRecord {
+        RequestRecord(
+            resource: "segment.m4s", status: status, firstByte: firstByte, duration: .zero, bytesSent: sent,
+            bytesFetched: sent, ending: ending)
+    }
+
+    private static func request(_ url: URL, _ fields: String = "", method: String = "GET") -> String {
+        "\(method) \(url.path) HTTP/1.1\r\nHost: x\r\n\(fields)\r\n"
+    }
+
+    @Test("a streamed body goes out as one chunk per piece, with no length and no ranges, whatever Range asks")
+    func streamedBodyIsChunked() async throws {
+        let responder = Streaming(["first", "second piece"], then: .end)
+        let records = try await withServer(responder) { url in
+            let head = Self.request(url, "Range: bytes=3-9\r\nConnection: close\r\n")
+            let response = String(decoding: try await rawHTTPExchange(with: url, sending: Data(head.utf8)), as: UTF8.self)
+            let (headers, body) = try #require(response.split(separator: "\r\n\r\n", maxSplits: 1).map(String.init).pair)
+
+            #expect(headers.hasPrefix("HTTP/1.1 200 OK"))
+            #expect(headers.contains("Transfer-Encoding: chunked"))
+            #expect(!headers.contains("Content-Length") && !headers.contains("Accept-Ranges"))
+            #expect(body == "5\r\nfirst\r\nc\r\nsecond piece\r\n0\r\n\r\n")
+        }
+        #expect(records == [Self.record(200, sent: 17)])
+    }
+
+    @Test("HEAD of a streamed resource answers its headers and starts nothing")
+    func headOfStreamedResourceStartsNothing() async throws {
+        let responder = Streaming(["first"], then: .end)
+        let records = try await withServer(responder) { url in
+            let head = Self.request(url, "Connection: close\r\n", method: "HEAD")
+            let response = String(decoding: try await rawHTTPExchange(with: url, sending: Data(head.utf8)), as: UTF8.self)
+
+            #expect(response.hasPrefix("HTTP/1.1 200 OK"))
+            #expect(response.hasSuffix("\r\n\r\n"))
+            #expect(responder.producers.isEmpty)
+        }
+        #expect(records == [Self.record(200, sent: 0, firstByte: nil)])
+    }
+
+    @Test("a streamed body that fails before its first piece is a 500, and the connection serves on")
+    func streamFailingBeforeItsFirstPieceIs500() async throws {
+        let responder = Streaming([], then: .fail)
+        let records = try await withServer(responder) { url in
+            let heads = Self.request(url) + Self.request(url, "Connection: close\r\n")
+            let response = String(decoding: try await rawHTTPExchange(with: url, sending: Data(heads.utf8)), as: UTF8.self)
+
+            #expect(response.components(separatedBy: "HTTP/1.1 500 Internal Server Error").count == 3, "\(response)")
+        }
+        let failed = Self.record(500, sent: 0, firstByte: nil, .failed(afterBytes: 0, by: Unreadable()))
+        #expect(records == [failed, failed])
+    }
+
+    @Test("a streamed body that fails after its first piece closes the connection without the last chunk")
+    func streamFailingLaterClosesWithoutTheLastChunk() async throws {
+        let responder = Streaming(["first"], then: .fail)
+        let records = try await withServer(responder) { url in
+            let started = ContinuousClock.now
+            let response = String(
+                decoding: try await rawHTTPExchange(with: url, sending: Data(Self.request(url).utf8), timeout: .seconds(4)),
+                as: UTF8.self)
+
+            #expect(response.hasSuffix("5\r\nfirst\r\n"), "\(response)")
+            // Closed by the server, not by the exchange's deadline.
+            #expect(ContinuousClock.now - started < CITimeScale.seconds(3))
+        }
+        #expect(records == [Self.record(200, sent: 5, .failed(afterBytes: 5, by: Unreadable()))])
+    }
+
+    @Test("a client that drops a streamed response stops its producer")
+    func droppedClientCancelsTheProducer() async throws {
+        let responder = Streaming(["first"], then: .wait)
+        let records = try await withServer(responder) { url in
+            // The exchange gives up after its timeout and cancels its connection mid-body.
+            let response = try await rawHTTPExchange(
+                with: url, sending: Data(Self.request(url).utf8), timeout: .milliseconds(300))
+            #expect(String(decoding: response, as: UTF8.self).hasSuffix("5\r\nfirst\r\n"))
+
+            await untilSettled { responder.producers.first?.wasCancelled == true }
+            #expect(responder.producers.map(\.wasCancelled) == [true])
+        }
+        #expect(records == [Self.record(200, sent: 5, .dropped)])
+    }
+
+    @Test("a request sent behind a streamed one on the same connection is answered after it")
+    func pipelinedRequestIsAnsweredAfterTheStream() async throws {
+        let responder = Streaming(["first"], then: .end)
+        let records = try await withServer(responder) { url in
+            let heads = Self.request(url) + Self.request(url, "Connection: close\r\n")
+            let response = String(decoding: try await rawHTTPExchange(with: url, sending: Data(heads.utf8)), as: UTF8.self)
+
+            #expect(response.components(separatedBy: "5\r\nfirst\r\n0\r\n\r\n").count == 3, "\(response)")
+            #expect(responder.producers.count == 2)
+        }
+        #expect(records == [Self.record(200, sent: 5), Self.record(200, sent: 5)])
+    }
 }
 
 private final class QuietPoll: @unchecked Sendable {
@@ -422,4 +637,8 @@ private final class QuietPoll: @unchecked Sendable {
 
 private final class WeakBridge: @unchecked Sendable {
     weak var bridge: LocalMediaServer?
+}
+
+private extension Array {
+    var pair: (Element, Element)? { count == 2 ? (self[0], self[1]) : nil }
 }

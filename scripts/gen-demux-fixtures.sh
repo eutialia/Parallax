@@ -25,16 +25,19 @@ ffmpeg -v error -y \
 # The same streams as mkvmerge lays them out: different clusters, cue placement and lacing.
 mkvmerge --quiet --deterministic 0 -o "$OUT/h264-mkvmerge.mkv" "$OUT/h264-ffmpeg.mkv"
 
-for name in h264-ffmpeg h264-mkvmerge; do
-    ffprobe -v error -show_packets -show_data_hash md5 -of json "$OUT/$name.mkv" \
+# ffprobe's packets, the demuxer tests' oracle.
+packet_list() {
+    ffprobe -v error -show_packets -show_data_hash md5 -of json "$OUT/$1.mkv" \
         | python3 -c '
 import json, sys
 packets = json.load(sys.stdin)["packets"]
 rows = [[p["stream_index"], int(p["pts"]), int(p["size"]), "K" in p["flags"], p["data_hash"].split(":")[1]]
         for p in packets]
 json.dump(rows, sys.stdout, separators=(",", ":"))
-' > "$OUT/$name.packets.json"
-done
+' > "$OUT/$1.packets.json"
+}
+packet_list h264-ffmpeg
+packet_list h264-mkvmerge
 # Each frame draws its own number as 16 squares, least significant bit on the left, so a test
 # can read which source frame a player is showing. One minute with a keyframe every 2 s gives
 # 30 segments: enough that a seek lands far past what a player buffered.
@@ -57,6 +60,113 @@ ffmpeg -v error -y \
     -c:a ac3 -b:a 64k -ac 2 \
     -bitexact -fflags +bitexact \
     "$OUT/frame-numbers-hevc.mkv"
+
+# One keyframe interval of 32 s, as an x264 encode with keyint=infinite has over a still scene,
+# then a keyframe every 2 s. The Cues list every keyframe; clusters still close every 5 s, so
+# the long span holds several.
+ffmpeg -v error -y \
+    -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 60 -map 0:v -map 1:a \
+    -c:v libx264 -preset veryfast -bf 2 -g 100000 -keyint_min 100000 -sc_threshold 0 -pix_fmt yuv420p \
+    -force_key_frames "0,32,34,36,38,40,42,44,46,48,50,52,54,56,58" \
+    -c:a aac -b:a 24k -ac 1 \
+    -bitexact -fflags +bitexact \
+    "$OUT/long-span.mkv"
+packet_list long-span
+
+# A 50 s keyframe interval whose clusters close every 30 s: none lies in the eight seconds
+# before the keyframe at 50 s, and one at 30 s lies after the span's start.
+ffmpeg -v error -y \
+    -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 60 -map 0:v -map 1:a \
+    -c:v libx264 -preset veryfast -bf 2 -g 100000 -keyint_min 100000 -sc_threshold 0 -pix_fmt yuv420p \
+    -force_key_frames "0,50,52,54,56,58" \
+    -c:a aac -b:a 24k -ac 1 \
+    -cluster_time_limit 30000 -cluster_size_limit 100000000 \
+    -bitexact -fflags +bitexact \
+    "$OUT/sparse-clusters.mkv"
+
+# Numbered frames, as frame-numbers-hevc, in a B-pyramid of eight: the second picture decoded
+# is the ninth shown, though the stream declares a reorder depth of 2.
+ffmpeg -v error -y \
+    -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 60 -map 0:v -map 1:a \
+    -c:v libx265 -preset veryfast -x265-params "keyint=48:min-keyint=48:scenecut=0:bframes=8:b-adapt=0:b-pyramid=1:log-level=error" -pix_fmt yuv420p \
+    -c:a aac -b:a 24k -ac 1 \
+    -bitexact -fflags +bitexact \
+    "$OUT/deep-pyramid-hevc.mkv"
+
+# Two seconds at 59.94 frames a second, then four at 23.976, under a track header that declares
+# 23.976 for all of it, as an old mkvmerge writes. mkvmerge keeps the times from the list it is
+# given, and the declared duration is then written over by hand: mkvmerge derives it from the
+# times, and forcing one retimes the frames.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=60000/1001:duration=2" \
+    -f lavfi -i "testsrc2=size=160x90:rate=24000/1001:duration=4" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
+    -filter_complex "[0:v]settb=1/120000[a];[1:v]settb=1/120000[b];[a][b]concat=n=2:v=1:a=0[v]" -map "[v]" -map 2:a \
+    -c:v libx264 -preset veryfast -bf 2 -g 12 -keyint_min 12 -sc_threshold 0 -pix_fmt yuv420p -b:v 100k \
+    -fps_mode passthrough -c:a aac -b:a 24k -bitexact -fflags +bitexact "$OUT/rate-above-declared-source.mkv"
+{
+    echo "# timestamp format v2"
+    ffprobe -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 "$OUT/rate-above-declared-source.mkv" \
+        | sort -n | awk '{ printf "%.3f\n", $1 * 1000 }'
+} > "$OUT/rate-above-declared-times.txt"
+mkvmerge --quiet --deterministic 0 -o "$OUT/rate-above-declared.mkv" \
+    --timestamps "0:$OUT/rate-above-declared-times.txt" "$OUT/rate-above-declared-source.mkv"
+rm "$OUT/rate-above-declared-source.mkv" "$OUT/rate-above-declared-times.txt"
+python3 - "$OUT/rate-above-declared.mkv" <<'PYTHON'
+import sys
+
+data = bytearray(open(sys.argv[1], "rb").read())
+# DefaultDuration, four bytes of nanoseconds: the 17 ms mkvmerge derived, made 41,708,333.
+derived = b"\x23\xe3\x83\x84" + (17_000_000).to_bytes(4, "big")
+assert data.count(derived) == 1
+at = data.index(derived) + 4
+data[at:at + 4] = (41_708_333).to_bytes(4, "big")
+open(sys.argv[1], "wb").write(data)
+PYTHON
+
+# The same file with its index cut after 32 s, as a file whose Cues stop after its start. The
+# CuePoints are overwritten with an EBML Void of the same length, so no position moves.
+python3 - "$OUT/long-span.mkv" "$OUT/index-stops.mkv" <<'PYTHON'
+import sys
+
+data = bytearray(open(sys.argv[1], "rb").read())
+
+def vint(at):
+    first = data[at]
+    length = 8 - first.bit_length() + 1
+    value = first & ((1 << (8 - length)) - 1)
+    for byte in data[at + 1:at + length]:
+        value = value << 8 | byte
+    return value, length
+
+def element(at):
+    ident_length = 8 - data[at].bit_length() + 1
+    ident = bytes(data[at:at + ident_length])
+    size, size_length = vint(at + ident_length)
+    body = at + ident_length + size_length
+    return ident, body, body + size
+
+_, _, at = element(0)
+_, at, _ = element(at)
+while element(at)[0] != b"\x1c\x53\xbb\x6b":
+    at = element(at)[2]
+_, at, end = element(at)
+while at < end:
+    ident, body, after = element(at)
+    if ident == b"\xbb":
+        _, time_body, time_end = element(body)
+        if int.from_bytes(data[time_body:time_end], "big") > 32000:
+            length = after - at
+            data[at:after] = b"\xec" + bytes([0x80 | (length - 2)]) + bytes(length - 2)
+    at = after
+open(sys.argv[2], "wb").write(data)
+PYTHON
 
 # Audio that stops a second before the video does, as most real files' audio stops a little
 # before their video.
@@ -108,6 +218,48 @@ for codec in "flac flac" "eac3 eac3 -b:a 96k" "opus libopus -b:a 32k"; do
         -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
         -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a "$@" -ac 2 -bitexact -fflags +bitexact "$OUT/$name.mkv"
 done
+# E-AC-3 of three blocks a frame, 768 samples, which an MP4 sample holds two of. No encoder here
+# writes them, so six-block frames are relabeled, with the CRC that guards each frame redone:
+# the times are right and the sound is not.
+# mkvmerge muxes them, because ffmpeg cannot decode the relabeled frames to find their rate.
+# Two-second segments of 125 frames each end on an odd count. The second file stops after 126
+# frames: its last pair, frames 124 and 125, starts before the boundary at 2 s and ends after it.
+ffmpeg -v error -y -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 12 \
+    -c:a eac3 -b:a 96k -ac 2 -bitexact -fflags +bitexact -f eac3 "$OUT/eac3-six-blocks.eac3"
+python3 - "$OUT/eac3-six-blocks.eac3" "$OUT/eac3-three-blocks.eac3" "$OUT/eac3-three-blocks-ends-early.eac3" <<'PYTHON'
+import sys
+
+def crc16(bytes):
+    crc = 0
+    for byte in bytes:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = (crc << 1 ^ 0x8005 if crc & 0x8000 else crc << 1) & 0xFFFF
+    return crc
+
+data = bytearray(open(sys.argv[1], "rb").read())
+at = 0
+ends = []
+while at < len(data):
+    assert data[at:at + 2] == b"\x0b\x77"
+    size = (((data[at + 2] & 0x07) << 8 | data[at + 3]) + 1) * 2
+    # numblkscod, after fscod in the fifth byte: 2 is three blocks, 3 is six.
+    data[at + 4] = data[at + 4] & 0xCF | 0x20
+    # The last two bytes make the frame after its syncword CRC to zero.
+    data[at + size - 2:at + size] = crc16(data[at + 2:at + size - 2]).to_bytes(2, "big")
+    at += size
+    ends.append(at)
+open(sys.argv[2], "wb").write(data)
+open(sys.argv[3], "wb").write(data[:ends[125]])
+PYTHON
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -t 6 \
+    "${x264[@]}" -bitexact -fflags +bitexact "$OUT/eac3-three-blocks-video.mkv"
+mkvmerge --quiet --deterministic 0 -o "$OUT/eac3-three-blocks.mkv" \
+    "$OUT/eac3-three-blocks-video.mkv" "$OUT/eac3-three-blocks.eac3"
+mkvmerge --quiet --deterministic 0 -o "$OUT/eac3-three-blocks-ends-early.mkv" \
+    "$OUT/eac3-three-blocks-video.mkv" "$OUT/eac3-three-blocks-ends-early.eac3"
+rm "$OUT/eac3-six-blocks.eac3" "$OUT/eac3-three-blocks.eac3" "$OUT/eac3-three-blocks-ends-early.eac3" \
+    "$OUT/eac3-three-blocks-video.mkv"
 ffmpeg -v error -y \
     -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
     -t 4 -map 0:v -map 1:a -c:v libsvtav1 -preset 10 -g 12 -svtav1-params "lp=1" -pix_fmt yuv420p \

@@ -75,6 +75,18 @@ final class CodecParameters: @unchecked Sendable {
         return Int(parser.pointee.duration)
     }
 
+    /// The frames of `samplesPerFrame` one MP4 sample holds. An E-AC-3 sample holds six blocks
+    /// of 256 (ETSI TS 102 366, Annex F), and libavformat's muxer joins shorter frames until it
+    /// has them. Every other codec, one.
+    func framesPerSample(of samplesPerFrame: Int) -> Int {
+        pointer.pointee.codec_id == AV_CODEC_ID_EAC3 && (1..<Self.blocksPerSample * 256).contains(samplesPerFrame)
+            ? Self.blocksPerSample * 256 / samplesPerFrame : 1
+    }
+
+    /// The most frames one MP4 sample holds: E-AC-3 of one block a frame.
+    static let mostFramesPerSample = blocksPerSample
+    private static let blocksPerSample = 6
+
     /// The Dolby Vision record the container carries for the stream. Nil for a stream with none.
     private var dolbyVisionRecord: AVDOVIDecoderConfigurationRecord? {
         let record = av_packet_side_data_get(
