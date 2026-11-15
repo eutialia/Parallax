@@ -41,13 +41,14 @@ extension AppEnvironment {
                 }
             },
             thumbnailer: AVThumbnailer(),
-            makePlaybackEngine: { AVKitEngine(tuning: startupTuningStore.selected.tuning) },
-            makeNowPlaying: { NowPlayingController() },
-            prepareDisplay: { engine in
+            makePlaybackEngine: {
                 #if os(tvOS)
-                await DisplayCriteriaMatcher.prepare(for: engine)
+                AVKitEngine(tuning: startupTuningStore.selected.tuning, prepareDisplay: DisplayCriteriaMatcher.prepare(for:))
+                #else
+                AVKitEngine(tuning: startupTuningStore.selected.tuning)
                 #endif
             },
+            makeNowPlaying: { NowPlayingController() },
             clientName: "Parallax",
             deviceName: UIDevice.current.model,
             appVersion: AppInfo.shortVersion,

@@ -942,3 +942,66 @@ extension PlaybackState {
         }
     }
 }
+
+/// An Apple TV that switches frame rate while AVPlayer chooses a variant fails the item with
+/// `AVErrorNoCompatibleAlternatesForExternalDisplay`, so the display is asked before the item
+/// reaches the player.
+@Suite("AVKitEngine — the display is prepared before the item reaches the player", .serialized, .scaledTimeLimit())
+@MainActor
+struct AVKitDisplayPreparationTests {
+    @MainActor
+    final class Preparations {
+        var engine: AVKitEngine?
+        var playerHadItem: [Bool] = []
+        var preparedURLs: [URL] = []
+        var tearsDown = false
+    }
+
+    private static func engine(_ preparations: Preparations) -> AVKitEngine {
+        let engine = AVKitEngine(prepareDisplay: { [preparations] asset in
+            preparations.playerHadItem.append(preparations.engine?.avPlayer.currentItem != nil)
+            if let url = (asset as? AVURLAsset)?.url { preparations.preparedURLs.append(url) }
+            if preparations.tearsDown { await preparations.engine?.teardown() }
+        })
+        preparations.engine = engine
+        return engine
+    }
+
+    @Test("the display is prepared with the player still empty, and the item follows")
+    func preparesBeforeTheItemAttaches() async throws {
+        let preparations = Preparations()
+        let engine = Self.engine(preparations)
+
+        let fixture = try AVKitFixtures.tiny
+        try await engine.load(.fixture(url: fixture))
+
+        #expect(preparations.playerHadItem == [false])
+        #expect(preparations.preparedURLs == [fixture])
+        #expect((engine.avPlayer.currentItem?.asset as? AVURLAsset)?.url == fixture)
+        await engine.teardown()
+    }
+
+    @Test("a reload on the same engine, a track switch, does not prepare again")
+    func reloadDoesNotPrepareAgain() async throws {
+        let preparations = Preparations()
+        let engine = Self.engine(preparations)
+
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+
+        #expect(preparations.playerHadItem.count == 1)
+        await engine.teardown()
+    }
+
+    @Test("a teardown while the display switches leaves the player empty")
+    func teardownDuringPreparationAttachesNothing() async throws {
+        let preparations = Preparations()
+        preparations.tearsDown = true
+        let engine = Self.engine(preparations)
+
+        await #expect(throws: CancellationError.self) {
+            try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        }
+        #expect(engine.avPlayer.currentItem == nil)
+    }
+}

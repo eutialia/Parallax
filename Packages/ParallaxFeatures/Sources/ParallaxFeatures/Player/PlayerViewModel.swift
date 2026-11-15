@@ -935,10 +935,6 @@ public final class PlayerViewModel {
     /// Delay before the SMB thumbnail backfill grabs its frame — see `scheduleThumbnailBackfill()`.
     static let backfillDelay: Duration = .seconds(8)
 
-    /// Asks the display to match the content about to play (tvOS: HDR and frame rate) and
-    /// waits for it to settle. A no-op where the display has no modes to switch.
-    private let prepareDisplay: @MainActor (any PlaybackEngine) async -> Void
-
     public init(
         deviceProfileBuilder: DeviceProfileBuilder,
         clock: any Clock<Duration>,
@@ -957,7 +953,6 @@ public final class PlayerViewModel {
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
         smbResumeStore: SMBResumeStore,
         backfillThumbnail: @escaping @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void = { _, _ in },
-        prepareDisplay: @escaping @MainActor (any PlaybackEngine) async -> Void = { _ in },
         fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -977,7 +972,6 @@ public final class PlayerViewModel {
         self.diagnostics = SessionDiagnostics(clock: clock, fetchDelivery: fetchDelivery)
         self.smbResumeStore = smbResumeStore
         self.backfillThumbnail = backfillThumbnail
-        self.prepareDisplay = prepareDisplay
         self.accent = PlayerAccent(fetchArtwork: fetchArtwork)
         sidecar.onFailed = { [weak self] streamIndex in
             self?.sidecarFailed(streamIndex: streamIndex)
@@ -1576,7 +1570,7 @@ public final class PlayerViewModel {
     /// (Re)build or reuse the engine for `asset`, load, fence, and play —
     /// the shared tail of every play path. `beginPlayback` (Jellyfin) and
     /// `start(smbItem:)` (SMB) both end here, so the engine lifecycle (subscription,
-    /// Now Playing wiring, tvOS display-mode match, load-failure teardown, rate
+    /// Now Playing wiring, load-failure teardown, rate
     /// re-apply) lives in exactly one place.
     private func loadAndPlay(
         _ asset: PlayableAsset,
@@ -1646,20 +1640,6 @@ public final class PlayerViewModel {
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
             try checkStillActive(generation: generation)
-            // Between load and play, never later: ask the TV to match the
-            // content's native mode (HDR / frame rate) and wait for the switch
-            // to settle behind the loading scrim. Applying this after frames
-            // render blanks/re-handshakes HDMI mid-decode and wedged the video
-            // pipeline on device (black/frozen video with live audio).
-            //
-            // Fresh content only: a track switch re-delivers the SAME video
-            // (new session, identical format), so the display is already
-            // matched and prepare() would just burn its full arm window in
-            // dead waiting before every audio switch.
-            if !reusingEngine {
-                await prepareDisplay(engine)
-                try checkStillActive(generation: generation)
-            }
         } catch {
             // A load failure (or an exit mid-load) must not leave the engine + its
             // state subscription dangling: tear down before propagating, so

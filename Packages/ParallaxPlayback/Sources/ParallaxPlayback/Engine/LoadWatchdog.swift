@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Usage: `arm(onTimeout:)` when entering `.loading`; `disarm()` at the first sign of life (the
 /// first real beat / `.ready`) and on teardown. If neither happens within `timeout`, `onTimeout`
-/// fires once on the MainActor — the engine yields `.failed(.assetNotPlayable)` so the existing
+/// fires once on the MainActor — the engine yields `.failed(.loadTimedOut)` so the existing
 /// error scrim + offline-recovery take over instead of an endless spinner.
 ///
 /// No SwiftUI/Combine (package rule): a bare `Task` + `Duration`. `@MainActor` because the engines

@@ -85,8 +85,7 @@ extension AppModel {
             // recipe both stay inside the provider.
             backfillThumbnail: { duration, captureFrame in
                 await artworkProvider.backfillThumbnail(item: item, ref: ref, duration: duration, captureFrame: captureFrame)
-            },
-            prepareDisplay: services.prepareDisplay
+            }
         )
     }
 
@@ -116,7 +115,6 @@ extension AppModel {
             fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
             fetchDelivery: { await info.transcodingDelivery(playSessionID: $0) },
             smbResumeStore: services.smbResumeStore,
-            prepareDisplay: services.prepareDisplay,
             // Poster bytes for the scrub bar's accent hue. Through the session's own image
             // pipeline, not a bare URLSession: the image endpoints reject anonymous reads on an
             // auth-required server, and the pipeline is the one thing that carries the token. It

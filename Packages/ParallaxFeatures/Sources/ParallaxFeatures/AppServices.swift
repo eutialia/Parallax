@@ -52,7 +52,6 @@ public struct AppServices {
     public let playbackEngineFactory: @MainActor @Sendable () -> any PlaybackEngine
     public let audioSession: any AudioSessionControlling
     let makeNowPlaying: @MainActor @Sendable () -> any NowPlayingUpdating
-    let prepareDisplay: @MainActor @Sendable (any PlaybackEngine) async -> Void
     /// Sidecar subtitle bytes travel over the same transport as every Jellyfin request.
     let urlSession: URLSession
     let subtitleFetchTimeout: Duration
@@ -156,7 +155,6 @@ public struct AppServices {
         playbackEngineFactory = environment.makePlaybackEngine
         audioSession = environment.audioSession
         makeNowPlaying = environment.makeNowPlaying
-        prepareDisplay = environment.prepareDisplay
         urlSession = URLSession(configuration: environment.urlSessionConfiguration)
         subtitleFetchTimeout = environment.subtitleFetchTimeout
         diagnostics = environment.diagnostics
