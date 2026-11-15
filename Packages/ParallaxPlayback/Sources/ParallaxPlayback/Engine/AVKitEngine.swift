@@ -43,6 +43,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// today's behavior.
     private let tuning: StartupTuning
 
+    private let prepareDisplay: (@MainActor (AVAsset) async -> Void)?
+    private var displayPrepared = false
+
     /// Live playback clock for the client-side subtitle overlay.
     public nonisolated var currentTime: CMTime { player.currentTime() }
 
@@ -66,6 +69,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// segment fetch would strand the player on the loading scrim forever. Armed in `play()`,
     /// disarmed by the first beat / `.ready` / terminal state / detach. See `LoadWatchdog`.
     private let loadWatchdog = LoadWatchdog()
+    /// The diagnostics file, for what a device must keep of a failure: every field that logs
+    /// `.public`. The HLS error log and the URL stay in Console, where they can be private.
+    private static let failureLog = Log.retained(category: "Player")
     /// Bounds a mid-playback stall: a network death after the first frame parks the player in
     /// `.waitingToPlayAtSpecifiedRate` (→ `.buffering`) retrying a dead socket with no AVFoundation
     /// timeout — the SMB bridge makes this eternal (it silently resets TCP on NAS loss and AVPlayer
@@ -172,8 +178,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var defaultAudioStreamIndex: Int?
     private var defaultSubtitleStreamIndex: Int?
 
-    public init(tuning: StartupTuning = .systemDefault, stallDeadline: Duration = StallWatchdog.defaultDeadline) {
+    /// - Parameter prepareDisplay: Asks the display for the asset's native mode and waits out
+    ///   the switch. It runs before the item reaches the player: AVPlayer that is choosing a
+    ///   variant while HDMI re-negotiates finds none the display takes and fails the item
+    ///   (`AVErrorNoCompatibleAlternatesForExternalDisplay`, seen on an Apple TV switching
+    ///   frame rate). It runs on an engine's first load only, because an engine is reused
+    ///   only by a track switch, which delivers the same video.
+    public init(
+        tuning: StartupTuning = .systemDefault,
+        stallDeadline: Duration = StallWatchdog.defaultDeadline,
+        prepareDisplay: (@MainActor (AVAsset) async -> Void)? = nil
+    ) {
         self.tuning = tuning
+        self.prepareDisplay = prepareDisplay
         self.stallDeadline = stallDeadline
         let (stream, continuation) = PlaybackStateStream.makeStream()
         self.state = stream
@@ -283,6 +300,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         defaultSubtitleStreamIndex = asset.defaultSubtitleStreamIndex
 
         let urlAsset = AVURLAsset(url: asset.url)
+        if let prepareDisplay, !displayPrepared {
+            await prepareDisplay(urlAsset)
+            guard isLive(session) else { throw CancellationError() }
+            displayPrepared = true
+        }
         let item = AVPlayerItem(asset: urlAsset)
         item.textStyleRules = Self.subtitleStyleRules
         // Startup tuning (see `StartupTuning`) applied HERE — before `replaceCurrentItem`
@@ -434,13 +456,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     @discardableResult
     private func logWatchdogExpiry(_ kind: String, of item: AVPlayerItem) -> PlaybackDebugInfo {
         let snapshot = syncSnapshot(of: item)
-        Log.playback.error(
-            """
-            AVKit \(kind, privacy: .public) watchdog expired: \(snapshot.logSummary, privacy: .public) \
-            hlsRequests=\(snapshot.accessLogDetail, privacy: .public) \
-            hlsErrors=\(snapshot.errorLogDetail, privacy: .private)
-            """
-        )
+        Self.failureLog.error(
+            "AVKit \(kind) watchdog expired: \(snapshot.logSummary) hlsRequests=\(snapshot.accessLogDetail)")
+        Log.playback.error("AVKit \(kind, privacy: .public) watchdog hlsErrors=\(snapshot.errorLogDetail, privacy: .private)")
         return snapshot
     }
 
@@ -931,17 +949,18 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let snapshot = syncSnapshot(of: item)
         let nsError = item.error as NSError?
         let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
+        Self.failureLog.error(
+            """
+            AVPlayerItem failed: domain=\(nsError?.domain ?? "nil") code=\(nsError?.code ?? 0) \
+            desc=\(nsError?.localizedDescription ?? "nil") \
+            underlying=\(underlying.map { "\($0.domain) code=\($0.code)" } ?? "nil") \
+            session=\(session.description) live=\(session == self.session) \(snapshot.logSummary) \
+            hlsRequests=\(snapshot.accessLogDetail)
+            """
+        )
         Log.playback.error(
             """
-            AVPlayerItem failed: \
-            domain=\(nsError?.domain ?? "nil", privacy: .public) \
-            code=\(nsError?.code ?? 0, privacy: .public) \
-            desc=\(nsError?.localizedDescription ?? "nil", privacy: .public) \
-            underlying=\(underlying.map { "\($0.domain) code=\($0.code)" } ?? "nil", privacy: .public) \
-            session=\(session.description, privacy: .public) \
-            live=\(session == self.session, privacy: .public) \
-            \(snapshot.logSummary, privacy: .public) \
-            hlsRequests=\(snapshot.accessLogDetail, privacy: .public) \
+            AVPlayerItem failed: session=\(session.description, privacy: .public) \
             hlsErrors=\(snapshot.errorLogDetail, privacy: .private) \
             url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
             """

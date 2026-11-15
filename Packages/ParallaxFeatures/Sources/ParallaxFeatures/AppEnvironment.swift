@@ -45,9 +45,6 @@ public struct AppEnvironment {
     public let makePlaybackEngine: @MainActor @Sendable () -> any PlaybackEngine
     /// The lock screen and the remote commands, one per player.
     public let makeNowPlaying: @MainActor @Sendable () -> any NowPlayingUpdating
-    /// Asks the display to match the content about to play and waits for it to settle. tvOS
-    /// switches HDR and frame rate; iOS has nothing to switch.
-    public let prepareDisplay: @MainActor @Sendable (any PlaybackEngine) async -> Void
     /// The client identity every Jellyfin request presents.
     public let clientName: String
     public let deviceName: String
@@ -74,7 +71,6 @@ public struct AppEnvironment {
         thumbnailer: any FrameThumbnailing,
         makePlaybackEngine: @escaping @MainActor @Sendable () -> any PlaybackEngine,
         makeNowPlaying: @escaping @MainActor @Sendable () -> any NowPlayingUpdating,
-        prepareDisplay: @escaping @MainActor @Sendable (any PlaybackEngine) async -> Void,
         clientName: String,
         deviceName: String,
         appVersion: String,
@@ -99,7 +95,6 @@ public struct AppEnvironment {
         self.thumbnailer = thumbnailer
         self.makePlaybackEngine = makePlaybackEngine
         self.makeNowPlaying = makeNowPlaying
-        self.prepareDisplay = prepareDisplay
         self.clientName = clientName
         self.deviceName = deviceName
         self.appVersion = appVersion

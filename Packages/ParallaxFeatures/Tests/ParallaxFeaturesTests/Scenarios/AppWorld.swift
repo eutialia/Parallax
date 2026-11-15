@@ -113,7 +113,6 @@ final class AppWorld {
                 return engine
             },
             makeNowPlaying: { SpyNowPlaying() },
-            prepareDisplay: { _ in },
             clientName: "Parallax",
             deviceName: "Scenario Device",
             appVersion: "1.0",
