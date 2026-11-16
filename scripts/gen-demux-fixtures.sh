@@ -12,26 +12,28 @@ mkdir -p "$OUT"
 # cues, and two audio codecs with different frame lengths. Noise keeps the encoder at its
 # bitrate: the file has to be several times libavformat's 256 KB read buffer, or a test never
 # leaves the buffer the open filled.
-ffmpeg -v error -y \
-    -f lavfi -i "testsrc2=size=160x90:rate=24,noise=alls=40:allf=t" \
-    -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-    -t 12 -map 0:v -map 1:a -map 1:a \
-    -c:v libx264 -preset veryfast -bf 2 -g 12 -keyint_min 12 -sc_threshold 0 -b:v 500k -pix_fmt yuv420p \
-    -c:a:0 aac -b:a:0 32k -ac:a:0 2 \
-    -c:a:1 ac3 -b:a:1 64k -ac:a:1 2 \
-    -bitexact -fflags +bitexact \
-    "$OUT/h264-ffmpeg.mkv"
+noisy_h264=(
+    -f lavfi -i "testsrc2=size=160x90:rate=24,noise=alls=40:allf=t"
+    -f lavfi -i "sine=frequency=440:sample_rate=48000"
+    -map 0:v -map 1:a -map 1:a
+    -c:v libx264 -preset veryfast -bf 2 -g 12 -keyint_min 12 -sc_threshold 0 -b:v 500k -pix_fmt yuv420p
+    -c:a:0 aac -b:a:0 32k -ac:a:0 2
+    -c:a:1 ac3 -b:a:1 64k -ac:a:1 2
+    -bitexact -fflags +bitexact
+)
+ffmpeg -v error -y "${noisy_h264[@]}" -t 12 "$OUT/h264-ffmpeg.mkv"
 
 # The same streams as mkvmerge lays them out: different clusters, cue placement and lacing.
 mkvmerge --quiet --deterministic 0 -o "$OUT/h264-mkvmerge.mkv" "$OUT/h264-ffmpeg.mkv"
 
-# ffprobe's packets, the demuxer tests' oracle.
+# ffprobe's packets, the demuxer tests' oracle, timed in whole milliseconds.
 packet_list() {
-    ffprobe -v error -show_packets -show_data_hash md5 -of json "$OUT/$1.mkv" \
+    ffprobe -v error -show_packets -show_data_hash md5 -of json "$OUT/$1.${2:-mkv}" \
         | python3 -c '
 import json, sys
 packets = json.load(sys.stdin)["packets"]
-rows = [[p["stream_index"], int(p["pts"]), int(p["size"]), "K" in p["flags"], p["data_hash"].split(":")[1]]
+# An AVI gives a packet only the time it is decoded.
+rows = [[p["stream_index"], round(float(p.get("pts_time", p["dts_time"])) * 1e6) // 1000, int(p["size"]), "K" in p["flags"], p["data_hash"].split(":")[1]]
         for p in packets]
 json.dump(rows, sys.stdout, separators=(",", ":"))
 ' > "$OUT/$1.packets.json"
@@ -52,14 +54,15 @@ ffmpeg -v error -y \
 
 # The same picture as HEVC with x265's defaults, which real files have: an open GOP and a
 # B-frame pyramid. AC-3 audio, so one clip takes both through a player.
-ffmpeg -v error -y \
-    -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
-    -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-    -t 60 -map 0:v -map 1:a \
-    -c:v libx265 -preset veryfast -x265-params "keyint=48:min-keyint=48:scenecut=0:log-level=error" -pix_fmt yuv420p \
-    -c:a ac3 -b:a 64k -ac 2 \
-    -bitexact -fflags +bitexact \
-    "$OUT/frame-numbers-hevc.mkv"
+numbered_hevc=(
+    -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p"
+    -f lavfi -i "sine=frequency=440:sample_rate=48000"
+    -t 60 -map 0:v -map 1:a
+    -c:v libx265 -preset veryfast -x265-params "keyint=48:min-keyint=48:scenecut=0:log-level=error" -pix_fmt yuv420p
+    -c:a ac3 -b:a 64k -ac 2
+    -bitexact -fflags +bitexact
+)
+ffmpeg -v error -y "${numbered_hevc[@]}" "$OUT/frame-numbers-hevc.mkv"
 
 # One keyframe interval of 32 s, as an x264 encode with keyint=infinite has over a still scene,
 # then a keyframe every 2 s. The Cues list every keyframe; clusters still close every 5 s, so
@@ -358,4 +361,91 @@ clip late-start-source "${x264[@]}" -c:a aac -b:a 24k -t 4
 mkvmerge --quiet --deterministic 0 -o "$OUT/late-start.mkv" \
     --sync 0:600000 --sync 1:600000 "$OUT/late-start-source.mkv"
 rm "$OUT/late-start-source.mkv"
+
+# The streams of h264-ffmpeg.mkv in an MPEG transport stream: no index, H.264 with start codes
+# and its parameter sets in the stream, AAC with ADTS headers. Encoded again, not copied from
+# the MKV, whose times are rounded to its millisecond.
+ffmpeg -v error -y "${noisy_h264[@]}" -t 12 -f mpegts "$OUT/ts-h264.ts"
+packet_list ts-h264 ts
+# And as a Blu-ray or a camcorder stores one: four bytes ahead of each 188-byte packet.
+ffmpeg -v error -y "${noisy_h264[@]}" -t 4 -f mpegts -mpegts_m2ts_mode 1 "$OUT/m2ts-h264.m2ts"
+packet_list m2ts-h264 m2ts
+# The streams of frame-numbers-hevc.mkv, x265's open GOP, in a transport stream: each keyframe
+# after the first is a CRA picture, with pictures stored after it that display before it.
+ffmpeg -v error -y "${numbered_hevc[@]}" -f mpegts "$OUT/ts-hevc-open-gop.ts"
+# A transport stream copied from a Matroska file keeps the times the MKV rounded to its
+# millisecond.
+ffmpeg -v error -y -i "$OUT/frame-numbers-hevc.mkv" -t 6 -map 0 -c copy -bitexact -fflags +bitexact -f mpegts "$OUT/ts-copied-from-mkv.ts"
+# Two four-second parts joined into one file, as a downloaded HLS stream is. The video runs
+# on. The second part's audio starts 187 and a half frames after the first part's, behind a
+# hole: each part's audio is cut at 3.9 s.
+part() {
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor((N+$1)/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+        -t 4 -map 0:v -map 1:a \
+        -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p \
+        -c:a aac -b:a 24k -ac 1 -af atrim=end=3.9 -bitexact -fflags +bitexact \
+        -muxdelay 0 -output_ts_offset "$2" -f mpegts "$OUT/$3"
+}
+part 0 0 part-0.ts
+# The first part's pictures start two frames in, where its decode times start at zero.
+part 96 4.083333333 part-1.ts
+cat "$OUT/part-0.ts" "$OUT/part-1.ts" > "$OUT/ts-audio-gap.ts"
+rm "$OUT/part-0.ts" "$OUT/part-1.ts"
+# x264's open GOP: keyframes after the first are I pictures with a recovery point, not IDR.
+ffmpeg -v error -y \
+    -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 60 -map 0:v -map 1:a \
+    -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -x264-params open-gop=1 -pix_fmt yuv420p \
+    -c:a aac -b:a 24k -ac 1 -bitexact -fflags +bitexact -f mpegts "$OUT/ts-h264-open-gop.ts"
+# Interlaced H.264, which the bridge refuses. x264 codes fields only at a height that divides by four.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x96:rate=25" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 2 -map 0:v -map 1:a -c:v libx264 -preset veryfast -flags +ilme+ildct -x264-params tff=1 -g 25 -pix_fmt yuv420p \
+    -c:a aac -b:a 24k -bitexact -fflags +bitexact -f mpegts "$OUT/refused-interlaced.ts"
+# Two programs in one transport stream, as a recording of a whole multiplex has: the second
+# program's audio is AC-3 at 880 Hz and is not the first program's to play.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=880:sample_rate=48000" \
+    -t 4 -map 0:v -map 1:a -map 2:v -map 3:a \
+    "${x264[@]}" -c:a:0 aac -b:a:0 24k -c:a:1 ac3 -b:a:1 64k \
+    -program title=first:st=0:st=1 -program title=second:st=2:st=3 \
+    -bitexact -fflags +bitexact -f mpegts "$OUT/ts-two-programs.ts"
+# A transport stream's clock is 33 bits of 90 kHz and wraps after 95,443.7 s. This one starts
+# 2.3 s before that, so libavformat times its start below zero.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 4 -map 0:v -map 1:a "${x264[@]}" -bf 2 -keyint_min 12 -sc_threshold 0 -c:a aac -b:a 24k \
+    -bitexact -fflags +bitexact -output_ts_offset 95440 -f mpegts "$OUT/ts-clock-wraps.ts"
+# AAC at 44.1 kHz: a frame is 2089.8 ticks of the 90 kHz clock, so each is timed up to a tick
+# off where it plays.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=44100" \
+    -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a aac -b:a 24k \
+    -bitexact -fflags +bitexact -f mpegts "$OUT/ts-aac-44100.ts"
+# One video and one audio stream, as FLV holds, with the noise of h264-ffmpeg.mkv.
+noisy_pair=(
+    -f lavfi -i "testsrc2=size=160x90:rate=24,noise=alls=40:allf=t"
+    -f lavfi -i "sine=frequency=440:sample_rate=48000"
+    -t 12 -map 0:v -map 1:a
+    -c:v libx264 -preset veryfast -g 12 -keyint_min 12 -sc_threshold 0 -b:v 500k -pix_fmt yuv420p
+    -bitexact -fflags +bitexact
+)
+# FLV: no index, H.264 and AAC in the form an MP4 holds them.
+ffmpeg -v error -y "${noisy_pair[@]}" -bf 2 -c:a aac -b:a 32k -ac 2 "$OUT/flv-h264.flv"
+packet_list flv-h264 flv
+# AVI: an index of every frame, H.264 with start codes, and no presentation times. Without
+# B-frames a picture shows when it is decoded.
+ffmpeg -v error -y "${noisy_pair[@]}" -bf 0 -c:a ac3 -b:a 64k -ac 2 "$OUT/avi-h264.avi"
+packet_list avi-h264 avi
+# Files the bridge opens to say what stops them. With B-frames an AVI's pictures have no
+# times to show at. MPEG-4 part 2 with MP3 is what an old AVI holds, and WMV with WMA an ASF.
+# H.264 and AC-3 in an ASF are codecs the bridge delivers in a container it cannot read in spans.
+short=(-f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 2 -map 0:v -map 1:a)
+ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 2 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-avi-b-frames.avi"
+ffmpeg -v error -y "${short[@]}" -c:v mpeg4 -g 12 -b:v 100k -c:a libmp3lame -b:a 32k -bitexact -fflags +bitexact "$OUT/refused-avi-mpeg4.avi"
+ffmpeg -v error -y "${short[@]}" -c:v wmv2 -g 12 -b:v 100k -c:a wmav2 -b:a 32k -bitexact -fflags +bitexact "$OUT/refused-asf-wmv.asf"
+ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 0 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-asf-h264.asf"
+# An MPEG program stream, as a DVD's VOB is: opened only to name its codec.
+ffmpeg -v error -y "${short[@]}" -c:v mpeg2video -g 12 -b:v 200k -c:a mp2 -b:a 64k -bitexact -fflags +bitexact -f vob "$OUT/refused-program-stream.mpg"
 ls -l "$OUT"

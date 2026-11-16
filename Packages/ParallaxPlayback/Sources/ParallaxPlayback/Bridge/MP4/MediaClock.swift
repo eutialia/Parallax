@@ -19,10 +19,10 @@ struct MediaClock: Sendable, Equatable {
         /// Ticks between neighboring samples.
         let step: Int64
         /// Nanoseconds. A time further than this from its slot keeps its own value, so a
-        /// variable-rate stretch of video is not forced onto the grid. Audio frames are
-        /// continuous by nature and always take the nearest slot (`.max`): a muxer that packs
-        /// several frames into one block stores a time for the first only, and the rest drift
-        /// from the grid by a rounding error each.
+        /// variable-rate stretch of video is not forced onto the grid. Audio a container times
+        /// by the millisecond always takes the nearest slot (`.max`): a muxer that packs several
+        /// frames into one block stores a time for the first only, and the rest drift from the
+        /// grid by a rounding error each.
         let tolerance: Int64
         /// Frames the muxer joins into one MP4 sample: two or more for E-AC-3 frames of fewer than
         /// six blocks, one otherwise. Counted from the anchor.

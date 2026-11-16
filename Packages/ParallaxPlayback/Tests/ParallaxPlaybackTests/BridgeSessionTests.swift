@@ -41,6 +41,95 @@ struct BridgeSessionTests {
         #expect(readBack.map(\.presentation).sorted() == source.indices.map { first + Int64($0) * step })
     }
 
+    /// A transport stream stores H.264 behind start codes and AAC behind ADTS headers, and an
+    /// MP4 sample holds neither. The fixture is `h264-ffmpeg`'s encode in a transport stream,
+    /// so its audio comes back as that file's own packets. Its video holds the parameter sets
+    /// and delimiters a transport stream puts in each picture, so it is counted and timed, and
+    /// the player tests below show its pictures.
+    @Test("a transport stream's segments, asked for out of order, hold every source sample once, in the form an MP4 holds it")
+    func transportStreamSegmentsHoldEverySourceSample() async throws {
+        let session = try await Self.session("ts-h264.ts")
+        func file(_ rendition: String) async throws -> Data {
+            var segments: [Int: Data] = [:]
+            for index in [3, 0, 5, 1, 4, 2] {
+                segments[index] = try await Self.bytes(session, "\(rendition)-\(index).m4s")
+            }
+            return try await Self.bytes(session, "\(rendition)-init.mp4") + (0..<6).flatMap { segments[$0] ?? Data() }
+        }
+        let video = try readBackSamples(of: try await file("v"), pathExtension: "mp4")
+        let aac = try readBackSamples(of: try await file("a0"), pathExtension: "mp4")
+        let ac3 = try readBackSamples(of: try await file("a1"), pathExtension: "mp4")
+
+        #expect(video.map(\.isKeyframe) == (try BridgeFixture.sourcePackets("ts-h264.ts", stream: 0).map(\.isKeyframe)))
+        // The first picture shows at 1.4833 s: 178,000 of 120,000. Then one every 5,000.
+        #expect(video.map(\.presentation).sorted() == (0..<288).map { 178_000 + Int64($0) * 5000 })
+        #expect(aac.map(\.md5) == (try BridgeFixture.sourcePackets("h264-ffmpeg", stream: 1).map(\.md5)))
+        // The audio starts at 1.462 s: 70,176 of 48,000.
+        #expect(aac.map(\.presentation) == (0..<564).map { 70_176 + Int64($0) * 1024 })
+        #expect(ac3.map(\.md5) == (try BridgeFixture.sourcePackets("h264-ffmpeg", stream: 2).map(\.md5)))
+    }
+
+    /// FLV holds H.264 and AAC as an MP4 does, so both come back as the file's own packets. An
+    /// AVI holds H.264 behind start codes, which is counted and timed, and its AC-3 comes back
+    /// as stored. The AVI's packets carry no presentation time.
+    @Test("an FLV's and an AVI's segments, asked for out of order, hold every source sample once, evenly spaced",
+          arguments: [("flv-h264.flv", true, Int64(1024)), ("avi-h264.avi", false, 1536)])
+    func segmentsHoldEverySourceSample(name: String, videoIsInMP4Form: Bool, audioFrameLength: Int64) async throws {
+        let session = try await Self.session(name)
+        func file(_ rendition: String) async throws -> Data {
+            var segments: [Int: Data] = [:]
+            for index in [3, 0, 5, 1, 4, 2] {
+                segments[index] = try await Self.bytes(session, "\(rendition)-\(index).m4s")
+            }
+            return try await Self.bytes(session, "\(rendition)-init.mp4") + (0..<6).flatMap { segments[$0] ?? Data() }
+        }
+        let video = try readBackSamples(of: try await file("v"), pathExtension: "mp4")
+        let audio = try readBackSamples(of: try await file("a0"), pathExtension: "mp4")
+        let sourceVideo = try BridgeFixture.sourcePackets(name, stream: 0)
+        let firstPicture = try #require(video.map(\.presentation).min())
+        let firstFrame = try #require(audio.first?.presentation)
+
+        #expect(video.map(\.isKeyframe) == sourceVideo.map(\.isKeyframe))
+        if videoIsInMP4Form { #expect(video.map(\.md5) == sourceVideo.map(\.md5)) }
+        // 24 pictures a second: one every 5,000 of 120,000.
+        #expect(video.map(\.presentation).sorted() == (0..<288).map { firstPicture + Int64($0) * 5000 })
+        #expect(audio.map(\.md5) == (try BridgeFixture.sourcePackets(name, stream: 1).map(\.md5)))
+        #expect(audio.map(\.presentation) == audio.indices.map { firstFrame + Int64($0) * audioFrameLength })
+    }
+
+    /// The fixture is two four-second parts, joined as a downloaded stream's are: 184 frames of
+    /// audio, a hole, and 184 more that start four seconds after the first, which is 187 and
+    /// a half frames.
+    @Test("audio that goes on half a frame off after a hole keeps every frame at its own time")
+    func audioAfterAHoleKeepsItsOwnTimes() async throws {
+        let session = try await Self.session("ts-audio-gap.ts")
+        var file = try await Self.bytes(session, "a0-init.mp4")
+        for index in try #require(session.plan.audio.first).segments.indices {
+            file += try await Self.bytes(session, "a0-\(index).m4s")
+        }
+
+        let readBack = try readBackSamples(of: file, pathExtension: "mp4").map(\.presentation)
+        let first = try #require(readBack.first)
+
+        let firstPart: [Int64] = (0..<184).map { $0 * 1024 }
+        let secondPart: [Int64] = (0..<184).map { 192_000 + $0 * 1024 }
+        #expect(readBack.map { $0 - first } == firstPart + secondPart)
+    }
+
+    @Test("AAC at 44.1 kHz, which a transport stream times to the nearest tick, plays a frame after a frame")
+    func audioTimedToTheNearestTickIsEvenlySpaced() async throws {
+        let session = try await Self.session("ts-aac-44100.ts")
+        var file = try await Self.bytes(session, "a0-init.mp4")
+        for index in try #require(session.plan.audio.first).segments.indices {
+            file += try await Self.bytes(session, "a0-\(index).m4s")
+        }
+
+        let readBack = try readBackSamples(of: file, pathExtension: "mp4").map(\.presentation)
+
+        #expect(readBack.count > 170)
+        #expect(zip(readBack.dropFirst(), readBack).allSatisfy { $0 - $1 == 1024 })
+    }
+
     /// An MP4 sample of E-AC-3 holds six blocks, so the muxer joins frames of three into pairs,
     /// and libavformat's demuxer splits them again on reading. The fixture's 375 frames fall 125
     /// to a two-second segment, and the last has no partner.
@@ -116,6 +205,10 @@ struct BridgeSessionTests {
         // AAC, AC-3 in 5.1, and FLAC. The DTS track between them is left out.
         ("four-audio-tracks", "a0", 440, 3, 6), ("four-audio-tracks", "a1", 880, 3, 6),
         ("four-audio-tracks", "a2", 660, 3, 6),
+        // AAC behind ADTS headers, and AC-3.
+        ("ts-h264.ts", "a0", 440, 6, 12), ("ts-h264.ts", "a1", 440, 6, 12),
+        // AAC as an FLV holds it, and AC-3 timed by an AVI's count of frames.
+        ("flv-h264.flv", "a0", 440, 6, 12), ("avi-h264.avi", "a0", 440, 6, 12),
     ])
     func audioRenditionDecodesToTheSourceTone(
         name: String, rendition: String, hertz: Double, segmentCount: Int, seconds: Double
@@ -458,6 +551,9 @@ struct BridgeSessionTests {
             // Each picture in a fragment of its own: every fragment after a segment's first is
             // dated by the writer, open-GOP pictures included.
             ("frame-numbers-hevc", FragmentLimits(bytes: 1, duration: .seconds(Int64.max))),
+            // Transport streams with no index, cut at keyframes that are not IDR pictures:
+            // x265's CRA pictures and x264's recovery points.
+            ("ts-hevc-open-gop.ts", .standard), ("ts-h264-open-gop.ts", .standard),
         ])
     func avPlayerShowsEachSourceFrameAtItsTime(name: String, fragmentLimits: FragmentLimits) async throws {
         let fixture = try await LoadedFixture(name, fragmentLimits: fragmentLimits)
@@ -488,7 +584,14 @@ struct BridgeSessionTests {
     }
 
     @MainActor
-    @Test("AVPlayer plays each codec the bridge delivers", arguments: ["flac", "eac3", "opus", "av1", "h264-high10", "dolby-vision-8-4"])
+    @Test("AVPlayer plays each codec the bridge delivers", arguments: [
+        "flac", "eac3", "opus", "av1", "h264-high10", "dolby-vision-8-4",
+        // A transport stream copied from a Matroska file: its times are still rounded to the
+        // millisecond, under a tick ninety times finer.
+        "ts-copied-from-mkv.ts",
+        // H.264 as an FLV holds it, and behind start codes with no presentation times in an AVI.
+        "flv-h264.flv", "avi-h264.avi",
+    ])
     func avPlayerPlaysEachDeliveredCodec(name: String) async throws {
         let fixture = try await LoadedFixture(name)
         let shown = await fixture.framesShown(for: .seconds(2))

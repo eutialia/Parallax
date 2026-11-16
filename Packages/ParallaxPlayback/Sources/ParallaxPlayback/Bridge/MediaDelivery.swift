@@ -19,8 +19,10 @@ public struct MediaDelivery: Sendable {
     }
 
     /// Reads what it must of `reader` under `probeDeadline`, picks the route, and starts the
-    /// server for it. A file AVPlayer opens is served as it is. A Matroska file goes through
-    /// the bridge when `bridging` is set, which costs its index and its opening.
+    /// server for it. A file AVPlayer opens is served as it is. A file in one of
+    /// `bridgedContainers` goes through the bridge when `bridging` is set, which costs its
+    /// keyframe list and its opening. A file with no index has its keyframes listed by reading
+    /// it, and the deadline abandons that read only when it has passed with no packet read.
     /// `showsHDR` is whether AVPlayer shows HDR on this device now: the bridge refuses PQ video
     /// where it does not.
     ///
@@ -37,9 +39,11 @@ public struct MediaDelivery: Sendable {
         probeDeadline: Duration = defaultProbeDeadline,
         clock: any Clock<Duration>
     ) async throws -> MediaDelivery {
-        let routed = await race(against: probeDeadline, on: clock) {
+        let progress = ListingProgress()
+        let routed = await race(against: probeDeadline, on: clock, restartedBy: progress) {
             try await responder(
-                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR, bridging: bridging)
+                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR, bridging: bridging,
+                progress: progress, clock: clock)
         }
         guard let routed else { throw ProbeFailure.timedOut }
         let responder: any MediaResponder
@@ -61,16 +65,33 @@ public struct MediaDelivery: Sendable {
         }
     }
 
+    /// How long after an open starts a large file with no index is still sampled for more
+    /// keyframes than it needs. Past it, sampling goes on only where a segment would be too
+    /// large to hold.
+    static let samplingTime: Duration = .milliseconds(2500)
+
+    /// The containers AVPlayer cannot open that the bridge opens. It reads Matroska, transport
+    /// streams, FLV and AVI in spans; ASF and program streams it opens to name what stops them.
+    static let bridgedContainers: Set<Container> = [.mkv, .ts, .flv, .avi, .asf, .mpegps]
+
     /// What serves the file. Throws an `Unplayable`, or the reader's own error.
     private static func responder(
         reading reader: any RandomAccessReading, fileName: String, support: AVPlayerSupport, showsHDR: Bool,
-        bridging: Bool
+        bridging: Bool, progress: ListingProgress, clock: some Clock<Duration>
     ) async throws -> any MediaResponder {
         switch DirectPlay.verdict(for: try await MediaProbe.probe(reader), support: support) {
-        case .unplayable(.container(.mkv)) where bridging:
+        case .unplayable(.container(let container?)) where bridging && bridgedContainers.contains(container):
             do {
-                return try await BridgeSession.open(
-                    reader, support: support, showsHDR: showsHDR)
+                let opening = clock.now
+                let samplingEnd = opening.advanced(by: samplingTime)
+                let session = try await BridgeSession.open(
+                    reader, support: support, showsHDR: showsHDR,
+                    listing: KeyframeListing(progress: progress) { clock.now >= samplingEnd })
+                let milliseconds = Int((opening.duration(to: clock.now) / .milliseconds(1)).rounded())
+                BridgeReport.log.notice(
+                    "bridge: opened in \(milliseconds) ms, \(session.keyframes.count) keyframes, "
+                        + "\(session.report(of: []).bytesFetched >> 10) KB read")
+                return session
             } catch let refusal as BridgeRefusal {
                 throw Unplayable.refused(refusal)
             }
@@ -101,13 +122,14 @@ public struct MediaDelivery: Sendable {
     }
 
     /// Races `work` against `deadline`, abandoning the work if the deadline wins. Nil on
-    /// timeout.
+    /// timeout. A deadline that passes with `listing` further on than when it started starts
+    /// again.
     ///
     /// Unstructured on purpose: a task group would await the child even after `cancelAll()`,
     /// so a wedged source stalls the caller until the source's own socket timeout. Abandoned
     /// work ends when its read returns and holds only memory.
     private static func race<Value: Sendable>(
-        against deadline: Duration, on clock: any Clock<Duration>,
+        against deadline: Duration, on clock: any Clock<Duration>, restartedBy listing: ListingProgress? = nil,
         _ work: @escaping @Sendable () async throws -> Value
     ) async -> Result<Value, any Error>? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Result<Value, any Error>?, Never>) in
@@ -116,9 +138,16 @@ public struct MediaDelivery: Sendable {
                 do { return .success(try await work()) } catch { return .failure(error) }
             }
             let timer = Task {
-                guard (try? await clock.sleep(for: deadline)) != nil else { return }
-                working.cancel()          // cooperative only: a wedged read ignores it
-                latch.resume(nil)
+                var seen = listing?.packetsRead
+                while (try? await clock.sleep(for: deadline)) != nil {
+                    let read = listing?.packetsRead
+                    guard let read, read != seen else {
+                        working.cancel()          // cooperative only: a wedged read ignores it
+                        latch.resume(nil)
+                        return
+                    }
+                    seen = read
+                }
             }
             Task {
                 let result = await working.value

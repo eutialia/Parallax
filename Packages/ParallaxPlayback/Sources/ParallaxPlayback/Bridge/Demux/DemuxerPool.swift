@@ -11,7 +11,7 @@ final class DemuxerPool: Sendable {
     private let keyframes: [IndexedKeyframe]
     private let idle: Mutex<[MediaDemuxer]>
 
-    /// `first` read `keyframes`; the others are handed them, and read the header from `cache`.
+    /// `first` made `keyframes`; the others are handed them, and read the header from `cache`.
     init(first: MediaDemuxer, cache: SessionBlockCache, keyframes: [IndexedKeyframe]) {
         self.cache = cache
         self.keyframes = keyframes

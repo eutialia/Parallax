@@ -118,6 +118,7 @@ final class DemuxerSource {
     /// The `AVERROR` macros do not import into Swift.
     enum Code {
         static let ioError = -EIO
+        static let tryAgain = -EAGAIN
         /// `FFERRTAG('E', 'O', 'F', ' ')`, negated.
         static let endOfFile: Int32 = -0x2046_4F45
     }

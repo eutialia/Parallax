@@ -10,18 +10,25 @@ enum BridgeFixture {
         containers: [.mp4, .mov, .hls], videoCodecs: Set(VideoCodec.allCases),
         audioCodecs: Set(AudioCodec.allCases), decodesH264High10: true)
 
-    static func data(_ name: String, _ ext: String = "mkv") throws -> Data {
+    /// A fixture's bytes. `file` is "ts-h264.ts", or a Matroska fixture's name alone.
+    static func data(_ file: String) throws -> Data {
+        let parts = file.split(separator: ".", maxSplits: 1).map(String.init)
+        return try data(parts[0], parts.count > 1 ? parts[1] : "mkv")
+    }
+
+    static func data(_ name: String, _ ext: String) throws -> Data {
         let url = try #require(Bundle.module.url(
             forResource: name, withExtension: ext, subdirectory: "Fixtures/demux"))
         return try Data(contentsOf: url)
     }
 
-    static func demuxer(_ name: String) async throws -> MediaDemuxer {
-        try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data(name)))
+    static func demuxer(_ file: String) async throws -> MediaDemuxer {
+        try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data(file)))
     }
 
     /// ffprobe's md5 and keyframe flag of each packet of one stream, in file order.
-    static func sourcePackets(_ name: String, stream: Int) throws -> [SourcePacket] {
+    static func sourcePackets(_ file: String, stream: Int) throws -> [SourcePacket] {
+        let name = String(file.prefix { $0 != "." })
         let rows = try #require(JSONSerialization.jsonObject(with: data(name, "packets.json")) as? [[Any]])
         return try rows.filter { $0[0] as? Int == stream }.map {
             SourcePacket(md5: try #require($0[4] as? String), isKeyframe: try #require($0[3] as? Bool))

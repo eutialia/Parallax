@@ -78,6 +78,11 @@ struct BridgePlanTests {
         ("refused-ld-aac", .noDeliverableAudio(names: ["aac LD"])),
         ("refused-one-keyframe", .noCues),
         ("refused-no-duration", .noDuration),
+        ("refused-interlaced.ts", .interlacedVideo),
+        ("refused-avi-b-frames.avi", .untimedVideo),
+        ("refused-avi-mpeg4.avi", .videoCodec(name: "mpeg4 Simple Profile")),
+        ("refused-asf-wmv.asf", .videoCodec(name: "wmv2")),
+        ("refused-asf-h264.asf", .container(name: "asf")),
     ])
     func undeliverableFileIsRefused(name: String, reason: BridgeRefusal) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)
@@ -111,6 +116,26 @@ struct BridgePlanTests {
         #expect(plan.defaultAudio == 1)
         // Each track is timed in its own frames: 1024 samples for AAC and this FLAC, 1536 for AC-3.
         #expect(plan.audio.map { $0.rendition.clock.grid?.step } == [1024, 1536, 1024])
+    }
+
+    @Test("a transport stream's plan holds the audio of the video's own program, and no other program's")
+    func audioOfAnotherProgramIsNotThePlans() async throws {
+        // Program one is H.264 with AAC. Program two is H.264 with AC-3.
+        let plan = try await BridgePlan(reading: BridgeFixture.demuxer("ts-two-programs.ts"), support: BridgeFixture.everyDecoder, showsHDR: true)
+
+        #expect(plan.video.rendition.stream.index == 0)
+        #expect(plan.audio.map(\.rendition.codec) == ["mp4a.40.2"])
+        #expect(plan.omittedAudio == [])
+    }
+
+    @Test("a transport stream whose times start at 1.46 s is cut into two-second segments that end where its samples do")
+    func transportStreamIsCutWhereItsKeyframesAre() async throws {
+        // 288 frames from 1.483 s, a keyframe every half second.
+        let plan = try await BridgePlan(reading: BridgeFixture.demuxer("ts-h264.ts"), support: BridgeFixture.everyDecoder, showsHDR: true)
+
+        #expect(plan.video.segments.map(\.entries) == [0..<4, 4..<8, 8..<12, 12..<16, 16..<20, 20..<24])
+        #expect(plan.video.segments.map { ($0.seconds * 1000).rounded() } == [2000, 2000, 2000, 2000, 2000, 2000])
+        #expect(plan.audio.map(\.rendition.codec) == ["mp4a.40.2", "ac-3"])
     }
 
     @Test("an audio track is timed in frames of the length its codec gives them", arguments: [

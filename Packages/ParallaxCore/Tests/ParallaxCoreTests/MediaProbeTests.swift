@@ -387,6 +387,13 @@ struct MediaProbeTests {
         #expect(result.container == nil)
     }
 
+    @Test("the FLV signature and its version sniff as flv")
+    func flashVideoSignatureIsFLV() async throws {
+        let result = try await probe(Data("FLV".utf8) + Data([0x01, 0x05]) + Data(count: 64))
+        #expect(result.container == .flv)
+        #expect(result.isComplete)
+    }
+
     @Test("the MPEG-PS pack start code sniffs as mpegps")
     func packStartCodeIsMpegPs() async throws {
         let result = try await probe(Data([0x00, 0x00, 0x01, 0xBA]) + Data(count: 64))

@@ -17,7 +17,7 @@ public enum Unplayable: Error, Sendable, Equatable {
     case audioCodec(AudioCodec?)
     /// An MP4 AVPlayer opens and then misplays.
     case directHazards(Set<AVPlayerHazard>)
-    /// A Matroska file the bridge opened and cannot deliver.
+    /// A file the bridge opened and cannot deliver.
     case refused(BridgeRefusal)
 }
 
