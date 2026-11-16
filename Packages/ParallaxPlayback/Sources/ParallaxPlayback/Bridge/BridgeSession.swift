@@ -7,7 +7,7 @@ import Synchronization
 /// same bytes, in whatever order AVPlayer asks.
 struct BridgeSession: MediaResponder {
     let plan: BridgePlan
-    /// The video stream's index, which every segment's read starts from.
+    /// The video keyframes every segment's read starts from.
     let keyframes: [IndexedKeyframe]
     let reads = SegmentReads()
     let memory = BridgeMemory()
@@ -15,17 +15,17 @@ struct BridgeSession: MediaResponder {
     private let demuxers: DemuxerPool
     private let fragmentLimits: FragmentLimits
 
-    /// Reads the file's headers, index and opening. Throws a `BridgeRefusal` for a file the
+    /// Reads the file's headers, keyframe list and opening. Throws a `BridgeRefusal` for a file the
     /// bridge cannot deliver, and the reader's own error when a read fails.
     static func open(
         _ reader: any RandomAccessReading, support: AVPlayerSupport, showsHDR: Bool,
         blockSize: Int = SessionBlockCache.defaultBlockSize, bytesKept: Int = SessionBlockCache.defaultBytesKept,
-        fragmentLimits: FragmentLimits = .standard
+        fragmentLimits: FragmentLimits = .standard, listing: KeyframeListing = .init()
     ) async throws -> BridgeSession {
         do {
             let cache = SessionBlockCache(
                 reader: reader, size: try await reader.fileSize, blockSize: blockSize, bytesKept: bytesKept)
-            let demuxer = try await MediaDemuxer.open(cache)
+            let demuxer = try await MediaDemuxer.open(cache, listing: listing)
             let plan = try await BridgePlan(reading: demuxer, support: support, showsHDR: showsHDR)
             if !plan.omittedAudio.isEmpty {
                 Log.playback.info("bridge: audio left out: \(plan.omittedAudio.joined(separator: ", "), privacy: .public)")

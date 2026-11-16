@@ -104,6 +104,10 @@ public enum MediaProbe {
             return MediaProbeResult(container: .asf, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }
 
+        if head.starts(with: Array("FLV".utf8) + [0x01]) {
+            return MediaProbeResult(container: .flv, videoCodec: .none, audioCodecs: .none, isComplete: true)
+        }
+
         if head.starts(with: [0x00, 0x00, 0x01, 0xBA]) {
             return MediaProbeResult(container: .mpegps, videoCodec: .none, audioCodecs: .none, isComplete: true)
         }

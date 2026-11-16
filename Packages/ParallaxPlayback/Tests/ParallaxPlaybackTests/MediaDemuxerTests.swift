@@ -41,9 +41,9 @@ struct MediaDemuxerTests {
     }
 
     /// ffprobe's packets, per stream, in file order.
-    private static func expectedSamples(_ name: String) throws -> [Int: [Sample]] {
+    private static func expectedSamples(_ file: String) throws -> [Int: [Sample]] {
         let rows = try #require(
-            JSONSerialization.jsonObject(with: fixture(name, "packets.json")) as? [[Any]])
+            JSONSerialization.jsonObject(with: fixture(String(file.prefix { $0 != "." }), "packets.json")) as? [[Any]])
         return try rows.reduce(into: [:]) { byStream, row in
             byStream[try #require(row[0] as? Int), default: []].append(try Sample(row: row))
         }
@@ -67,10 +67,10 @@ struct MediaDemuxerTests {
 
     @Test(
         "spans fetched out of order add up to exactly the file's packets",
-        arguments: ["h264-ffmpeg", "h264-mkvmerge", "long-span"], Order.allCases)
+        arguments: ["h264-ffmpeg", "h264-mkvmerge", "long-span", "ts-h264.ts", "m2ts-h264.m2ts", "flv-h264.flv", "avi-h264.avi"],
+        Order.allCases)
     func spansFetchedOutOfOrderAddUpToTheFile(name: String, order: Order) async throws {
-        let demuxer = try await MediaDemuxer.open(
-            InMemoryRandomAccessReader(data: Self.fixture(name, "mkv")))
+        let demuxer = try await BridgeFixture.demuxer(name)
         let count = try await demuxer.keyframes().count
         try #require(count > 4)
 
@@ -81,6 +81,90 @@ struct MediaDemuxerTests {
         let joined = (0..<count).flatMap { spans[$0] ?? [] }
 
         #expect(Self.samples(joined) == (try Self.expectedSamples(name)))
+    }
+
+    @Test("a file with no index is given every keyframe of its video, each where a read of it starts",
+          arguments: ["ts-h264.ts", "m2ts-h264.m2ts", "flv-h264.flv"])
+    func fileWithNoIndexListsItsKeyframes(name: String) async throws {
+        let demuxer = try await BridgeFixture.demuxer(name)
+        let listed = try await demuxer.keyframes()
+        let flagged = try #require(try Self.expectedSamples(name)[0]).filter(\.isKeyframe)
+
+        #expect(listed.map { $0.time / 1_000_000 } == flagged.map(\.milliseconds))
+        for index in listed.indices {
+            let first = try #require(try await demuxer.packets(0, from: index, to: index + 1).first)
+            #expect(Sample(first) == flagged[index])
+        }
+    }
+
+    private static func sampled(_ data: Data, every spacing: Int64) async throws -> MediaDemuxer {
+        let reader = InMemoryRandomAccessReader(data: data)
+        return try await MediaDemuxer.open(
+            SessionBlockCache(reader: reader, size: try await reader.fileSize),
+            listing: .init(wholeReadSize: 0, sampling: .init(densestSpacing: spacing, largestSegment: spacing)))
+    }
+
+    @Test("a file sampled for its keyframes is cut at some of them, never at another picture, and its spans add up to exactly the file's packets",
+          arguments: ["ts-h264.ts", "m2ts-h264.m2ts"])
+    func sampledFileIsCutAtTrueKeyframes(name: String) async throws {
+        let demuxer = try await Self.sampled(try BridgeFixture.data(name), every: 80_000)
+        let listed = try await demuxer.keyframes()
+        let flagged = try #require(try Self.expectedSamples(name)[0]).filter(\.isKeyframe).map(\.milliseconds)
+
+        #expect(listed.first.map { $0.time / 1_000_000 } == flagged.first)
+        #expect(Set(listed.map { $0.time / 1_000_000 }).isSubset(of: Set(flagged)))
+        #expect((3..<flagged.count).contains(listed.count))
+
+        var joined: [DemuxedPacket] = []
+        for lower in listed.indices {
+            joined += try await demuxer.packets(from: lower, to: lower + 1)
+        }
+        #expect(Self.samples(joined) == (try Self.expectedSamples(name)))
+    }
+
+    /// The fixture twice over: twelve seconds, then the same twelve seconds again.
+    @Test("a file whose times start again part way through is refused, read whole or sampled",
+          arguments: [Int64.max, 0])
+    func timesThatStartAgainAreRefused(wholeReadSize: Int64) async throws {
+        let part = try BridgeFixture.data("ts-h264.ts")
+        let reader = InMemoryRandomAccessReader(data: part + part)
+        let demuxer = try await MediaDemuxer.open(
+            SessionBlockCache(reader: reader, size: try await reader.fileSize),
+            listing: .init(
+                wholeReadSize: wholeReadSize, sampling: .init(densestSpacing: 80_000, largestSegment: 80_000)))
+
+        await #expect { _ = try await demuxer.keyframes() } throws: {
+            guard case BridgeRefusal.timestampsRestart(let after) = $0 else { return false }
+            return (9...11).contains(after)
+        }
+    }
+
+    /// The fixture's times start below zero. libavformat's own index of it then held eight
+    /// packets its seek had read through, which were taken for the file's keyframes.
+    @Test("a transport stream whose clock wraps part way through lists every keyframe, half a second apart")
+    func clockThatWrapsListsEveryKeyframe() async throws {
+        let listed = try await BridgeFixture.demuxer("ts-clock-wraps.ts").keyframes()
+        let first = try #require(listed.first?.time)
+
+        #expect(first < 0)
+        #expect(listed.map { ($0.time - first) / 1_000_000 } == (0..<8).map { Int64($0) * 500 })
+    }
+
+    /// libavformat searches 64 KB for the next packet, then hands over a picture or a frame it
+    /// had begun, and with none left to hand over answers "try again". The stretch here is long
+    /// enough to use up the three streams' and still not end.
+    @Test("a transport stream with a long stretch that holds no packets lists the keyframes on both sides of it")
+    func damagedStretchOfATransportStreamIsReadPast() async throws {
+        let whole = try BridgeFixture.data("ts-h264.ts")
+        var damaged = whole
+        damaged.replaceSubrange(300_000..<650_000, with: Data(count: 350_000))
+        let intact = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: whole)).keyframes()
+
+        let listed = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: damaged)).keyframes()
+
+        #expect(listed.filter { $0.position < 300_000 } == intact.filter { $0.position < 300_000 })
+        #expect(listed.filter { $0.position >= 300_000 } == intact.filter { $0.position >= 650_000 })
+        #expect(listed.count == 16)
     }
 
     /// Every cluster of the file, by an EBML walk of its Segment: where it starts and its time,
@@ -137,6 +221,45 @@ struct MediaDemuxerTests {
     }
 
     /// Serves the file and keeps where each read started.
+    /// Where each tag of an FLV starts, read forwards: a tag is eleven bytes of header, its
+    /// data, and four bytes of its size.
+    private static func tagStarts(in data: Data) -> [Int64] {
+        var starts: [Int64] = []
+        var at = 13
+        while at + 11 <= data.count {
+            starts.append(Int64(at))
+            at += 11 + data[(at + 1)...(at + 3)].reduce(0) { $0 << 8 | Int($1) } + 4
+        }
+        return starts
+    }
+
+    @Test("an FLV's audio read starts only where a tag does: the last one at or before where the search begins")
+    func tagSearchFindsOnlyTags() async throws {
+        let data = try BridgeFixture.data("flv-h264.flv")
+        let demuxer = try await BridgeFixture.demuxer("flv-h264.flv")
+        let keyframes = try await demuxer.keyframes()
+        let tags = Self.tagStarts(in: data)
+
+        for keyframe in keyframes.dropFirst() {
+            #expect(tags.contains(keyframe.position))
+            for back in [1, 500, 20_000, 72_192] as [Int64] {
+                let offset = max(keyframe.position - back, 13)
+                let found = try await demuxer.tagStart(atOrBefore: offset, before: keyframe)
+                #expect(found == tags.last { $0 <= offset })
+            }
+        }
+    }
+
+    @Test("an FLV written without the sizes its tags are found by has no tag to start an audio read at")
+    func tagSearchNeedsTheSizes() async throws {
+        var data = try BridgeFixture.data("flv-h264.flv")
+        let keyframe = try #require(try await BridgeFixture.demuxer("flv-h264.flv").keyframes().last)
+        data.replaceSubrange(Int(keyframe.position - 4)..<Int(keyframe.position), with: Data(count: 4))
+        let demuxer = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data))
+
+        #expect(try await demuxer.tagStart(atOrBefore: keyframe.position - 500, before: keyframe) == nil)
+    }
+
     private final class OffsetsReader: RandomAccessReading {
         let backing: InMemoryRandomAccessReader
         private let offsets = Mutex<[Int64]>([])
@@ -212,6 +335,11 @@ struct MediaDemuxerTests {
         ("opus", ["avc1.64000b", "Opus"]),
         // The fixture's `av1C` holds profile 0 (Main), level 0, the main tier and 8 bits.
         ("av1", ["av01.0.00M.08", "mp4a.40.2"]),
+        // The encodes of `h264-ffmpeg` and `frame-numbers-hevc`, whose profile and level a
+        // transport stream holds in parameter sets behind start codes, not in a record. The
+        // HEVC set's constraint bytes hold the `03` that keeps a start code out of them.
+        ("ts-h264.ts", ["avc1.640014", "mp4a.40.2", "ac-3"]),
+        ("ts-hevc-open-gop.ts", ["hvc1.1.6.L30.90", "ac-3"]),
     ])
     func streamsReportTheirPlaylistCodec(name: String, codecs: [String]) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)
@@ -321,16 +449,13 @@ struct MediaDemuxerTests {
         #expect(try await short.packets(from: 20, to: 22) == whole.packets(from: 20, to: 22))
     }
 
-    @Test("a container that cannot be read in spans is refused at open, by name")
-    func nonMatroskaContainerIsRefused() async throws {
-        let url = try #require(Bundle.module.url(
-            forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures"))
+    @Test("a container that cannot be read in spans is described, and has no keyframe list",
+          arguments: ["refused-asf-h264.asf"])
+    func containerNotReadInSpansIsDescribedOnly(name: String) async throws {
+        let demuxer = try await BridgeFixture.demuxer(name)
 
-        await #expect {
-            _ = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: try Data(contentsOf: url)))
-        } throws: {
-            if case MediaDemuxer.OpenFailure.unsupportedContainer(let name) = $0 { name.contains("mp4") } else { false }
-        }
+        #expect(demuxer.streams.map(\.parameters.codecName) == ["h264", "ac3"])
+        await #expect(throws: BridgeRefusal.container(name: "asf")) { _ = try await demuxer.keyframes() }
     }
 
     @Test("bytes that are no media file are refused at open")

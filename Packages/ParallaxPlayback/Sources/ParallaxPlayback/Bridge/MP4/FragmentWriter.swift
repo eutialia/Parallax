@@ -42,6 +42,11 @@ final class FragmentWriter {
     private let framesPerSample: Int
     private let context: UnsafeMutablePointer<AVFormatContext>
     private let packet: UnsafeMutablePointer<AVPacket>
+    /// Takes the ADTS header off each AAC frame and hands the muxer the configuration record
+    /// the header stands for. Nil for a stream whose container gave it a record. The MP4 muxer
+    /// of FFmpegBuild 3.14.0 does not do this itself: it fails the frame as a malformed AAC
+    /// bitstream.
+    private let adtsFilter: UnsafeMutablePointer<AVBSFContext>?
     private let timescale: AVRational
     private let timeBase: AVRational
 
@@ -72,6 +77,8 @@ final class FragmentWriter {
         let muxed: AVRational
         do throws(SegmentWriter.Failure) {
             muxed = try Self.writeHeader(of: rendition, into: context)
+            adtsFilter = rendition.stream.parameters.hasADTSHeaders
+                ? try Self.adtsFilter(for: rendition.stream.parameters) : nil
         } catch {
             var packet: UnsafeMutablePointer<AVPacket>? = packet
             av_packet_free(&packet)
@@ -93,6 +100,8 @@ final class FragmentWriter {
     }
 
     deinit {
+        var adtsFilter = adtsFilter
+        av_bsf_free(&adtsFilter)
         var packet: UnsafeMutablePointer<AVPacket>? = packet
         av_packet_free(&packet)
         Self.closeBuffer(of: context)
@@ -168,6 +177,10 @@ final class FragmentWriter {
         packet.pointee.dts = av_rescale_q(decode - rendition.decodeLead, timescale, timeBase)
         packet.pointee.duration = av_rescale_q(duration, timescale, timeBase)
         if sample.isKeyframe { packet.pointee.flags |= AV_PKT_FLAG_KEY }
+        if let adtsFilter {
+            try SegmentWriter.check(av_bsf_send_packet(adtsFilter, packet))
+            try SegmentWriter.check(av_bsf_receive_packet(adtsFilter, packet))
+        }
         try SegmentWriter.check(av_write_frame(context, packet))
 
         fragmentBytes += sample.data.count
@@ -234,6 +247,23 @@ final class FragmentWriter {
         avio_close_dyn_buf(context.pointee.pb, &buffer)
         av_free(buffer)
         context.pointee.pb = nil
+    }
+
+    private static func adtsFilter(
+        for parameters: CodecParameters
+    ) throws(SegmentWriter.Failure) -> UnsafeMutablePointer<AVBSFContext> {
+        var allocated: UnsafeMutablePointer<AVBSFContext>?
+        guard let named = av_bsf_get_by_name("aac_adtstoasc"), av_bsf_alloc(named, &allocated) >= 0,
+              let filter = allocated
+        else { throw .outOfMemory }
+        do throws(SegmentWriter.Failure) {
+            try SegmentWriter.check(avcodec_parameters_copy(filter.pointee.par_in, parameters.pointer))
+            try SegmentWriter.check(av_bsf_init(filter))
+        } catch {
+            av_bsf_free(&allocated)
+            throw error
+        }
+        return filter
     }
 
     /// The time base the muxer chose for the stream.

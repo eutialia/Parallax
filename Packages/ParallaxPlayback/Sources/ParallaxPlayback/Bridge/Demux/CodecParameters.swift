@@ -42,6 +42,21 @@ final class CodecParameters: @unchecked Sendable {
         }
     }
 
+    /// The stream says its pictures are stored as fields. A stream that says nothing is taken
+    /// for progressive.
+    var isInterlaced: Bool {
+        switch pointer.pointee.field_order {
+        case AV_FIELD_TT, AV_FIELD_BB, AV_FIELD_TB, AV_FIELD_BT: true
+        default: false
+        }
+    }
+
+    /// AAC the container gave no configuration record: each frame is behind an ADTS header
+    /// that describes it, as a transport stream stores it.
+    var hasADTSHeaders: Bool {
+        pointer.pointee.codec_id == AV_CODEC_ID_AAC && pointer.pointee.extradata_size == 0
+    }
+
     var channelCount: Int { Int(pointer.pointee.ch_layout.nb_channels) }
 
     /// What a playlist's `CHANNELS` says: the channel count, or "16/JOC" for E-AC-3 that
@@ -125,30 +140,27 @@ final class CodecParameters: @unchecked Sendable {
     /// the codec is stored under. Nil for a codec or profile the bridge does not deliver, which
     /// is what makes the plan refuse the file.
     var playlistCodec: String? {
-        let extradata = UnsafeBufferPointer(start: pointer.pointee.extradata, count: Int(pointer.pointee.extradata_size))
         switch pointer.pointee.codec_id {
         case AV_CODEC_ID_H264:
-            // An `avcC` record: version, then the profile, constraint and level bytes. Baseline,
-            // Main and High are the profiles every Apple decoder takes, and High 10 some.
-            guard extradata.count >= 4, extradata[0] == 1, [66, 77, 100, 110].contains(extradata[1]) else { return nil }
-            return String(format: "avc1.%02x%02x%02x", extradata[1], extradata[2], extradata[3])
+            // Baseline, Main and High are the profiles every Apple decoder takes, and High 10
+            // some.
+            guard let level = h264ProfileLevelID, [66, 77, 100, 110].contains(level[0]) else { return nil }
+            return String(format: "avc1.%02x%02x%02x", level[0], level[1], level[2])
         case AV_CODEC_ID_HEVC:
-            // An `hvcC` record: version, a byte of profile space, tier and profile, four bytes
-            // of compatibility flags, six of constraint flags, then the level.
-            guard extradata.count >= 13, extradata[0] == 1 else { return nil }
-            let space = extradata[1] >> 6, isHighTier = extradata[1] & 0x20 != 0, profile = extradata[1] & 0x1f
+            guard let level = hevcProfileTierLevel else { return nil }
+            let space = level[0] >> 6, isHighTier = level[0] & 0x20 != 0, profile = level[0] & 0x1f
             // Main and Main 10. Dolby Vision profile 5 calls itself Main 10 and is not: its
             // picture is in Dolby's own color space, and played as plain HEVC it shows green
             // and purple.
             guard space == 0, profile == 1 || profile == 2, dolbyVisionProfile != 5 else { return nil }
             // The string carries the compatibility flags with their bits in reverse order, and
             // the constraint bytes up to the last that is not zero.
-            let compatibility = extradata[2...5].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+            let compatibility = level[1...4].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
             let reversed = (0..<32).reduce(UInt32(0)) { $0 | (compatibility >> $1 & 1) << (31 - $1) }
-            let constraints = extradata[6...11].reversed().drop { $0 == 0 }.reversed()
+            let constraints = level[5...10].reversed().drop { $0 == 0 }.reversed()
                 .map { "." + String($0, radix: 16, uppercase: true) }.joined()
             return "hvc1.\(profile).\(String(reversed, radix: 16, uppercase: true))"
-                + ".\(isHighTier ? "H" : "L")\(extradata[12])\(constraints)"
+                + ".\(isHighTier ? "H" : "L")\(level[11])\(constraints)"
         case AV_CODEC_ID_AAC:
             // libavcodec numbers AAC profiles one below the MPEG-4 audio object type: LC is 1,
             // HE is 4 and HE v2 is 28.
@@ -164,6 +176,7 @@ final class CodecParameters: @unchecked Sendable {
         case AV_CODEC_ID_AV1:
             // An `av1C` record: a marker and version byte, then the profile and level, then the
             // tier and the bits that give the depth. Main is the profile Apple's decoders take.
+            let extradata = configuration
             guard extradata.count >= 4, extradata[0] == 0x81 else { return nil }
             let profile = extradata[1] >> 5, level = extradata[1] & 0x1f
             guard profile == 0 else { return nil }
@@ -173,5 +186,52 @@ final class CodecParameters: @unchecked Sendable {
         default:
             return nil
         }
+    }
+
+    /// The codec's configuration as the container gives it. For H.264 and HEVC that is an MP4
+    /// record, which starts with a version byte of one, or the stream's own parameter sets,
+    /// each behind a start code, as a transport stream carries them.
+    private var configuration: [UInt8] {
+        Array(UnsafeBufferPointer(start: pointer.pointee.extradata, count: Int(pointer.pointee.extradata_size)))
+    }
+
+    /// H.264's profile, constraint and level bytes, which an `avcC` record and a sequence
+    /// parameter set both hold in that order.
+    private var h264ProfileLevelID: [UInt8]? {
+        let configuration = configuration
+        let level = configuration.first == 1
+            ? configuration.dropFirst()
+            : Self.parameterSet(in: configuration, headerLength: 1) { $0 & 0x1f == 7 }?[...]
+        return level.flatMap { $0.count >= 3 ? Array($0.prefix(3)) : nil }
+    }
+
+    /// HEVC's twelve bytes of profile, tier and level, which an `hvcC` record and a sequence
+    /// parameter set both hold whole: a byte of profile space, tier and profile, four of
+    /// compatibility flags, six of constraint flags, then the level.
+    private var hevcProfileTierLevel: [UInt8]? {
+        let configuration = configuration
+        // The parameter set has a byte of its own first: the set it refers to and its layers.
+        let level = configuration.first == 1
+            ? configuration.dropFirst()
+            : Self.parameterSet(in: configuration, headerLength: 2) { $0 >> 1 & 0x3f == 33 }?.dropFirst()
+        return level.flatMap { $0.count >= 12 ? Array($0.prefix(12)) : nil }
+    }
+
+    /// The first unit among start-code-prefixed `units` whose first byte `isWanted`, after its
+    /// header and without the `03` bytes the encoder put in to keep start codes out of it.
+    private static func parameterSet(
+        in units: [UInt8], headerLength: Int, where isWanted: (UInt8) -> Bool
+    ) -> [UInt8]? {
+        let startCode: [UInt8] = [0, 0, 1]
+        let starts = units.indices.dropLast(startCode.count).filter { units[$0...].starts(with: startCode) }
+        return zip(starts, starts.dropFirst() + [units.endIndex])
+            .map { units[($0 + startCode.count)..<$1] }
+            .first { $0.first.map(isWanted) == true }
+            .map { unit in
+                unit.dropFirst(headerLength).reduce(into: (bytes: [UInt8](), zeros: 0)) { payload, byte in
+                    if byte != 3 || payload.zeros < 2 { payload.bytes.append(byte) }
+                    payload.zeros = byte == 0 ? payload.zeros + 1 : 0
+                }.bytes
+            }
     }
 }

@@ -4,6 +4,7 @@ import AetherLibavutil
 import Dispatch
 import Foundation
 import ParallaxCore
+import Synchronization
 
 /// One elementary stream of a container.
 struct DemuxedStream: Sendable {
@@ -40,12 +41,47 @@ struct DemuxedPacket: Sendable, Equatable {
     let data: Data
 }
 
-/// A video keyframe the container's index points at: a place a read can start.
+/// A video keyframe a read can start at.
 struct IndexedKeyframe: Sendable, Equatable {
     /// Nanoseconds.
     let time: Int64
     /// Where in the file a read for this keyframe starts.
     let position: Int64
+}
+
+/// How a demuxer lists the keyframes of a file that has no index.
+struct KeyframeListing: Sendable {
+    /// A file this size or smaller is read whole, which lists every keyframe. A 138 MB
+    /// recording took 2.2 s that way; samples 8 MB apart would have left it 17 keyframes.
+    let wholeReadSize: Int64
+    let sampling: KeyframeSampler.Limits
+    /// Told of each packet the listing reads.
+    let progress: ListingProgress?
+    /// Whether the time for sampling is up. Sampling then goes on only where a segment would
+    /// be larger than the largest one.
+    let timeIsUp: @Sendable () -> Bool
+
+    init(
+        wholeReadSize: Int64 = 256 << 20, sampling: KeyframeSampler.Limits = .standard,
+        progress: ListingProgress? = nil, timeIsUp: @escaping @Sendable () -> Bool = { false }
+    ) {
+        self.wholeReadSize = wholeReadSize
+        self.sampling = sampling
+        self.progress = progress
+        self.timeIsUp = timeIsUp
+    }
+}
+
+/// How far the read that lists a file's keyframes has come, so a deadline can tell a long read
+/// from a stuck one.
+final class ListingProgress: Sendable {
+    private let packets = Atomic(0)
+
+    var packetsRead: Int { packets.load(ordering: .relaxed) }
+
+    func readPacket() {
+        packets.add(1, ordering: .relaxed)
+    }
 }
 
 /// Takes one read's packets, on the demuxer's queue, which it may block.
@@ -55,7 +91,7 @@ protocol PacketSink: AnyObject {
     func accept(_ packet: DemuxedPacket) throws
 }
 
-/// A container opened through libavformat, read in spans between indexed keyframes.
+/// A container opened through libavformat, read in spans between listed keyframes.
 ///
 /// A read returns the same packets for the same span whatever was read before it, which is
 /// what lets a segment be built from its index alone.
@@ -66,9 +102,6 @@ actor MediaDemuxer {
         case outOfMemory
         /// libavformat does not recognize the bytes, or the headers are damaged.
         case unreadableContainer(code: Int32)
-        /// A container this demuxer cannot read in spans yet. Only Matroska can be: spans start
-        /// with a byte seek, which the other demuxers refuse.
-        case unsupportedContainer(name: String)
         case noVideoStream
     }
 
@@ -85,10 +118,18 @@ actor MediaDemuxer {
     nonisolated let fileSize: Int64
 
     private let queue: DispatchSerialQueue
+    /// Nil for a container whose spans are not proven: the file is described and has no
+    /// keyframe list.
+    private nonisolated let container: BridgedContainer?
+    /// libavformat's name for the container: "avi", "asf".
+    private nonisolated let formatName: String
     private let source: DemuxerSource
     private let context: UnsafeMutablePointer<AVFormatContext>
     private let packet: UnsafeMutablePointer<AVPacket>
-    private var loadedKeyframes: [IndexedKeyframe]?
+    /// Nanoseconds: the first timestamp of the file, as libavformat reports it.
+    private nonisolated let start: Int64
+    private let listing: KeyframeListing
+    private var listed: [IndexedKeyframe]?
 
     nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
@@ -100,20 +141,26 @@ actor MediaDemuxer {
         try await open(SessionBlockCache(reader: reader, size: try await reader.fileSize))
     }
 
-    /// A demuxer over blocks other demuxers of the file share. With `keyframes`, the index one
-    /// of them read, it reads no index of its own.
-    static func open(_ cache: SessionBlockCache, keyframes: [IndexedKeyframe]? = nil) async throws -> MediaDemuxer {
+    /// A demuxer over blocks other demuxers of the file share. With `keyframes`, the list one
+    /// of them made, it makes none of its own.
+    static func open(
+        _ cache: SessionBlockCache, keyframes: [IndexedKeyframe]? = nil, listing: KeyframeListing = .init()
+    ) async throws -> MediaDemuxer {
         let queue = DispatchSerialQueue(label: "parallax.media-demuxer", qos: .userInitiated)
         let opened = try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 continuation.resume(with: Result { try Opened(cache: cache) })
             }
         }
-        return MediaDemuxer(opened, keyframes: keyframes, queue: queue)
+        return MediaDemuxer(opened, keyframes: keyframes, listing: listing, queue: queue)
     }
 
-    private init(_ opened: sending Opened, keyframes: [IndexedKeyframe]?, queue: DispatchSerialQueue) {
+    private init(
+        _ opened: sending Opened, keyframes: [IndexedKeyframe]?, listing: KeyframeListing, queue: DispatchSerialQueue
+    ) {
         self.queue = queue
+        container = opened.container
+        formatName = opened.formatName
         source = opened.source
         context = opened.context
         packet = opened.packet
@@ -121,7 +168,9 @@ actor MediaDemuxer {
         videoStream = opened.videoStream
         duration = opened.duration
         fileSize = opened.fileSize
-        loadedKeyframes = keyframes
+        start = opened.start
+        self.listing = listing
+        listed = keyframes
     }
 
     isolated deinit {
@@ -133,23 +182,84 @@ actor MediaDemuxer {
         DemuxerSource.free(io)
     }
 
-    /// The video stream's index, in file order. Matroska loads its Cues on the first seek, so
-    /// the first call reads them.
+    /// The time the file ends, in nanoseconds of its own time. `duration` is this demuxer's.
+    nonisolated func end(of duration: Int64, lastSegmentStart: Int64, firstKeyframe: Int64) -> Int64 {
+        container?.end(
+            of: duration, startingAt: start, lastSegmentStart: lastSegmentStart, firstKeyframe: firstKeyframe)
+            ?? start + duration
+    }
+
+    /// False for video the container gives no presentation times and stores out of the order
+    /// it shows in. Working that order out takes reading the pictures' own headers.
+    nonisolated var timesItsPictures: Bool {
+        container?.storesPresentationTimes != false || streams[videoStream].parameters.reorderDepth == 0
+    }
+
+    /// The video keyframes a span can start at, in file order. A file with no index is read
+    /// for them: whole, or in samples when it is large and a read may start at any packet.
+    /// The first call makes the list. Throws
+    /// `BridgeRefusal.container` for a container whose spans are not proven.
     func keyframes() throws -> [IndexedKeyframe] {
-        if let loadedKeyframes { return loadedKeyframes }
+        if let listed { return listed }
+        guard let container else { throw BridgeRefusal.container(name: formatName) }
+        let made = switch container.spanStart {
+        case .indexEntry: try indexedKeyframes()
+        case .packet where fileSize > listing.wholeReadSize: try sampledKeyframes().listed()
+        case .packet, .packetReadFromTheStart: try everyKeyframe().listed()
+        }
+        listed = made
+        return made
+    }
+
+    /// The keyframes of the video stream's index as the container stores it. Matroska loads
+    /// its Cues on the first seek.
+    private func indexedKeyframes() throws -> [IndexedKeyframe] {
         try check(av_seek_frame(context, Int32(videoStream), 0, AVSEEK_FLAG_BACKWARD))
         // The seek reports success when the read of the Cues failed, and the index is then
         // short or empty.
         if let failure = source.takeFailure() { throw failure }
         let stream = context.pointee.streams[videoStream]
-        let entries = (0..<avformat_index_get_entries_count(stream)).compactMap { index in
-            avformat_index_get_entry(stream, index).map {
-                IndexedKeyframe(
+        return (0..<avformat_index_get_entries_count(stream)).compactMap { index in
+            avformat_index_get_entry(stream, index).flatMap {
+                $0.pointee.flags & AVINDEX_KEYFRAME == 0 ? nil : IndexedKeyframe(
                     time: nanoseconds($0.pointee.timestamp, of: videoStream), position: $0.pointee.pos)
             }
         }
-        loadedKeyframes = entries
-        return entries
+    }
+
+    private func everyKeyframe() throws -> [IndexedKeyframe] {
+        try seek(toByte: 0)
+        var found: [IndexedKeyframe] = []
+        while let keyframe = try nextKeyframe(before: fileSize) { found.append(keyframe) }
+        return found
+    }
+
+    private func sampledKeyframes() throws -> [IndexedKeyframe] {
+        let sampler = KeyframeSampler(fileSize: fileSize, limits: listing.sampling)
+        var samples: [KeyframeSampler.Sample] = []
+        while let range = sampler.nextRange(after: samples, timeIsUp: listing.timeIsUp()) {
+            try seek(toByte: range.lowerBound)
+            samples.append(.init(searched: range, keyframe: try nextKeyframe(before: range.upperBound)))
+        }
+        return samples.compactMap(\.keyframe)
+    }
+
+    /// The next video keyframe the read comes to, nil when a video packet at or past `limit`
+    /// or the end of the file comes first. Only the video's packets come in the order they
+    /// are stored. A keyframe with no time cannot bound a span, and one with no position is
+    /// not where a read can start.
+    private func nextKeyframe(before limit: Int64) throws -> IndexedKeyframe? {
+        while let packet = try nextPacket() {
+            defer { av_packet_unref(packet) }
+            try Task.checkCancellation()
+            listing.progress?.readPacket()
+            guard Int(packet.pointee.stream_index) == videoStream, packet.pointee.pos >= 0 else { continue }
+            if packet.pointee.pos >= limit { return nil }
+            if packet.pointee.flags & AV_PKT_FLAG_KEY != 0, let time = time(of: packet) {
+                return IndexedKeyframe(time: time, position: packet.pointee.pos)
+            }
+        }
+        return nil
     }
 
     /// The packets of `stream` in the span that starts at keyframe `lower` and ends before
@@ -175,30 +285,37 @@ actor MediaDemuxer {
         let lowerTime = lower == 0 ? Int64.min : keyframes[lower].time
         let upperTime = upper == keyframes.count ? Int64.max : keyframes[upper].time
         if stream == videoStream {
-            // A video span needs nothing stored before its keyframe, and an index entry is
-            // where a cluster starts.
-            try seek(to: keyframes[lower].position)
+            // A video span needs nothing stored before its keyframe, and a listed keyframe is
+            // where a read can start.
+            try seek(to: keyframes[lower])
             try readVideo(from: lowerTime, to: upperTime, into: sink)
             return
         }
-        // Muxers store audio up to a cluster ahead of the keyframe it plays with, so the read
-        // starts a cluster or more earlier. The last place it can start is the previous index
-        // entry, which may be a long span back.
+        let audioUpperTime = takingLaterAudio ? Int64.max : upperTime
+        guard case .before(let search)? = container?.audioPlacement else {
+            try seek(to: keyframes[lower])
+            _ = try readAudio(
+                stream, from: lowerTime, to: audioUpperTime, videoEnd: upperTime, clock: clock,
+                startedEarlyEnough: true, into: sink)
+            return
+        }
+        // Audio may be stored ahead of the keyframe it plays with, so the read starts earlier.
+        // The last place it can start is the previous listed keyframe, which may be a long
+        // span back.
         let floor = keyframes[..<lower].last { $0.position < keyframes[lower].position }?.position
             ?? keyframes[lower].position
-        var back = lower == 0 ? 0 : Self.audioLookback(before: keyframes[lower], after: keyframes[lower - 1])
+        var back = lower == 0 ? 0 : audioLookback(search, before: keyframes[lower], after: keyframes[lower - 1])
         while true {
             let from = keyframes[lower].position - back
             let start = from <= floor ? nil
-                : try clusterStart(from: from, before: keyframes[lower], after: keyframes[lower - 1].time)
+                : try audioReadStart(search, from: from, before: keyframes[lower], after: keyframes[lower - 1])
             // A cluster may run 32 s: with none this close, one further back is still nearer
             // than the floor.
             if start == nil, from > floor {
                 back *= 2
                 continue
             }
-            try seek(to: start ?? floor)
-            let audioUpperTime = takingLaterAudio ? Int64.max : upperTime
+            try seek(toByte: start ?? floor)
             let tookItAll = try readAudio(
                 stream, from: lowerTime, to: audioUpperTime, videoEnd: upperTime, clock: clock,
                 startedEarlyEnough: start == nil, into: sink)
@@ -233,7 +350,7 @@ actor MediaDemuxer {
     ) throws -> [DemuxedPacket] {
         let keyframes = try keyframes()
         let upperTime = upper == keyframes.count ? Int64.max : keyframes[upper].time
-        try seek(to: keyframes[0].position)
+        try seek(to: keyframes[0])
         var collected: [DemuxedPacket] = []
         var counts: [Int: Int] = [:]
         var bytes = 0
@@ -309,6 +426,44 @@ actor MediaDemuxer {
         return true
     }
 
+    /// How far before `keyframe` an audio read first starts, or first looks for a place to.
+    private func audioLookback(
+        _ search: BridgedContainer.AudioSearch, before keyframe: IndexedKeyframe, after previous: IndexedKeyframe
+    ) -> Int64 {
+        switch search {
+        case .matroskaClusters: Self.audioLookback(before: keyframe, after: previous)
+        case .bytesBefore(let bytes), .flashVideoTags(let bytes): bytes
+        }
+    }
+
+    /// Where a read from `offset` or later can begin. Nil when it can begin nowhere before
+    /// `keyframe`.
+    private func audioReadStart(
+        _ search: BridgedContainer.AudioSearch, from offset: Int64, before keyframe: IndexedKeyframe,
+        after previous: IndexedKeyframe
+    ) throws -> Int64? {
+        switch search {
+        case .matroskaClusters: try clusterStart(from: offset, before: keyframe, after: previous.time)
+        case .bytesBefore: offset
+        case .flashVideoTags: try tagStart(atOrBefore: offset, before: keyframe)
+        }
+    }
+
+    /// The start of the last tag at or before `offset`, found by stepping back from
+    /// `keyframe`'s: the four bytes before a tag are the size of the one before it. Nil when
+    /// a size is not one a tag can have, as in a file written without them.
+    func tagStart(atOrBefore offset: Int64, before keyframe: IndexedKeyframe) throws -> Int64? {
+        // A file starts with nine bytes of header and a size of zero, and a tag with eleven.
+        let firstTag: Int64 = 13
+        var at = keyframe.position
+        while at > offset, at > firstTag {
+            let size = try bytes(at: at - 4, length: 4).reduce(Int64(0)) { $0 << 8 | Int64($1) }
+            guard size >= 11, at - 4 - size >= firstTag else { return nil }
+            at -= 4 + size
+        }
+        return at
+    }
+
     /// How far before `keyframe` an audio read first looks for a cluster: eight seconds of the
     /// index span before it, at that span's average rate. Audio is stored up to five seconds
     /// ahead (`interleaveLimit`). Never more than the span itself: two entries with one time
@@ -373,7 +528,7 @@ actor MediaDemuxer {
     /// past the keyframe.
     func streams(_ clocks: [Int: MediaClock], continuingPastKeyframe index: Int) throws -> Set<Int> {
         let keyframe = try keyframes()[index]
-        try seek(to: keyframe.position)
+        try seek(to: keyframe)
         var frames: [Int: Int64] = [:]
         var continuing: Set<Int> = []
         while continuing.count < clocks.count, let packet = try nextPacket() {
@@ -391,14 +546,25 @@ actor MediaDemuxer {
 
     /// The next packet, or nil at the end of the file. The caller unrefs it.
     private func nextPacket() throws -> UnsafeMutablePointer<AVPacket>? {
-        let status = av_read_frame(context, packet)
+        var status = av_read_frame(context, packet)
+        // The transport stream reader answers this where it finds no packet in the 64 KB after
+        // a damaged one. The next call reads on from there.
+        while status == DemuxerSource.Code.tryAgain, !source.hasFailed {
+            status = av_read_frame(context, packet)
+        }
         if status == DemuxerSource.Code.endOfFile, !source.hasFailed { return nil }
         try check(status)
         return packet
     }
 
     private func time(of packet: UnsafeMutablePointer<AVPacket>) -> Int64? {
-        packet.pointee.pts == Self.noTime ? nil : nanoseconds(packet.pointee.pts, of: Int(packet.pointee.stream_index))
+        let stream = Int(packet.pointee.stream_index)
+        if packet.pointee.pts != Self.noTime { return nanoseconds(packet.pointee.pts, of: stream) }
+        // The decode time, for a stream whose packets are stored in the order they play.
+        guard container?.storesPresentationTimes == false, packet.pointee.dts != Self.noTime,
+              streams[stream].parameters.reorderDepth == 0
+        else { return nil }
+        return nanoseconds(packet.pointee.dts, of: stream)
     }
 
     /// Nil for a packet that carries no bytes.
@@ -413,9 +579,19 @@ actor MediaDemuxer {
         }
     }
 
-    /// Reading on from a byte seek relies on FFmpegBuild's matroska-byte-seek-done patch. A
-    /// seek by time would make libavformat drop what precedes the keyframe it lands on.
-    private func seek(to position: Int64) throws {
+    private func seek(to keyframe: IndexedKeyframe) throws {
+        switch container?.seek {
+        case .byte, nil: try seek(toByte: keyframe.position)
+        case .time:
+            let time = av_rescale_q(keyframe.time, Self.nanoseconds, timeBase(of: videoStream))
+            try check(av_seek_frame(context, Int32(videoStream), time, AVSEEK_FLAG_BACKWARD))
+        }
+    }
+
+    /// Reading on from a byte seek in Matroska relies on FFmpegBuild's matroska-byte-seek-done
+    /// patch. A seek by time in Matroska would make libavformat drop what precedes the keyframe
+    /// it lands on.
+    private func seek(toByte position: Int64) throws {
         try check(av_seek_frame(context, -1, position, AVSEEK_FLAG_BYTE))
     }
 
@@ -429,7 +605,7 @@ actor MediaDemuxer {
     private static let interleaveLimit: Int64 = 5_000_000_000
     private static let nanoseconds = AVRational(num: 1, den: 1_000_000_000)
     /// `AV_NOPTS_VALUE`, which does not import into Swift.
-    private static let noTime = Int64.min
+    fileprivate static let noTime = Int64.min
 
     private func nanoseconds(_ value: Int64, of stream: Int) -> Int64 {
         av_rescale_q(value, timeBase(of: stream), Self.nanoseconds)
@@ -453,12 +629,15 @@ private final class CollectingSink: PacketSink {
 
 /// What opening a container produces, built on the demuxer's queue before the actor exists.
 private struct Opened {
+    let container: BridgedContainer?
+    let formatName: String
     let source: DemuxerSource
     let context: UnsafeMutablePointer<AVFormatContext>
     let packet: UnsafeMutablePointer<AVPacket>
     let streams: [DemuxedStream]
     let videoStream: Int
     let duration: Int64?
+    let start: Int64
     let fileSize: Int64
 
     init(cache: SessionBlockCache) throws {
@@ -479,43 +658,52 @@ private struct Opened {
         // On failure avformat_open_input frees the context it was given, but not our I/O.
         var context: UnsafeMutablePointer<AVFormatContext>? = allocated
         var status = avformat_open_input(&context, nil, nil, nil)
+        let format = context?.pointee.iformat.map { String(cString: $0.pointee.name) } ?? ""
+        let bridged = BridgedContainer(formatName: format)
         if status >= 0 {
-            // libavformat reads up to 5 MB of media to describe the streams, and most of that
-            // is spent waiting for a subtitle stream to show a packet. One megabyte gave the
-            // same codec, profile, reorder depth and frame rate on 74 real files.
-            context?.pointee.probesize = 1_000_000
+            if let bridged { context?.pointee.probesize = bridged.analysisLimit }
             status = avformat_find_stream_info(context, nil)
         }
         let video = status >= 0 ? av_find_best_stream(context, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0) : -1
 
-        let format = context?.pointee.iformat.map { String(cString: $0.pointee.name) } ?? ""
         // libavformat takes a failed read while it describes the streams for the end of the
         // file and reports success.
         let failure = source.takeFailure()
-        guard let context, failure == nil, status >= 0, video >= 0, format.contains("matroska") else {
+        guard let context, failure == nil, status >= 0, video >= 0 else {
             var packet: UnsafeMutablePointer<AVPacket>? = packet
             av_packet_free(&packet)
             avformat_close_input(&context)
             DemuxerSource.free(io)
             if let failure { throw failure }
             if status < 0 { throw MediaDemuxer.OpenFailure.unreadableContainer(code: status) }
-            if video < 0 { throw MediaDemuxer.OpenFailure.noVideoStream }
-            throw MediaDemuxer.OpenFailure.unsupportedContainer(name: format)
+            throw MediaDemuxer.OpenFailure.noVideoStream
         }
 
+        container = bridged
+        formatName = format
         self.source = source
         self.context = context
         self.packet = packet
         videoStream = Int(video)
         fileSize = cache.size
-        // `AV_TIME_BASE` units, which are microseconds.
-        duration = context.pointee.duration > 0 ? context.pointee.duration * 1000 : nil
+        // `AV_TIME_BASE` units, which are microseconds. A duration libavformat worked out from
+        // the bitrate is a guess, and a file's end cannot be placed by one.
+        duration = context.pointee.duration > 0 && context.pointee.duration_estimation_method != AVFMT_DURATION_FROM_BITRATE
+            ? context.pointee.duration * 1000 : nil
+        start = context.pointee.start_time == MediaDemuxer.noTime ? 0 : context.pointee.start_time * 1000
         let nanoseconds = AVRational(num: 1, den: 1_000_000_000)
+        // A transport stream may carry several programs, and only the video's own streams play
+        // with it. A file with no programs has none to tell apart.
+        let program = av_find_program_from_stream(context, nil, video)?.pointee.id
+        func playsWithTheVideo(_ index: Int) -> Bool {
+            program == nil || av_find_program_from_stream(context, nil, Int32(index))?.pointee.id == program
+        }
         let described = (0..<Int(context.pointee.nb_streams)).map { index -> DemuxedStream? in
             guard let stream = context.pointee.streams[index]?.pointee,
                   let parameters = CodecParameters(copying: stream.codecpar)
             else { return nil }
             let kind: DemuxedStream.Kind = switch stream.codecpar.pointee.codec_type {
+            case _ where !playsWithTheVideo(index): .other
             case AVMEDIA_TYPE_VIDEO: .video
             case AVMEDIA_TYPE_AUDIO: .audio
             case AVMEDIA_TYPE_SUBTITLE: .subtitle

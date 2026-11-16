@@ -41,10 +41,8 @@ struct MediaDeliveryTests {
         #expect((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") == contentType)
     }
 
-    private static func fixture(_ name: String) throws -> InMemoryRandomAccessReader {
-        let url = try #require(Bundle.module.url(
-            forResource: name, withExtension: "mkv", subdirectory: "Fixtures/demux"))
-        return InMemoryRandomAccessReader(data: try Data(contentsOf: url))
+    private static func fixture(_ file: String) throws -> InMemoryRandomAccessReader {
+        InMemoryRandomAccessReader(data: try BridgeFixture.data(file))
     }
 
     private static func text(at url: URL) async throws -> String {
@@ -64,6 +62,33 @@ struct MediaDeliveryTests {
         #expect(master.contains(#"CODECS="avc1.640014,mp4a.40.2,ac-3",RESOLUTION=160x90"#))
         #expect(video.split(separator: "\n").filter { $0.hasSuffix(".m4s") }
             == ["v-0.m4s", "v-1.m4s", "v-2.m4s", "v-3.m4s", "v-4.m4s", "v-5.m4s"])
+    }
+
+    @Test("a transport stream, of 188-byte packets or a disc's 192, is served as a playlist of its video and audio",
+          arguments: ["ts-h264.ts", "m2ts-h264.m2ts"])
+    func transportStreamIsBridged(file: String) async throws {
+        let delivery = try await MediaDelivery.start(
+            reading: try Self.fixture(file), fileName: "clip.bin",
+            support: .baseline, scope: .loopback, clock: TestClock())
+
+        let master = try await Self.text(at: delivery.url)
+        await delivery.stop()
+
+        #expect(master.contains(#"CODECS="avc1.640014,mp4a.40.2,ac-3",RESOLUTION=160x90"#))
+    }
+
+    @Test("an FLV and an AVI are served as a playlist of their video and audio", arguments: [
+        ("flv-h264.flv", "avc1.640014,mp4a.40.2"), ("avi-h264.avi", "avc1.640014,ac-3"),
+    ])
+    func flashVideoAndAVIAreBridged(file: String, codecs: String) async throws {
+        let delivery = try await MediaDelivery.start(
+            reading: try Self.fixture(file), fileName: "clip.bin",
+            support: .baseline, scope: .loopback, clock: TestClock())
+
+        let master = try await Self.text(at: delivery.url)
+        await delivery.stop()
+
+        #expect(master.contains(#"CODECS="\#(codecs)",RESOLUTION=160x90"#))
     }
 
     @Test("a Matroska file the bridge cannot deliver fails with the bridge's reason", arguments: [
@@ -98,6 +123,12 @@ struct MediaDeliveryTests {
         ("h264-high10", "video: h264 High 10"),
         ("refused-dts-audio", "audio: dts DTS"),
         ("refused-one-keyframe", "no keyframe index"),
+        // An AVI and an ASF are opened to name the codec that stops them.
+        ("refused-avi-mpeg4.avi", "video: mpeg4 Simple Profile"),
+        ("refused-asf-wmv.asf", "video: wmv2"),
+        ("refused-avi-b-frames.avi", "video: no presentation times"),
+        ("refused-asf-h264.asf", "container: asf"),
+        ("refused-program-stream.mpg", "video: mpeg2video Main"),
     ])
     func refusalReadsAsOneLine(name: String, line: String) async throws {
         let reader = try Self.fixture(name)
@@ -201,6 +232,99 @@ struct MediaDeliveryTests {
         await #expect { _ = try await start.value } throws: {
             if case MediaDelivery.ProbeFailure.timedOut = $0 { true } else { false }
         }
+    }
+
+    /// Serves the file, holding every read that starts in `held` until released.
+    private actor HeldReader: RandomAccessReading {
+        private let backing: InMemoryRandomAccessReader
+        private let range: Range<UInt64>
+        private var held: [CheckedContinuation<Void, Never>] = []
+        private var arrival: CheckedContinuation<Void, Never>?
+        private var released = false
+
+        init(_ backing: InMemoryRandomAccessReader, holdingReadsStartingIn range: Range<UInt64>) {
+            self.backing = backing
+            self.range = range
+        }
+
+        var fileSize: UInt64 { get async throws { try await backing.fileSize } }
+
+        func read(offset: UInt64, length: Int) async throws -> Data {
+            if !released, range.contains(offset) {
+                await withCheckedContinuation {
+                    held.append($0)
+                    arrival?.resume()
+                    arrival = nil
+                }
+            }
+            return try await backing.read(offset: offset, length: length)
+        }
+
+        func waitForHeldRead() async {
+            guard held.isEmpty else { return }
+            await withCheckedContinuation { arrival = $0 }
+        }
+
+        func release() {
+            released = true
+            held.forEach { $0.resume() }
+            held = []
+        }
+    }
+
+    /// A transport stream with 4 MB of null packets in its middle, whose reads there are held.
+    /// It has no index, so its keyframes are listed by a read of all of it. Only that listing
+    /// reads the middle: the streams are described from the start of the file and its length is
+    /// taken from the end.
+    private static func transportStreamHeldWhileItsKeyframesAreListed() throws -> HeldReader {
+        let stream = try BridgeFixture.data("ts-h264.ts")
+        let packet = 188
+        let half = stream.count / 2 / packet * packet
+        let null = Data([0x47, 0x1F, 0xFF, 0x10]) + Data(repeating: 0xFF, count: packet - 4)
+        let middle = Data((0..<(4 << 20) / packet).flatMap { _ in null })
+        let file = stream.prefix(half) + middle + stream.suffix(from: stream.startIndex + half)
+        return HeldReader(
+            InMemoryRandomAccessReader(data: file), holdingReadsStartingIn: UInt64(half)..<UInt64(half + middle.count))
+    }
+
+    @Test("a file whose keyframes take longer to list than the probe deadline still opens")
+    func longKeyframeListingIsNotATimeout() async throws {
+        let clock = TestClock()
+        let reader = try Self.transportStreamHeldWhileItsKeyframesAreListed()
+        let start = Task {
+            try await MediaDelivery.start(
+                reading: reader, fileName: "clip.ts", support: .baseline,
+                scope: .loopback, probeDeadline: .seconds(4), clock: clock)
+        }
+        await reader.waitForHeldRead()
+        try await clock.waitForSleep(dueIn: .seconds(4))
+        clock.advance(by: .seconds(4))
+        try await clock.waitForSleep(dueIn: .seconds(4))
+        await reader.release()
+
+        let delivery = try await start.value
+        await delivery.stop()
+    }
+
+    @Test("a keyframe listing is abandoned once a probe deadline passes with nothing read")
+    func stalledKeyframeListingTimesOut() async throws {
+        let clock = TestClock()
+        let reader = try Self.transportStreamHeldWhileItsKeyframesAreListed()
+        let start = Task {
+            try await MediaDelivery.start(
+                reading: reader, fileName: "clip.ts", support: .baseline,
+                scope: .loopback, probeDeadline: .seconds(4), clock: clock)
+        }
+        await reader.waitForHeldRead()
+        try await clock.waitForSleep(dueIn: .seconds(4))
+        clock.advance(by: .seconds(4))
+        try await clock.waitForSleep(dueIn: .seconds(4))
+        clock.advance(by: .seconds(4))
+
+        await #expect { _ = try await start.value } throws: {
+            if case MediaDelivery.ProbeFailure.timedOut = $0 { true } else { false }
+        }
+        await reader.release()
     }
 
     @Test("a source that fails its reads surfaces the reader's own error, not a timeout")

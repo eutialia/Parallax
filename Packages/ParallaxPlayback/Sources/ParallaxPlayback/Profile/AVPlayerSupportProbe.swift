@@ -41,7 +41,7 @@ public enum AVPlayerSupportProbe {
         switch container {
         case .mp4: "video/mp4"
         case .mov: "video/quicktime"
-        case .hls, .mkv, .webm, .ts, .flac, .mp3, .avi, .asf, .mpegps: nil
+        case .hls, .mkv, .webm, .ts, .flac, .mp3, .avi, .asf, .flv, .mpegps: nil
         }
     }
 
