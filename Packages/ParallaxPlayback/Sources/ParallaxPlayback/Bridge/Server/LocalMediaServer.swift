@@ -209,7 +209,8 @@ public actor LocalMediaServer {
         }
     }
 
-    private static func stopwatch<C: Clock>(on clock: C) -> @Sendable () -> @Sendable () -> Duration
+    /// Starts timing on `clock`, and gives what has passed each time it is asked.
+    static func stopwatch<C: Clock>(on clock: C) -> @Sendable () -> @Sendable () -> Duration
     where C.Duration == Duration {
         {
             let start = clock.now

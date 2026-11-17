@@ -18,6 +18,9 @@ enum SegmentWriter {
         /// A picture is shown earlier than one already given its decode time: the stream
         /// reorders further than the writer looks ahead.
         case reorderedTooFar
+        /// A request's encoder wrote other parameter sets than the one the init segment was
+        /// made from, so its pictures would not decode. Both `hvcC` records, in Base64.
+        case parameterSetsChanged(from: String, to: String)
     }
 
     /// The `ftyp` and `moov` of the rendition, from its first packets: the muxer describes the
@@ -25,7 +28,7 @@ enum SegmentWriter {
     /// its decode time. The packets after it are not written: a few from a stream that reorders
     /// deeper than it declares would rank each other wrong, a decode time past its own
     /// presentation.
-    static func initSegment(for rendition: Rendition, describedBy packets: [DemuxedPacket]) throws(Failure) -> Data {
+    static func initSegment(for rendition: Rendition, describedBy packets: [MediaPacket]) throws(Failure) -> Data {
         let writer = try FragmentWriter(rendition, limits: .whole)
         for packet in packets.prefix(writer.lookahead) { _ = try writer.append(packet) }
         return try writer.headerWithFirstSample()
@@ -34,7 +37,7 @@ enum SegmentWriter {
     /// The fragments of one segment holding `packets`, which are one span's packets of the
     /// rendition in file order. `FragmentWriter` writes them as the packets arrive.
     static func mediaSegment(
-        for rendition: Rendition, packets: [DemuxedPacket], lastingUntil end: Int64? = nil,
+        for rendition: Rendition, packets: [MediaPacket], lastingUntil end: Int64? = nil,
         limits: FragmentLimits = .standard
     ) throws(Failure) -> Data {
         let writer = try FragmentWriter(rendition, lastingUntil: end, limits: limits)

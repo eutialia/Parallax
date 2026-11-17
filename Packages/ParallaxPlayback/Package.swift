@@ -28,11 +28,14 @@ let package = Package(
                 .product(name: "AetherLibavformat", package: "FFmpegBuild"),
                 .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
                 .product(name: "AetherLibavutil", package: "FFmpegBuild"),
-                // Not imported. libavformat and libavcodec load these three at launch, so they
-                // have to be embedded with them.
                 .product(name: "AetherLibswresample", package: "FFmpegBuild"),
+                .product(name: "AetherLibswscale", package: "FFmpegBuild"),
+                .product(name: "AetherLibavfilter", package: "FFmpegBuild"),
+                // Not imported. libavformat, libavcodec and libavfilter load these at launch, so
+                // they have to be embedded with them.
                 .product(name: "AetherLibdav1d", package: "FFmpegBuild"),
                 .product(name: "AetherLibzvbi", package: "FFmpegBuild"),
+                .product(name: "AetherLibzimg", package: "FFmpegBuild"),
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),

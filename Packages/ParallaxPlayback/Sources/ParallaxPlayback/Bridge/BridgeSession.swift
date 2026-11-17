@@ -11,6 +11,10 @@ struct BridgeSession: MediaResponder {
     let keyframes: [IndexedKeyframe]
     let reads = SegmentReads()
     let memory = BridgeMemory()
+    let conversions = ConversionSpeeds()
+    /// A hardware encoder opens only a few sessions at once, and AVPlayer's requests overlap.
+    private let videoConversions = OneAtATime()
+    private let stopwatch: @Sendable () -> @Sendable () -> Duration
     private let cache: SessionBlockCache
     private let demuxers: DemuxerPool
     private let fragmentLimits: FragmentLimits
@@ -20,7 +24,8 @@ struct BridgeSession: MediaResponder {
     static func open(
         _ reader: any RandomAccessReading, support: AVPlayerSupport, showsHDR: Bool,
         blockSize: Int = SessionBlockCache.defaultBlockSize, bytesKept: Int = SessionBlockCache.defaultBytesKept,
-        fragmentLimits: FragmentLimits = .standard, listing: KeyframeListing = .init()
+        fragmentLimits: FragmentLimits = .standard, listing: KeyframeListing = .init(),
+        clock: any Clock<Duration> = ContinuousClock()
     ) async throws -> BridgeSession {
         do {
             let cache = SessionBlockCache(
@@ -32,7 +37,7 @@ struct BridgeSession: MediaResponder {
             }
             let keyframes = try await demuxer.keyframes()
             return BridgeSession(
-                plan: plan, keyframes: keyframes, cache: cache,
+                plan: plan, keyframes: keyframes, stopwatch: LocalMediaServer.stopwatch(on: clock), cache: cache,
                 demuxers: DemuxerPool(first: demuxer, cache: cache, keyframes: keyframes),
                 fragmentLimits: fragmentLimits)
         } catch let failure
@@ -51,7 +56,8 @@ struct BridgeSession: MediaResponder {
     /// What the session cost, from the requests the server answered for it.
     func report(of records: [RequestRecord]) -> BridgeReport {
         BridgeReport(
-            records: records, bytesFetched: cache.bytes.fetched, memory: memory.peaks, readsRunning: reads.count)
+            records: records, bytesFetched: cache.bytes.fetched, memory: memory.peaks, readsRunning: reads.count,
+            conversionSpeeds: conversions.all)
     }
 
     func resource(at path: String) async throws -> ServedResource? {
@@ -71,15 +77,28 @@ struct BridgeSession: MediaResponder {
             let rendition = track.rendition
             let takingLaterAudio = id != .video && index == track.segments.count - 1
             let (demuxers, limits, reads, memory, cache) = (demuxers, fragmentLimits, reads, memory, cache)
+            let (stopwatch, conversions, videoConversions) = (stopwatch, conversions, videoConversions)
             return .init(contentType: "video/mp4") {
                 let channel = FragmentChannel(heldChanged: memory.channelsHold)
                 let handedOver: @Sendable () -> Void = { memory.sample(cacheKept: cache.bytes.kept) }
                 reads.start(channel) {
                     do {
-                        try await demuxers.using {
-                            try await $0.write(
-                                segment, of: rendition, takingLaterAudio: takingLaterAudio, limits: limits,
-                                into: channel, handedOver: handedOver)
+                        let write = {
+                            try await demuxers.using {
+                                try await $0.write(
+                                    segment, of: rendition, takingLaterAudio: takingLaterAudio, limits: limits,
+                                    into: channel, handedOver: handedOver, stopwatch: stopwatch,
+                                    converted: conversions.add)
+                            }
+                        }
+                        if rendition.convertedVideo != nil {
+                            try await videoConversions.run {
+                                // Asked for before a seek, and no longer wanted by its turn.
+                                if channel.isCancelled { throw CancellationError() }
+                                try await write()
+                            }
+                        } else {
+                            try await write()
                         }
                         channel.finish(.success(()))
                     } catch {
@@ -97,17 +116,42 @@ extension MediaDemuxer {
     /// blocks while `channel` is full. Packets of other streams are dropped as they are read.
     fileprivate func write(
         _ segment: BridgePlan.Segment, of rendition: Rendition, takingLaterAudio: Bool, limits: FragmentLimits,
-        into channel: FragmentChannel, handedOver: @escaping @Sendable () -> Void
+        into channel: FragmentChannel, handedOver: @escaping @Sendable () -> Void,
+        stopwatch: @escaping @Sendable () -> @Sendable () -> Duration, converted: (Double) -> Void
     ) throws {
-        let writer = try FragmentWriter(
-            rendition, lastingUntil: rendition.stream.kind == .video ? nil : segment.end, limits: limits)
+        let isCopiedVideo = if case .copy = rendition.delivery { rendition.stream.kind == .video } else { false }
+        let writer = try FragmentWriter(rendition, lastingUntil: isCopiedVideo ? nil : segment.end, limits: limits)
         let before = bytesFetched
         let sink = SegmentSink(
             writer: writer, channel: channel, fetched: { self.bytesFetched - before }, handedOver: handedOver)
         defer { sink.countFetched() }
-        try read(
-            rendition.stream.index, from: segment.entries.lowerBound, to: segment.entries.upperBound,
-            takingLaterAudio: takingLaterAudio, clock: rendition.clock, into: sink)
+        let (lower, upper) = (segment.entries.lowerBound, segment.entries.upperBound)
+        switch rendition.delivery {
+        case .copy:
+            try read(
+                rendition.stream.index, from: lower, to: upper, takingLaterAudio: takingLaterAudio,
+                clock: rendition.clock, into: sink)
+        case .video(let video):
+            let ticks = rendition.clock.ticks(at: segment.start)
+                ..< (upper == (try keyframes().count) ? .max : rendition.clock.ticks(at: segment.end))
+            let conversion = try VideoConversion(
+                video, of: rendition, ticks: ticks, stopwatch: stopwatch, cancelled: { sink.isCancelled },
+                into: sink.accept)
+            try read(rendition.stream.index, from: lower, to: upper, into: conversion)
+            try conversion.finish()
+            if let speed = conversion.speed { converted(speed) }
+        case .audio(let audio):
+            let ticks = (lower == 0 ? .min : rendition.clock.ticks(at: segment.start))
+                ..< (takingLaterAudio ? .max : rendition.clock.ticks(at: segment.end))
+            let conversion = try AudioConversion(
+                audio, of: rendition, ticks: ticks, stopwatch: stopwatch, cancelled: { sink.isCancelled },
+                into: { try sink.accept($0, isKeyframe: true, at: $1, lasting: $2) })
+            try read(
+                rendition.stream.index, from: lower, to: upper, takingLaterAudio: takingLaterAudio,
+                warmUp: BridgePlan.audioWarmUp, into: conversion)
+            try conversion.finish()
+            if let speed = conversion.speed { converted(speed) }
+        }
         try sink.handOver(try writer.finish())
     }
 }
@@ -129,8 +173,15 @@ private final class SegmentSink: PacketSink {
 
     var isCancelled: Bool { channel.isCancelled }
 
-    func accept(_ packet: DemuxedPacket) throws {
+    func accept(_ packet: MediaPacket) throws {
         if let fragment = try writer.append(packet) { try handOver(fragment) }
+    }
+
+    /// A sample an encoder made, timed in the rendition's ticks.
+    func accept(_ data: Data, isKeyframe: Bool, at tick: Int64, lasting length: Int64?) throws {
+        if let fragment = try writer.append(data, isKeyframe: isKeyframe, at: tick, lasting: length) {
+            try handOver(fragment)
+        }
     }
 
     func handOver(_ fragment: Data) throws {

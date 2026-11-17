@@ -45,6 +45,19 @@ final class BridgeMemory: Sendable {
     }
 }
 
+/// How fast a session converted each segment it converted: seconds of media for each second
+/// of decoding and encoding. A request's own duration cannot say it, because a request lasts
+/// as long as AVPlayer takes to read it.
+final class ConversionSpeeds: Sendable {
+    private let speeds = Mutex<[Double]>([])
+
+    var all: [Double] { speeds.withLock { $0 } }
+
+    func add(_ speed: Double) {
+        speeds.withLock { $0.append(speed) }
+    }
+}
+
 /// What one bridged delivery cost, from its request log, written once when it stops.
 struct BridgeReport: Equatable, CustomStringConvertible {
     static let log = Log.retained(category: "Bridge")
@@ -59,8 +72,15 @@ struct BridgeReport: Equatable, CustomStringConvertible {
     let memory: BridgeMemory.Peaks
     /// Segment reads still running when the report was taken.
     let readsRunning: Int
+    /// Seconds of media for each second of decoding and encoding, of the converted segment
+    /// that took longest for its length and of the middle one. Nil when none was converted.
+    let slowestConversion: Double?
+    let medianConversion: Double?
 
-    init(records: [RequestRecord], bytesFetched: Int, memory: BridgeMemory.Peaks, readsRunning: Int) {
+    init(
+        records: [RequestRecord], bytesFetched: Int, memory: BridgeMemory.Peaks, readsRunning: Int,
+        conversionSpeeds: [Double] = []
+    ) {
         requests = records.count
         bytesServed = records.reduce(0) { $0 + $1.bytesSent }
         self.bytesFetched = bytesFetched
@@ -69,15 +89,22 @@ struct BridgeReport: Equatable, CustomStringConvertible {
         largestSegment = records.filter { $0.resource.hasSuffix(".m4s") }.map(\.bytesSent).max() ?? 0
         self.memory = memory
         self.readsRunning = readsRunning
+        let speeds = conversionSpeeds.sorted()
+        slowestConversion = speeds.first
+        medianConversion = speeds.isEmpty ? nil : speeds[speeds.count / 2]
     }
 
     var description: String {
         let ratio = bytesServed > 0 ? String(format: "%.2f", Double(bytesFetched) / Double(bytesServed)) : "-"
         let first = worstFirstByte.map { "\(Int(($0 / .milliseconds(1)).rounded())) ms" } ?? "-"
         let headroom = memory.lowestHeadroom.map { "\($0 >> 20) MB" } ?? "-"
+        let conversion = slowestConversion.flatMap { slowest in
+            medianConversion.map { String(format: ", conversion %.1fx at its slowest, %.1fx in the middle", slowest, $0) }
+        } ?? ""
         return "bridge: \(requests) requests, \(bytesServed >> 20) MB served, \(bytesFetched >> 20) MB read "
             + "(\(ratio)x), worst first byte \(first), \(dropped) dropped, largest segment "
             + "\(largestSegment >> 20) MB, bridge peak \(memory.bridge >> 20) MB, footprint peak "
             + "\(memory.footprint >> 20) MB, lowest headroom \(headroom), \(readsRunning) reads not returned"
+            + conversion
     }
 }

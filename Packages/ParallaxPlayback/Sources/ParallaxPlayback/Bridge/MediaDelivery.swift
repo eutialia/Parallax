@@ -86,7 +86,7 @@ public struct MediaDelivery: Sendable {
                 let samplingEnd = opening.advanced(by: samplingTime)
                 let session = try await BridgeSession.open(
                     reader, support: support, showsHDR: showsHDR,
-                    listing: KeyframeListing(progress: progress) { clock.now >= samplingEnd })
+                    listing: KeyframeListing(progress: progress) { clock.now >= samplingEnd }, clock: clock)
                 let milliseconds = Int((opening.duration(to: clock.now) / .milliseconds(1)).rounded())
                 BridgeReport.log.notice(
                     "bridge: opened in \(milliseconds) ms, \(session.keyframes.count) keyframes, "

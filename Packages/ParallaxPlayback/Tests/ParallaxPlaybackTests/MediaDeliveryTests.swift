@@ -92,11 +92,8 @@ struct MediaDeliveryTests {
     }
 
     @Test("a Matroska file the bridge cannot deliver fails with the bridge's reason", arguments: [
-        ("refused-dts-audio", BridgeRefusal.noDeliverableAudio(names: ["dts DTS"])),
+        ("refused-tta-audio", BridgeRefusal.noDeliverableAudio(names: ["tta"])),
         ("refused-dolby-vision-5", .videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
-        // The baseline device has no AV1 or 10-bit H.264 decoder.
-        ("av1", .videoCodec(name: "av1 Main")),
-        ("h264-high10", .videoCodec(name: "h264 High 10")),
     ])
     func refusedMatroskaFileThrowsTheBridgesReason(name: String, reason: BridgeRefusal) async throws {
         let reader = try Self.fixture(name)
@@ -120,15 +117,14 @@ struct MediaDeliveryTests {
     }
 
     @Test("a refusal reads as one line that names what the file holds", arguments: [
-        ("h264-high10", "video: h264 High 10"),
-        ("refused-dts-audio", "audio: dts DTS"),
+        ("refused-dolby-vision-5", "video: hevc Main 10, Dolby Vision profile 5"),
+        ("refused-tta-audio", "audio: tta"),
         ("refused-one-keyframe", "no keyframe index"),
-        // An AVI and an ASF are opened to name the codec that stops them.
-        ("refused-avi-mpeg4.avi", "video: mpeg4 Simple Profile"),
-        ("refused-asf-wmv.asf", "video: wmv2"),
         ("refused-avi-b-frames.avi", "video: no presentation times"),
+        // The bridge decodes what these hold and cannot read the container in spans.
+        ("refused-asf-wmv.asf", "container: asf"),
         ("refused-asf-h264.asf", "container: asf"),
-        ("refused-program-stream.mpg", "video: mpeg2video Main"),
+        ("refused-program-stream.mpg", "container: mpeg"),
     ])
     func refusalReadsAsOneLine(name: String, line: String) async throws {
         let reader = try Self.fixture(name)

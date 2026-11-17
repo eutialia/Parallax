@@ -1,20 +1,91 @@
 import Foundation
 import ParallaxCore
 
-/// One track as AVPlayer sees it: the stream it copies and the clock its samples are timed on.
+/// One track as AVPlayer sees it: the stream it is made from, how it is made, and the clock its
+/// samples are timed on.
 struct Rendition: Sendable {
+    /// What the read takes from the file.
     let stream: DemuxedStream
+    let delivery: Delivery
+    /// What the writer stamps the delivered samples with.
+    let clock: MediaClock
+
+    /// The codec record the muxer writes the sample entry from and the playlists describe.
+    var parameters: CodecParameters {
+        switch delivery {
+        case .copy: stream.parameters
+        case .video(let video): video.encoded
+        case .audio(let audio): audio.encoded
+        }
+    }
+
     /// The RFC 6381 string a playlist's `CODECS` carries.
-    let codec: String
+    var codec: String {
+        switch delivery {
+        case .copy(let codec, _, _): codec
+        case .video(let video): video.codec
+        case .audio: ConvertedAudio.codec
+        }
+    }
+
     /// The Dolby Vision layer a playlist's `SUPPLEMENTAL-CODECS` names, whose record the init
     /// segment then carries: "dvh1.08.06/db1p". Nil for a stream played as it is.
-    let supplementalCodec: String?
-    let clock: MediaClock
+    var supplementalCodec: String? {
+        switch delivery {
+        case .copy(_, let supplementalCodec, _): supplementalCodec
+        case .video, .audio: nil
+        }
+    }
+
+    var decodeLead: Int64 { delivery.decodeLead }
+
+    /// Nil for a rendition that is not video decoded and encoded again.
+    var convertedVideo: ConvertedVideo? { delivery.convertedVideo }
+
+    /// The clock the file's packets are placed on. A converted audio rendition's own clock has
+    /// no grid, because an encoder's frames are not the source's.
+    var packetClock: MediaClock {
+        switch delivery {
+        case .copy, .video: clock
+        case .audio(let audio): MediaClock(timescale: clock.timescale, origin: clock.origin, grid: audio.sourceGrid)
+        }
+    }
+
+    /// Frames per second as the playlist declares it. Nil for audio, and when the container
+    /// says nothing.
+    var frameRate: DemuxedStream.FrameRate? { delivery.frameRate(of: stream) }
+}
+
+/// How a rendition's samples are made from its stream's packets.
+enum Delivery: Sendable {
+    /// Byte for byte.
+    case copy(codec: String, supplementalCodec: String?, decodeLead: Int64)
+    /// Decoded, and encoded again as HEVC.
+    case video(ConvertedVideo)
+    /// Decoded, and encoded again as FLAC.
+    case audio(ConvertedAudio)
+
+    var convertedVideo: ConvertedVideo? {
+        if case .video(let video) = self { video } else { nil }
+    }
+
+    /// Pictures a second of `stream` as delivered: the container's rate, but a converted
+    /// video's own, which is twice that for a stream of fields.
+    func frameRate(of stream: DemuxedStream) -> DemuxedStream.FrameRate? {
+        if case .video(let video) = self { video.frameRate } else { stream.frameRate }
+    }
+
     /// Ticks by which every decode time precedes its rank among the presentation times: the
     /// stream's reorder depth in frames. libavformat refuses a sample that displays before it
     /// decodes, and the lead has to be one value for the whole file, or neighboring segments
-    /// would disagree about where one ends and the next begins. Zero for audio.
-    let decodeLead: Int64
+    /// would disagree about where one ends and the next begins. Zero for audio, and for
+    /// converted video, which the encoder writes in the order it is shown.
+    var decodeLead: Int64 {
+        switch self {
+        case .copy(_, _, let decodeLead): decodeLead
+        case .video, .audio: 0
+        }
+    }
 }
 
 enum RenditionID: Sendable, Equatable {
@@ -29,16 +100,16 @@ public enum BridgeRefusal: Error, Equatable, Sendable {
     /// segments.
     case noCues
     case noDuration
-    /// A codec, or a profile of one, that the bridge does not deliver or this device does not
-    /// decode: "mpeg4 Simple Profile", "h264 High 10", "av1 Main".
+    /// A codec, or a profile of one, that the bridge neither delivers nor decodes: "hevc Main
+    /// 10, Dolby Vision profile 5", "prores HQ".
     case videoCodec(name: String)
+    /// Video this device does not play as it is, where converting it has no HEVC encoder to
+    /// go through: "av1 Main".
+    case videoEncoder(name: String)
     /// HDR video, "PQ", on a device that shows no HDR: an SDR screen, a mirrored one, an Apple
     /// TV whose output is SDR. AVPlayer refuses an HDR playlist there before it loads a
     /// segment, and a playlist that calls the video SDR fails at its first segment.
     case hdrVideo(range: String)
-    /// Video stored as fields. AVPlayer shows it combed or black, and joining the fields into
-    /// pictures is decoding.
-    case interlacedVideo
     /// No audio stream that is both in a codec the bridge delivers and present at the start of
     /// the file. `names` are the codecs the file does have, of the video's own program.
     case noDeliverableAudio(names: [String])
@@ -67,8 +138,8 @@ extension BridgeRefusal: CustomStringConvertible {
         case .noCues: "no keyframe index"
         case .noDuration: "no duration"
         case .videoCodec(let name): "video: \(name)"
+        case .videoEncoder(let name): "video: \(name), and this device has no HEVC encoder"
         case .hdrVideo(let range): "video: \(range), and this display shows no HDR"
-        case .interlacedVideo: "video: interlaced"
         case .noDeliverableAudio(let names): "audio: \(names.isEmpty ? "none" : names.joined(separator: ", "))"
         case .indexGap(let after):
             "no keyframe index after \(Self.clockTime(after))"
@@ -100,6 +171,8 @@ struct BridgePlan: Sendable {
         /// The demuxer's span: from the first entry up to, not including, the last.
         let entries: Range<Int>
         let seconds: Double
+        /// Nanoseconds in the file's own time: where the segment starts.
+        let start: Int64
         /// Nanoseconds in the file's own time: where the next segment starts, or the file ends.
         let end: Int64
     }
@@ -128,6 +201,13 @@ struct BridgePlan: Sendable {
     /// deadline.
     static let openingByteLimit = 16 << 20
 
+    /// Nanoseconds of a stream to convert that the plan reads at the open, to decode it once.
+    /// A decoder may give nothing for the first packets it is handed.
+    static let convertedAudioOpening: Int64 = 250_000_000
+    /// Nanoseconds of a converted stream decoded before a segment's start and thrown away, so
+    /// the decoder holds by the start what it would hold had it decoded the whole file.
+    static let audioWarmUp: Int64 = 500_000_000
+
     func track(_ id: RenditionID) -> Track? {
         switch id {
         case .video: video
@@ -139,21 +219,24 @@ struct BridgePlan: Sendable {
     /// keyframe list and the file's opening: a file refused for a codec costs no read past its
     /// headers. Throws a `BridgeRefusal`, the reader's own error, or the `SegmentWriter.Failure`
     /// that stopped an init segment.
+    ///
+    /// `openEncoder` opens the encoder a converted video's first picture is put through, which
+    /// is how the plan learns whether the device has one.
     init(
         reading demuxer: MediaDemuxer, support: AVPlayerSupport, showsHDR: Bool,
-        indexGapLimit: Duration = defaultIndexGapLimit
+        indexGapLimit: Duration = defaultIndexGapLimit,
+        openEncoder: (HEVCFormat) throws -> HEVCEncoder = { try HEVCEncoder($0, timescale: videoTimescale) }
     ) async throws {
         let videoStream = demuxer.streams[demuxer.videoStream]
-        let videoCodec: String
-        switch VideoDecision(for: videoStream, on: support, showingHDR: showsHDR) {
-        case .copy(let codec): videoCodec = codec
-        case .refuse(let refusal): throw refusal
-        }
+        let videoDecision = VideoDecision(for: videoStream, on: support, showingHDR: showsHDR)
+        if case .refuse(let refusal) = videoDecision { throw refusal }
         guard demuxer.timesItsPictures else { throw BridgeRefusal.untimedVideo }
 
         let audioStreams = demuxer.streams.filter { $0.kind == .audio }
         let noDeliverableAudio = BridgeRefusal.noDeliverableAudio(names: audioStreams.map(\.parameters.displayName))
-        guard audioStreams.contains(where: { $0.parameters.playlistCodec != nil }) else { throw noDeliverableAudio }
+        let copyable = audioStreams.filter { $0.parameters.playlistCodec != nil }
+        let convertible = audioStreams.filter { $0.parameters.playlistCodec == nil && AudioDecoder.decodes($0.parameters) }
+        guard !copyable.isEmpty || !convertible.isEmpty else { throw noDeliverableAudio }
 
         let keyframes = try await demuxer.keyframes()
         guard keyframes.count >= 2 else { throw BridgeRefusal.noCues }
@@ -168,57 +251,82 @@ struct BridgePlan: Sendable {
         // runs in time order. An init segment is written from one MP4 sample, which may join
         // several frames.
         let opening = try await demuxer.opening(
-            before: cuts.spans[0].upperBound, videoPackets: videoStream.parameters.reorderDepth + 1,
-            audioPackets: CodecParameters.mostFramesPerSample,
-            of: Set(audioStreams.filter { $0.parameters.playlistCodec != nil }.map(\.index)),
+            // A stream of fields shows its rate in its first two frames.
+            before: cuts.spans[0].upperBound,
+            videoPackets: videoStream.parameters.reorderDepth + (videoStream.parameters.isInterlaced ? 2 : 1),
+            audioPackets: CodecParameters.mostFramesPerSample, of: Set(copyable.map(\.index)),
+            audioSpan: Self.convertedAudioOpening, of: Set(convertible.map(\.index)),
             byteLimit: Self.openingByteLimit)
-        func packets(of stream: DemuxedStream) -> [DemuxedPacket] { opening.filter { $0.stream == stream.index } }
+        func packets(of stream: DemuxedStream) -> [MediaPacket] { opening.filter { $0.stream == stream.index } }
         guard let videoStart = packets(of: videoStream).compactMap(\.presentationTime).min() else {
             throw SegmentWriter.Failure.untimedSample
         }
 
         let audioDecisions = audioStreams.map { AudioDecision(for: $0, openingWith: packets(of: $0)) }
-        let copiedAudio = audioDecisions.compactMap(\.copied)
-        guard let audioStart = copiedAudio.map(\.start).min() else { throw noDeliverableAudio }
+        guard let audioStart = audioDecisions.compactMap(\.start).min() else { throw noDeliverableAudio }
 
-        let pacing = VideoPacing(of: videoStream, startingAt: videoStart, firstPacket: packets(of: videoStream).first)
+        let videoDelivery: Delivery
+        switch videoDecision {
+        case .copy(let codec):
+            videoDelivery = .copy(
+                codec: codec, supplementalCodec: videoStream.parameters.dolbyVisionCodec, decodeLead: VideoPacing.decodeLead(
+                    of: videoStream, startingAt: videoStart, firstPacket: packets(of: videoStream).first))
+        case .convert:
+            videoDelivery = .video(try ConvertedVideo(
+                videoStream, openingWith: packets(of: videoStream), startingAt: videoStart, openEncoder: openEncoder))
+        case .refuse(let refusal):
+            throw refusal
+        }
         // Enough that the earliest decode time and the earliest audio sample are both at or
         // above zero.
-        let leadTime = (pacing.decodeLead * 1_000_000_000 + Self.videoTimescale - 1) / Self.videoTimescale
+        let leadTime = (videoDelivery.decodeLead * 1_000_000_000 + Self.videoTimescale - 1) / Self.videoTimescale
         let origin = max(0, leadTime - min(videoStart, audioStart))
 
+        // A converted picture keeps its source time, so the clock is the one a copied stream has.
         let videoRendition = Rendition(
-            stream: videoStream, codec: videoCodec, supplementalCodec: videoStream.parameters.dolbyVisionCodec,
-            clock: MediaClock(timescale: Self.videoTimescale, origin: origin, grid: pacing.grid),
-            decodeLead: pacing.decodeLead)
-        let audioRenditions = copiedAudio.map { $0.rendition(origin: origin) }
+            stream: videoStream, delivery: videoDelivery,
+            clock: MediaClock(
+                timescale: Self.videoTimescale, origin: origin,
+                grid: VideoPacing.grid(
+                    of: videoStream, at: videoDelivery.frameRate(of: videoStream), startingAt: videoStart)))
 
         let segments = cuts.segments(on: videoRendition.clock)
+        // A converted track is described by a picture of what it is converted to.
+        let videoDescribed = if case .video(let converted) = videoDelivery { converted.firstPicture }
+            else { packets(of: videoStream) }
         video = Track(
             rendition: videoRendition,
-            initSegment: try SegmentWriter.initSegment(for: videoRendition, describedBy: packets(of: videoStream)),
+            initSegment: try SegmentWriter.initSegment(for: videoRendition, describedBy: videoDescribed),
             segments: segments)
         // AVPlayer waits for good at an audio segment it cannot get, and ends the item where
         // the shorter rendition ends. So a track's list stops at the last segment its audio
         // reaches, and that segment is stretched to the end of the file.
         let last = cuts.spans.count - 1
-        let audioClocks = Dictionary(uniqueKeysWithValues: audioRenditions.map { ($0.stream.index, $0.clock) })
-        let reachingTheEnd = try await demuxer.streams(audioClocks, continuingPastKeyframe: cuts.spans[last].lowerBound)
+        let renditions = audioDecisions.compactMap { $0.rendition(origin: origin) }
+        let packetClocks = Dictionary(uniqueKeysWithValues: renditions.map { ($0.stream.index, $0.packetClock) })
+        let reachingTheEnd = try await demuxer.streams(packetClocks, continuingPastKeyframe: cuts.spans[last].lowerBound)
         var audio: [Track] = []
-        for rendition in audioRenditions {
+        for rendition in renditions {
             let stream = rendition.stream.index
             let lastWithAudio = reachingTheEnd.contains(stream) ? last : try await Self.lastIndex(below: last) {
-                try await demuxer.streams([stream: rendition.clock], continuingPastKeyframe: cuts.spans[$0].lowerBound) == [stream]
+                try await demuxer.streams([stream: rendition.packetClock], continuingPastKeyframe: cuts.spans[$0].lowerBound) == [stream]
             }
+            // A converted track is described by a frame of what it is converted to.
+            let described = if case .audio(let converted) = rendition.delivery { converted.firstFrame }
+                else { packets(of: rendition.stream) }
             audio.append(Track(
-                rendition: rendition,
-                initSegment: try SegmentWriter.initSegment(for: rendition, describedBy: packets(of: rendition.stream)),
+                rendition: rendition, initSegment: try SegmentWriter.initSegment(for: rendition, describedBy: described),
                 segments: segments[..<lastWithAudio] + [cuts.segment(from: lastWithAudio, on: videoRendition.clock)]))
         }
         self.audio = audio
-        defaultAudio = copiedAudio.firstIndex { $0.stream.isDefault } ?? 0
+        defaultAudio = renditions.firstIndex { $0.stream.isDefault } ?? 0
         omittedAudio = audioDecisions.compactMap(\.omitted)
-        peakBitrate = zip(cuts.bytes, segments).map { Int(Double($0 * 8) / max($1.seconds, 0.001)) }.max() ?? 0
+        // A converted audio track is counted at the rate of its samples, which no FLAC frame
+        // exceeds. Converted video is counted at half again its average, on top of the file's
+        // own densest segment, which stands for the audio copied out of it.
+        peakBitrate = (zip(cuts.bytes, segments).map { Int(Double($0 * 8) / max($1.seconds, 0.001)) }.max() ?? 0)
+            + audioDecisions.compactMap(\.converted).map(\.sampleBitrate).reduce(0, +)
+            + (videoRendition.convertedVideo.map { $0.format.expectedBitrate * 3 / 2 } ?? 0)
     }
 
     /// The last index `holds` is true for, when it is true at zero and, once false, false to
@@ -245,15 +353,14 @@ struct BridgePlan: Sendable {
 enum VideoDecision {
     /// Delivered byte for byte, under this RFC 6381 codec string.
     case copy(codec: String)
+    /// Decoded and encoded again as HEVC: a codec or profile the device does not play that
+    /// this build decodes. What it is encoded as is known once its first picture is decoded.
+    case convert
     case refuse(BridgeRefusal)
 
     init(for stream: DemuxedStream, on support: AVPlayerSupport, showingHDR: Bool) {
-        guard let codec = stream.parameters.playlistCodec, Self.decodes(codec, on: support) else {
+        guard !stream.parameters.isDolbyVisionWithoutBase else {
             self = .refuse(.videoCodec(name: stream.parameters.displayName))
-            return
-        }
-        guard !stream.parameters.isInterlaced else {
-            self = .refuse(.interlacedVideo)
             return
         }
         // HLG plays where HDR does not show, measured on a Mac with an SDR display.
@@ -261,7 +368,14 @@ enum VideoDecision {
             self = .refuse(.hdrVideo(range: stream.parameters.videoRange))
             return
         }
-        self = .copy(codec: codec)
+        // AVPlayer shows video stored as fields combed or black, whatever its codec.
+        if !stream.parameters.isInterlaced, let codec = stream.parameters.playlistCodec, Self.decodes(codec, on: support) {
+            self = .copy(codec: codec)
+        } else if VideoDecoder.decodes(stream.parameters) {
+            self = .convert
+        } else {
+            self = .refuse(.videoCodec(name: stream.parameters.displayName))
+        }
     }
 
     /// Whether the device decodes a video codec string the bridge delivers. AV1 and 10-bit
@@ -277,6 +391,7 @@ enum VideoDecision {
 /// from the packets of it the file opens with.
 enum AudioDecision {
     case copy(CopiedAudio)
+    case convert(ConvertedAudio)
     /// Left out of the playlists. `name` is the codec as the player's details show it.
     case omit(name: String)
 
@@ -292,7 +407,7 @@ enum AudioDecision {
 
         /// Nil for a codec the bridge does not deliver, and for a stream the opening holds less
         /// than one MP4 sample of, which has no init segment.
-        init?(_ stream: DemuxedStream, openingWith packets: [DemuxedPacket]) {
+        init?(_ stream: DemuxedStream, openingWith packets: [MediaPacket]) {
             guard let codec = stream.parameters.playlistCodec,
                   let start = packets.compactMap(\.presentationTime).min()
             else { return nil }
@@ -306,47 +421,63 @@ enum AudioDecision {
 
         func rendition(origin: Int64) -> Rendition {
             Rendition(
-                stream: stream, codec: codec, supplementalCodec: nil,
+                stream: stream, delivery: .copy(codec: codec, supplementalCodec: nil, decodeLead: 0),
                 clock: MediaClock(
                     timescale: Int64(stream.parameters.sampleRate), origin: origin,
                     grid: samplesPerFrame > 0
                         ? .init(
-                            anchor: start, step: Int64(samplesPerFrame), tolerance: gridTolerance,
+                            anchor: start, step: Int64(samplesPerFrame),
+                            tolerance: AudioDecision.gridTolerance(
+                                of: stream, samplesPerFrame: samplesPerFrame, sampleRate: stream.parameters.sampleRate),
                             framesPerSample: Int64(stream.parameters.framesPerSample(of: samplesPerFrame)))
-                        : nil),
-                decodeLead: 0)
+                        : nil))
         }
+    }
 
-        /// Nanoseconds. A container whose tick is no longer than a sample stores each frame's
-        /// time to within a tick or two, so a frame a quarter of a frame off the grid is off it
-        /// in the source: a recording joined from parts goes on part of a frame late after each
-        /// join, and at half a frame two frames would be put in one slot. A coarser time was
-        /// rounded, each frame of a lace by an error of its own, and goes back on the grid
-        /// wherever it is.
-        private var gridTolerance: Int64 {
-            let sampleRate = Int64(stream.parameters.sampleRate)
-            return stream.tick * sampleRate <= 1_000_000_000
-                ? Int64(samplesPerFrame) * 250_000_000 / sampleRate : .max
-        }
+    /// Nanoseconds. A container whose tick is no longer than a sample stores each frame's
+    /// time to within a tick or two, so a frame a quarter of a frame off the grid is off it
+    /// in the source: a recording joined from parts goes on part of a frame late after each
+    /// join, and at half a frame two frames would be put in one slot. A coarser time was
+    /// rounded, each frame of a lace by an error of its own, and goes back on the grid
+    /// wherever it is.
+    static func gridTolerance(of stream: DemuxedStream, samplesPerFrame: Int, sampleRate: Int) -> Int64 {
+        stream.tick * Int64(sampleRate) <= 1_000_000_000
+            ? Int64(samplesPerFrame) * 250_000_000 / Int64(sampleRate) : .max
     }
 
     /// `packets` are the stream's own, of those the file opens with.
-    init(for stream: DemuxedStream, openingWith packets: [DemuxedPacket]) {
-        self = CopiedAudio(stream, openingWith: packets).map(Self.copy) ?? .omit(name: stream.parameters.displayName)
+    init(for stream: DemuxedStream, openingWith packets: [MediaPacket]) {
+        let delivered = stream.parameters.playlistCodec != nil
+            ? CopiedAudio(stream, openingWith: packets).map(Self.copy)
+            : ConvertedAudio(stream, openingWith: packets).map(Self.convert)
+        self = delivered ?? .omit(name: stream.parameters.displayName)
     }
 
-    var copied: CopiedAudio? {
+    /// Nanoseconds: where the track's first sample is in the file's own time. Nil for a
+    /// stream left out.
+    var start: Int64? {
         switch self {
-        case .copy(let audio): audio
+        case .copy(let audio): audio.start
+        case .convert(let audio): audio.start
         case .omit: nil
         }
     }
 
-    var omitted: String? {
+    /// Nil for a stream left out.
+    func rendition(origin: Int64) -> Rendition? {
         switch self {
-        case .copy: nil
-        case .omit(let name): name
+        case .copy(let audio): audio.rendition(origin: origin)
+        case .convert(let audio): audio.rendition(origin: origin)
+        case .omit: nil
         }
+    }
+
+    var converted: ConvertedAudio? {
+        if case .convert(let audio) = self { audio } else { nil }
+    }
+
+    var omitted: String? {
+        if case .omit(let name) = self { name } else { nil }
     }
 }
 
@@ -392,7 +523,7 @@ struct SegmentCuts {
             BridgePlan.Segment(
                 entries: spans[index],
                 seconds: clock.seconds(at: boundaries[index + 1]) - clock.seconds(at: boundaries[index]),
-                end: boundaries[index + 1])
+                start: boundaries[index], end: boundaries[index + 1])
         }
     }
 
@@ -400,16 +531,23 @@ struct SegmentCuts {
     func segment(from index: Int, on clock: MediaClock) -> BridgePlan.Segment {
         let end = boundaries[boundaries.count - 1]
         return BridgePlan.Segment(
-            entries: spans[index], seconds: clock.seconds(at: end) - clock.seconds(at: boundaries[index]), end: end)
+            entries: spans[index], seconds: clock.seconds(at: end) - clock.seconds(at: boundaries[index]),
+            start: boundaries[index], end: end)
     }
 }
 
-/// How the video's frames are spaced, which fixes how far decode times run ahead.
-struct VideoPacing {
-    /// Nil when the container declares no frame rate, or one that is not a whole number of ticks.
-    let grid: MediaClock.Grid?
-    /// Ticks of `BridgePlan.videoTimescale`.
-    let decodeLead: Int64
+/// How a video stream's pictures are spaced.
+enum VideoPacing {
+    /// Where pictures `rate` a second sit from `start` on. Nil for no rate, or one that is not
+    /// a whole number of ticks.
+    static func grid(of stream: DemuxedStream, at rate: DemuxedStream.FrameRate?, startingAt start: Int64) -> MediaClock.Grid? {
+        rate.flatMap { rate in
+            let (step, remainder) = (BridgePlan.videoTimescale * rate.denominator)
+                .quotientAndRemainder(dividingBy: rate.numerator)
+            return remainder == 0
+                ? .init(anchor: start, step: step, tolerance: max(stream.tick, coarsestRounding)) : nil
+        }
+    }
 
     /// Nanoseconds. A transport stream copied from a Matroska file keeps the millisecond its
     /// times were rounded to, under a tick of its own ninety times finer. Left off the grid,
@@ -417,16 +555,12 @@ struct VideoPacing {
     /// starts the item.
     private static let coarsestRounding: Int64 = 1_000_000
 
-    init(of stream: DemuxedStream, startingAt start: Int64, firstPacket: DemuxedPacket?) {
-        grid = stream.frameRate.flatMap { rate -> MediaClock.Grid? in
-            let (step, remainder) = (BridgePlan.videoTimescale * rate.denominator)
-                .quotientAndRemainder(dividingBy: rate.numerator)
-            return remainder == 0
-                ? .init(anchor: start, step: step, tolerance: max(stream.tick, Self.coarsestRounding)) : nil
-        }
-        let frameTicks = grid?.step
+    /// How far a copied stream's decode times run ahead, in ticks of
+    /// `BridgePlan.videoTimescale`: its reorder depth in frames.
+    static func decodeLead(of stream: DemuxedStream, startingAt start: Int64, firstPacket: MediaPacket?) -> Int64 {
+        let frameTicks = grid(of: stream, at: stream.frameRate, startingAt: start)?.step
             ?? firstPacket?.duration.map { $0 * BridgePlan.videoTimescale / 1_000_000_000 }
             ?? 0
-        decodeLead = Int64(stream.parameters.reorderDepth) * frameTicks
+        return Int64(stream.parameters.reorderDepth) * frameTicks
     }
 }
