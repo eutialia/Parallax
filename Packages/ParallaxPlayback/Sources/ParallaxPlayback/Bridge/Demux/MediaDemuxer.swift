@@ -31,7 +31,7 @@ struct DemuxedStream: Sendable {
 }
 
 /// One compressed sample, byte for byte as the container stores it.
-struct DemuxedPacket: Sendable, Equatable {
+struct MediaPacket: Sendable, Equatable {
     let stream: Int
     /// Nanoseconds. Nil when the container gives the sample no time.
     let presentationTime: Int64?
@@ -88,7 +88,14 @@ final class ListingProgress: Sendable {
 protocol PacketSink: AnyObject {
     /// Checked between packets: a read whose sink is cancelled stops with `CancellationError`.
     var isCancelled: Bool { get }
-    func accept(_ packet: DemuxedPacket) throws
+    /// Whether the read may stop at the end of its span. A sink that decodes says no until it
+    /// has the span's last sample, which a decoder may give only when handed a later packet.
+    var isSatisfied: Bool { get }
+    func accept(_ packet: MediaPacket) throws
+}
+
+extension PacketSink {
+    var isSatisfied: Bool { true }
 }
 
 /// A container opened through libavformat, read in spans between listed keyframes.
@@ -267,18 +274,23 @@ actor MediaDemuxer {
     /// keyframe count reads to the end of the file.
     ///
     /// Video belongs to the span by position: every packet from the lower keyframe up to the
-    /// upper one, so pictures that display before their keyframe stay with it. Audio belongs by
-    /// time: every packet timed in `[lower, upper)`. The first span also takes whatever is timed
-    /// before its keyframe. Neighboring spans therefore share no packet and drop none.
+    /// upper one, so pictures that display before their keyframe stay with it. A sink that is
+    /// not satisfied at the upper keyframe is handed the packets after it until it is. Audio
+    /// belongs by time: every packet timed in `[lower, upper)`. The first span also takes
+    /// whatever is timed before its keyframe. Neighboring spans therefore share no packet and
+    /// drop none.
     ///
     /// With `takingLaterAudio`, audio has no upper time: the span also takes the audio timed
     /// after it that the read comes by. That is for the span an audio track ends in.
     ///
     /// An audio frame is timed by where `clock` starts the MP4 sample it goes into, so frames
     /// the muxer joins stay in one span.
+    ///
+    /// With `warmUp`, audio is handed over from that many nanoseconds before the span, and on
+    /// past its end until the sink is satisfied: what a sink that decodes needs.
     func read<Sink: PacketSink>(
         _ stream: Int, from lower: Int, to upper: Int, takingLaterAudio: Bool = false, clock: MediaClock? = nil,
-        into sink: Sink
+        warmUp: Int64 = 0, into sink: Sink
     ) throws {
         let keyframes = try keyframes()
         precondition(keyframes.indices.contains(lower) && lower < upper && upper <= keyframes.count)
@@ -292,23 +304,31 @@ actor MediaDemuxer {
             return
         }
         let audioUpperTime = takingLaterAudio ? Int64.max : upperTime
+        let earliest = lower == 0 ? Int64.min : lowerTime - warmUp
+        // The listed keyframe no read starts before: the span's own, or the last one the
+        // warm-up starts at or after.
+        let first = warmUp == 0 ? lower : keyframes[...lower].lastIndex { $0.time <= earliest } ?? 0
         guard case .before(let search)? = container?.audioPlacement else {
-            try seek(to: keyframes[lower])
+            try seek(to: keyframes[first])
             _ = try readAudio(
-                stream, from: lowerTime, to: audioUpperTime, videoEnd: upperTime, clock: clock,
+                stream, from: earliest, to: audioUpperTime, videoEnd: upperTime, clock: clock,
                 startedEarlyEnough: true, into: sink)
             return
         }
         // Audio may be stored ahead of the keyframe it plays with, so the read starts earlier.
         // The last place it can start is the previous listed keyframe, which may be a long
         // span back.
-        let floor = keyframes[..<lower].last { $0.position < keyframes[lower].position }?.position
-            ?? keyframes[lower].position
-        var back = lower == 0 ? 0 : audioLookback(search, before: keyframes[lower], after: keyframes[lower - 1])
+        let floor = keyframes[..<first].last { $0.position < keyframes[first].position }?.position
+            ?? keyframes[first].position
+        // The search goes back from the span's own keyframe, and by the warm-up's share of the
+        // bytes before it: the listed keyframe before may be a segment of 256 MB away.
+        var back = lower == 0 ? 0
+            : audioLookback(search, before: keyframes[lower], after: keyframes[lower - 1])
+                + Self.bytes(lasting: warmUp, before: keyframes[lower], after: keyframes[lower - 1])
         while true {
             let from = keyframes[lower].position - back
             let start = from <= floor ? nil
-                : try audioReadStart(search, from: from, before: keyframes[lower], after: keyframes[lower - 1])
+                : try audioReadStart(search, from: from, before: keyframes[lower], after: keyframes[max(first - 1, 0)])
             // A cluster may run 32 s: with none this close, one further back is still nearer
             // than the floor.
             if start == nil, from > floor {
@@ -317,7 +337,7 @@ actor MediaDemuxer {
             }
             try seek(toByte: start ?? floor)
             let tookItAll = try readAudio(
-                stream, from: lowerTime, to: audioUpperTime, videoEnd: upperTime, clock: clock,
+                stream, from: earliest, to: audioUpperTime, videoEnd: upperTime, clock: clock,
                 startedEarlyEnough: start == nil, into: sink)
             if tookItAll { return }
             back *= 2
@@ -326,33 +346,39 @@ actor MediaDemuxer {
 
     /// `read`'s packets, collected.
     func packets(
-        _ stream: Int, from lower: Int, to upper: Int, takingLaterAudio: Bool = false, clock: MediaClock? = nil
-    ) throws -> [DemuxedPacket] {
+        _ stream: Int, from lower: Int, to upper: Int, takingLaterAudio: Bool = false, clock: MediaClock? = nil,
+        warmUp: Int64 = 0
+    ) throws -> [MediaPacket] {
         let collected = CollectingSink()
-        try read(stream, from: lower, to: upper, takingLaterAudio: takingLaterAudio, clock: clock, into: collected)
+        try read(
+            stream, from: lower, to: upper, takingLaterAudio: takingLaterAudio, clock: clock, warmUp: warmUp,
+            into: collected)
         return collected.packets
     }
 
     /// Every packet of every audio and video stream of span `lower..<upper`, the video first.
     /// For tests and the library sweep, which compare a span with its source.
-    func packets(from lower: Int, to upper: Int, takingLaterAudio: Bool = false) throws -> [DemuxedPacket] {
+    func packets(from lower: Int, to upper: Int, takingLaterAudio: Bool = false) throws -> [MediaPacket] {
         try ([videoStream] + streams.filter { $0.kind == .audio }.map(\.index)).flatMap {
             try packets($0, from: lower, to: upper, takingLaterAudio: takingLaterAudio)
         }
     }
 
     /// The first span's video and audio packets, in file order, up to the first of: `videoPackets`
-    /// video packets and `audioPackets` of each stream in `audio`; `byteLimit` bytes from the
-    /// first keyframe; keyframe `upper`. What a plan needs to describe the streams and place
-    /// them in time, without reading a first span that may be hundreds of megabytes.
+    /// video packets, `audioPackets` of each stream in `audio` and `audioSpan` nanoseconds of
+    /// each stream in `spanned`; `byteLimit` bytes from the first keyframe; keyframe `upper`.
+    /// What a plan needs to describe the streams and place them in time, without reading a
+    /// first span that may be hundreds of megabytes.
     func opening(
-        before upper: Int, videoPackets: Int, audioPackets: Int, of audio: Set<Int>, byteLimit: Int
-    ) throws -> [DemuxedPacket] {
+        before upper: Int, videoPackets: Int, audioPackets: Int, of audio: Set<Int>, audioSpan: Int64 = 0,
+        of spanned: Set<Int> = [], byteLimit: Int
+    ) throws -> [MediaPacket] {
         let keyframes = try keyframes()
         let upperTime = upper == keyframes.count ? Int64.max : keyframes[upper].time
         try seek(to: keyframes[0])
-        var collected: [DemuxedPacket] = []
+        var collected: [MediaPacket] = []
         var counts: [Int: Int] = [:]
+        var spans: [Int: (first: Int64, last: Int64)] = [:]
         var bytes = 0
         while let packet = try nextPacket() {
             defer { av_packet_unref(packet) }
@@ -365,22 +391,32 @@ actor MediaDemuxer {
             else { continue }
             collected.append(demuxed)
             counts[stream, default: 0] += 1
+            if let time = demuxed.presentationTime { spans[stream] = (spans[stream]?.first ?? time, time) }
             if started { bytes += demuxed.data.count }
             let enough = counts[videoStream, default: 0] >= videoPackets
                 && audio.allSatisfy { counts[$0, default: 0] >= audioPackets }
+                && spanned.allSatisfy { spans[$0].map { $0.last - $0.first >= audioSpan } == true }
             if enough || bytes > byteLimit { break }
         }
         return collected
     }
 
+    /// The read goes on past the upper keyframe while the sink is not satisfied, up to the
+    /// first keyframe `videoRunOn` later: a decoder that gives nothing more must not read the
+    /// rest of the file.
     private func readVideo(from lowerTime: Int64, to upperTime: Int64, into sink: some PacketSink) throws {
         var started = false
+        var passedUpper = false
         while let packet = try nextPacket() {
             defer { av_packet_unref(packet) }
             if sink.isCancelled { throw CancellationError() }
+            if passedUpper, sink.isSatisfied { return }
             guard Int(packet.pointee.stream_index) == videoStream else { continue }
             if packet.pointee.flags & AV_PKT_FLAG_KEY != 0, let time = time(of: packet) {
-                if time >= upperTime { return }
+                if time >= upperTime {
+                    if sink.isSatisfied || time - upperTime >= Self.videoRunOn { return }
+                    passedUpper = true
+                }
                 if time >= lowerTime { started = true }
             }
             if started, let demuxed = demuxed(packet) { try sink.accept(demuxed) }
@@ -411,7 +447,7 @@ actor MediaDemuxer {
                 if let time = time(of: packet).map({ clock?.sampleStart(at: $0) ?? $0 }) {
                     if !seen, !startedEarlyEnough, time >= lowerTime { return false }
                     seen = true
-                    if time >= upperTime { return true }
+                    if time >= upperTime, sink.isSatisfied { return true }
                     belongs = time >= lowerTime
                 }
                 if belongs, let demuxed = demuxed(packet) { try sink.accept(demuxed) }
@@ -462,6 +498,13 @@ actor MediaDemuxer {
             at -= 4 + size
         }
         return at
+    }
+
+    /// The bytes `duration` nanoseconds take at the average rate of the index span before
+    /// `keyframe`.
+    static func bytes(lasting duration: Int64, before keyframe: IndexedKeyframe, after previous: IndexedKeyframe) -> Int64 {
+        let bytes = Double(keyframe.position - previous.position)
+        return Int64(bytes * Double(duration) / Double(max(keyframe.time - previous.time, 1)))
     }
 
     /// How far before `keyframe` an audio read first looks for a cluster: eight seconds of the
@@ -568,10 +611,10 @@ actor MediaDemuxer {
     }
 
     /// Nil for a packet that carries no bytes.
-    private func demuxed(_ packet: UnsafeMutablePointer<AVPacket>) -> DemuxedPacket? {
+    private func demuxed(_ packet: UnsafeMutablePointer<AVPacket>) -> MediaPacket? {
         let stream = Int(packet.pointee.stream_index)
         return packet.pointee.data.map { bytes in
-            DemuxedPacket(
+            MediaPacket(
                 stream: stream, presentationTime: time(of: packet),
                 duration: packet.pointee.duration > 0 ? nanoseconds(packet.pointee.duration, of: stream) : nil,
                 isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0,
@@ -600,6 +643,10 @@ actor MediaDemuxer {
     }
 
     private static let audioSearchLimit = 4 << 20
+    /// Nanoseconds a video read goes on past its span for a sink that decodes. A decoder holds
+    /// back the pictures it is still reordering and those its threads are working on, a second
+    /// of video at most.
+    private static let videoRunOn: Int64 = 2_000_000_000
     /// Nanoseconds. Muxers store a stream's packets within a cluster of the video they play
     /// with, and a cluster holds five seconds at most.
     private static let interleaveLimit: Int64 = 5_000_000_000
@@ -622,9 +669,9 @@ actor MediaDemuxer {
 }
 
 private final class CollectingSink: PacketSink {
-    private(set) var packets: [DemuxedPacket] = []
+    private(set) var packets: [MediaPacket] = []
     var isCancelled: Bool { false }
-    func accept(_ packet: DemuxedPacket) { packets.append(packet) }
+    func accept(_ packet: MediaPacket) { packets.append(packet) }
 }
 
 /// What opening a container produces, built on the demuxer's queue before the actor exists.

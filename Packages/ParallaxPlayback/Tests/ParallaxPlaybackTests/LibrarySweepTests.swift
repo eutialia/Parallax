@@ -94,7 +94,8 @@ private struct FileResult {
             let keyframes = session.keyframes
             deliveredAudio = plan.audio.map { track in
                 let channels = track.rendition.stream.parameters.playlistChannels
-                return track.rendition.codec + (channels.hasSuffix("JOC") ? " \(channels)" : "")
+                let source = track.rendition.isCopied ? "" : " from \(track.rendition.stream.parameters.codecName)"
+                return track.rendition.codec + source + (channels.hasSuffix("JOC") ? " \(channels)" : "")
             }
             omittedAudio = plan.omittedAudio
 
@@ -106,12 +107,11 @@ private struct FileResult {
                 // A track of a codec the bridge delivers is left out only when the opening read
                 // saw no packet of it.
                 let deliverable = whole.streams.count { $0.kind == .audio && $0.parameters.playlistCodec != nil }
-                if plan.audio.count < deliverable {
-                    found = "\(deliverable - plan.audio.count) deliverable audio tracks left out"
-                }
+                let copied = plan.audio.count(where: \.rendition.isCopied)
+                if copied < deliverable { found = "\(deliverable - copied) deliverable audio tracks left out" }
                 let first = plan.video.segments[0].entries
                 let packets = try await whole.packets(from: first.lowerBound, to: first.upperBound)
-                for (_, track) in tracks {
+                for (_, track) in tracks where track.rendition.isCopied {
                     let described = packets.filter { $0.stream == track.rendition.stream.index }
                     if try SegmentWriter.initSegment(for: track.rendition, describedBy: described) != track.initSegment {
                         found = found ?? "\(track.rendition.codec) init segment: not the first span's"
@@ -143,6 +143,15 @@ private struct FileResult {
                     let (readBack, built) = try await Self.samples(of: session, BridgeResource.mediaSegment(id, index).path, after: initSegment)
                     let kind = id == .video ? "video" : "audio"
                     largestBuilt[kind] = max(largestBuilt[kind] ?? 0, built)
+                    let name = "\(kind) \(track.rendition.codec) segment \(place)"
+                    guard track.rendition.isCopied else {
+                        // A converted segment holds none of the source's packets. It starts on
+                        // the tick the video's segment does.
+                        if index > 0, readBack.first?.presentation != track.rendition.clock.ticks(at: segment.start) {
+                            found = found ?? "\(name): starts off its boundary"
+                        }
+                        continue
+                    }
                     let source = try SourcePackets(
                         of: url, stream: track.rendition.stream.index, videoStream: plan.video.rendition.stream.index,
                         clock: track.rendition.clock,
@@ -151,7 +160,6 @@ private struct FileResult {
                             ? nil : keyframes[segment.entries.upperBound].time,
                         readingUntil: segment.entries.upperBound == keyframes.count
                             ? nil : keyframes[segment.entries.upperBound].time)
-                    let name = "\(kind) \(track.rendition.codec) segment \(place)"
                     guard readBack.map(\.md5) == source.packets.map(\.md5) else {
                         found = found ?? "\(name): \(readBack.count) samples for \(source.packets.count)"
                         continue
@@ -370,5 +378,11 @@ private struct SweepReport {
                 "\(kind) \((results.compactMap { $0.largestBuilt[kind] }.max() ?? 0) >> 20) MB"
             }.joined(separator: ", "),
         ] + unexplained.map { "SWEEP unexplained \($0)" }
+    }
+}
+
+extension Rendition {
+    fileprivate var isCopied: Bool {
+        if case .copy = delivery { true } else { false }
     }
 }

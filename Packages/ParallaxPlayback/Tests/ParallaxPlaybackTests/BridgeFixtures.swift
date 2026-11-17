@@ -1,3 +1,4 @@
+import CoreVideo
 import Foundation
 import Testing
 import ParallaxCore
@@ -9,6 +10,22 @@ enum BridgeFixture {
     static let everyDecoder = AVPlayerSupport(
         containers: [.mp4, .mov, .hls], videoCodecs: Set(VideoCodec.allCases),
         audioCodecs: Set(AudioCodec.allCases), decodesH264High10: true)
+
+    /// A device with no decoder for AV1 or 10-bit H.264, as an Apple TV 4K is.
+    static let fewestDecoders = AVPlayerSupport(
+        containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc],
+        audioCodecs: Set(AudioCodec.allCases), decodesH264High10: false)
+
+    /// Reads a numbered fixture's picture: 16 squares, 10 pixels wide, white for a set bit,
+    /// lowest bit on the left.
+    static func frameNumber(in buffer: CVPixelBuffer, rowsAboveTheMiddle: Int = 0) -> Int {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return -1 }
+        let luma = base.assumingMemoryBound(to: UInt8.self)
+        let row = (CVPixelBufferGetHeightOfPlane(buffer, 0) / 2 - rowsAboveTheMiddle) * CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        return (0..<16).reduce(0) { $0 | (luma[row + $1 * 10 + 5] > 128 ? 1 << $1 : 0) }
+    }
 
     /// A fixture's bytes. `file` is "ts-h264.ts", or a Matroska fixture's name alone.
     static func data(_ file: String) throws -> Data {

@@ -50,8 +50,11 @@ struct SegmentWriterTests {
             InMemoryRandomAccessReader(data: BridgeFixture.data(name)))
         let stream = demuxer.streams[track.stream]
         let rendition = Rendition(
-            stream: stream, codec: try #require(stream.parameters.playlistCodec), supplementalCodec: nil, clock: track.clock,
-            decodeLead: track.decodeLead)
+            stream: stream,
+            delivery: .copy(
+                codec: try #require(stream.parameters.playlistCodec), supplementalCodec: nil,
+                decodeLead: track.decodeLead),
+            clock: track.clock)
         let count = try await demuxer.keyframes().count
 
         var segments: [Int: Data] = [:]

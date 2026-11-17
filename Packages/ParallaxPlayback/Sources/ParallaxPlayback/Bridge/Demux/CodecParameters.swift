@@ -2,8 +2,8 @@ import AetherLibavcodec
 import AetherLibavutil
 import Foundation
 
-/// A stream's codec configuration as libavformat read it, kept whole so the MP4 muxer writes the
-/// sample entry from the same record the demuxer parsed.
+/// A stream's codec configuration as libavformat read it or an encoder made it, kept whole so
+/// the MP4 muxer writes the sample entry from that record.
 ///
 /// Sendable because the copy is never written after `init`.
 final class CodecParameters: @unchecked Sendable {
@@ -17,6 +17,56 @@ final class CodecParameters: @unchecked Sendable {
             return nil
         }
         pointer = copy
+    }
+
+    /// The stream an opened encoder writes.
+    init?(of encoder: UnsafePointer<AVCodecContext>) {
+        guard let made = avcodec_parameters_alloc() else { return nil }
+        guard avcodec_parameters_from_context(made, encoder) >= 0 else {
+            var made: UnsafeMutablePointer<AVCodecParameters>? = made
+            avcodec_parameters_free(&made)
+            return nil
+        }
+        pointer = made
+    }
+
+    /// The HEVC stream an encoder asked for `format` makes of `source`'s pictures, whose
+    /// parameter sets are the `hvcC` record. It keeps what the encoder does not change and the
+    /// muxer writes: the pixel aspect ratio, and the HDR10 mastering and light-level data.
+    init?(hevc record: Data, of format: HEVCFormat, replacing source: CodecParameters) {
+        guard let made = avcodec_parameters_alloc() else { return nil }
+        let extradata = av_mallocz(record.count + Int(AV_INPUT_BUFFER_PADDING_SIZE))?
+            .assumingMemoryBound(to: UInt8.self)
+        guard avcodec_parameters_copy(made, source.pointer) >= 0, let extradata else {
+            var made: UnsafeMutablePointer<AVCodecParameters>? = made
+            avcodec_parameters_free(&made)
+            av_free(extradata)
+            return nil
+        }
+        record.copyBytes(to: extradata, count: record.count)
+        av_free(made.pointee.extradata)
+        made.pointee.extradata = extradata
+        made.pointee.extradata_size = Int32(record.count)
+        made.pointee.codec_id = AV_CODEC_ID_HEVC
+        made.pointee.codec_tag = 0
+        made.pointee.profile = format.isTenBit ? AV_PROFILE_HEVC_MAIN_10 : AV_PROFILE_HEVC_MAIN
+        made.pointee.level = AV_LEVEL_UNKNOWN
+        made.pointee.format = (format.isTenBit ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P).rawValue
+        made.pointee.width = Int32(format.width)
+        made.pointee.height = Int32(format.height)
+        made.pointee.bit_rate = Int64(format.expectedBitrate)
+        made.pointee.bits_per_coded_sample = 0
+        made.pointee.bits_per_raw_sample = format.isTenBit ? 10 : 8
+        made.pointee.video_delay = 0
+        made.pointee.field_order = AV_FIELD_PROGRESSIVE
+        made.pointee.color_range = format.isFullRange ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG
+        made.pointee.color_primaries = AVColorPrimaries(rawValue: UInt32(format.primaries))
+        made.pointee.color_trc = AVColorTransferCharacteristic(rawValue: UInt32(format.transfer))
+        made.pointee.color_space = AVColorSpace(rawValue: UInt32(format.matrix))
+        // The record describes the source's own layers, which the encoder does not write.
+        av_packet_side_data_remove(
+            made.pointee.coded_side_data, &made.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF)
+        pointer = made
     }
 
     deinit {
@@ -111,6 +161,15 @@ final class CodecParameters: @unchecked Sendable {
 
     var dolbyVisionProfile: Int? { dolbyVisionRecord.map { Int($0.dv_profile) } }
 
+    /// Dolby Vision with no layer a plain decoder shows right: profile 5, which calls itself
+    /// HEVC Main 10, and AV1's profile 10 when it names no compatible signal. The picture is
+    /// in Dolby's own color space, and decoded as what it calls itself it shows green and
+    /// purple.
+    var isDolbyVisionWithoutBase: Bool {
+        dolbyVisionRecord.map { $0.dv_profile == 5 || $0.dv_profile == 10 && $0.dv_bl_signal_compatibility_id == 0 }
+            ?? false
+    }
+
     /// The Dolby Vision layer a playlist's `SUPPLEMENTAL-CODECS` names over the HEVC its
     /// `CODECS` does: "dvh1.08.06/db1p" for profile 8.1 at level 6, whose base layer is HDR10, and
     /// "dvh1.08.06/db4h" for 8.4, whose base is HLG. Nil for every other stream, which plays
@@ -149,10 +208,8 @@ final class CodecParameters: @unchecked Sendable {
         case AV_CODEC_ID_HEVC:
             guard let level = hevcProfileTierLevel else { return nil }
             let space = level[0] >> 6, isHighTier = level[0] & 0x20 != 0, profile = level[0] & 0x1f
-            // Main and Main 10. Dolby Vision profile 5 calls itself Main 10 and is not: its
-            // picture is in Dolby's own color space, and played as plain HEVC it shows green
-            // and purple.
-            guard space == 0, profile == 1 || profile == 2, dolbyVisionProfile != 5 else { return nil }
+            // Main and Main 10.
+            guard space == 0, profile == 1 || profile == 2, !isDolbyVisionWithoutBase else { return nil }
             // The string carries the compatibility flags with their bits in reverse order, and
             // the constraint bytes up to the last that is not zero.
             let compatibility = level[1...4].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
@@ -173,6 +230,8 @@ final class CodecParameters: @unchecked Sendable {
             return "fLaC"
         case AV_CODEC_ID_OPUS:
             return "Opus"
+        case AV_CODEC_ID_ALAC:
+            return "alac"
         case AV_CODEC_ID_AV1:
             // An `av1C` record: a marker and version byte, then the profile and level, then the
             // tier and the bits that give the depth. Main is the profile Apple's decoders take.

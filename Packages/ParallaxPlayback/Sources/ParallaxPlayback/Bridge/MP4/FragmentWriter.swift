@@ -50,8 +50,9 @@ final class FragmentWriter {
     private let timescale: AVRational
     private let timeBase: AVRational
 
-    /// In decode order, with their presentation times in the rendition's ticks.
-    private var waiting: [(packet: DemuxedPacket, presentation: Int64)] = []
+    /// In decode order, timed in the rendition's ticks. `length` is nil for a sample that gives
+    /// none.
+    private var waiting: [(data: Data, isKeyframe: Bool, presentation: Int64, length: Int64?)] = []
     /// Presentation times not yet given out as decode times, smallest first.
     private var unassigned: [Int64] = []
     private var lastAssigned = Int64.min
@@ -77,8 +78,7 @@ final class FragmentWriter {
         let muxed: AVRational
         do throws(SegmentWriter.Failure) {
             muxed = try Self.writeHeader(of: rendition, into: context)
-            adtsFilter = rendition.stream.parameters.hasADTSHeaders
-                ? try Self.adtsFilter(for: rendition.stream.parameters) : nil
+            adtsFilter = rendition.parameters.hasADTSHeaders ? try Self.adtsFilter(for: rendition.parameters) : nil
         } catch {
             var packet: UnsafeMutablePointer<AVPacket>? = packet
             av_packet_free(&packet)
@@ -94,7 +94,7 @@ final class FragmentWriter {
         tickLimit = limits.duration / .seconds(1) * Double(rendition.clock.timescale)
         framesPerSample = Int(rendition.clock.grid?.framesPerSample ?? 1)
         // At least an unfinished sample's frames still wait at the end, where they are left out.
-        lookahead = max(rendition.stream.parameters.reorderDepth + 4, framesPerSample)
+        lookahead = max(rendition.parameters.reorderDepth + 4, framesPerSample)
         timescale = AVRational(num: 1, den: Int32(rendition.clock.timescale))
         timeBase = muxed
     }
@@ -109,12 +109,22 @@ final class FragmentWriter {
     }
 
     /// A fragment, when this packet closed one.
-    func append(_ packet: DemuxedPacket) throws(SegmentWriter.Failure) -> Data? {
+    func append(_ packet: MediaPacket) throws(SegmentWriter.Failure) -> Data? {
         guard let time = packet.presentationTime else { throw .untimedSample }
-        let presentation = rendition.clock.ticks(at: time)
+        return try append(
+            packet.data, isKeyframe: packet.isKeyframe, at: rendition.clock.ticks(at: time),
+            lasting: packet.duration.map { $0 * rendition.clock.timescale / 1_000_000_000 })
+    }
+
+    /// A sample an encoder made, which counts its time and its length in the rendition's ticks.
+    /// A length taken through nanoseconds comes back a tick short: 3,235 samples at 48 kHz as
+    /// 3,234.
+    func append(
+        _ data: Data, isKeyframe: Bool, at presentation: Int64, lasting length: Int64?
+    ) throws(SegmentWriter.Failure) -> Data? {
         guard presentation >= lastAssigned else { throw .reorderedTooFar }
         unassigned.insert(presentation, at: unassigned.firstIndex { $0 > presentation } ?? unassigned.endIndex)
-        waiting.append((packet, presentation))
+        waiting.append((data, isKeyframe, presentation, length))
         return waiting.count > lookahead ? try writeFirstWaiting() : nil
     }
 
@@ -148,7 +158,8 @@ final class FragmentWriter {
     }
 
     private func writeFirstWaiting() throws(SegmentWriter.Failure) -> Data? {
-        let (sample, presentation) = waiting.removeFirst()
+        let sample = waiting.removeFirst()
+        let presentation = sample.presentation
         let decode = unassigned.removeFirst()
         lastAssigned = decode
         fragmentStart = fragmentStart ?? decode
@@ -160,13 +171,18 @@ final class FragmentWriter {
         if let next = unassigned.first {
             duration = next - decode
         } else {
-            let step = rendition.clock.grid?.step
-                ?? sample.duration.map { $0 * rendition.clock.timescale / 1_000_000_000 } ?? 0
+            let step = rendition.clock.grid?.step ?? sample.length ?? 0
             // Samples of neighboring segments meet within one sample's length. A gap of a
             // sample or more means the rendition stopped, or its unfinished last sample was
             // left out.
             let gap = end.map { rendition.clock.ticks(at: $0) - presentation - step } ?? 0
-            duration = gap >= step ? step + gap : step
+            // A converted segment holds every picture shown before its end, so its last one
+            // lasts exactly until there.
+            if rendition.convertedVideo != nil, step + gap > 0 {
+                duration = step + gap
+            } else {
+                duration = gap >= step ? step + gap : step
+            }
         }
 
         try SegmentWriter.check(av_new_packet(packet, Int32(sample.data.count)))
@@ -276,7 +292,7 @@ final class FragmentWriter {
             context.pointee.strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL
         }
         guard let stream = avformat_new_stream(context, nil) else { throw .outOfMemory }
-        try SegmentWriter.check(avcodec_parameters_copy(stream.pointee.codecpar, rendition.stream.parameters.pointer))
+        try SegmentWriter.check(avcodec_parameters_copy(stream.pointee.codecpar, rendition.parameters.pointer))
         // The sample entry the playlist declared: the codec string's first four characters.
         // Left to itself the muxer stores HEVC as `hev1`, which AVPlayer does not play.
         stream.pointee.codecpar.pointee.codec_tag = rendition.codec.utf8.prefix(4).reversed()

@@ -30,7 +30,8 @@ struct HLSPlaylistTests {
 
     @Test("an audio track is named by its title, else its language in the viewer's own, whichever code the file spells it with")
     func audioTrackNames() async throws {
-        // Untitled English, "Surround" in Japanese marked as the default, and untitled "ger".
+        // Untitled English, "Surround" in Japanese marked as the default, untitled Japanese, and
+        // untitled "ger".
         let plan = try await BridgePlan(reading: BridgeFixture.demuxer("four-audio-tracks"), support: BridgeFixture.everyDecoder, showsHDR: true)
         func audioLines(_ locale: String) -> [String] {
             HLSPlaylist.master(for: plan, locale: Locale(identifier: locale))
@@ -40,9 +41,10 @@ struct HLSPlaylistTests {
         #expect(audioLines("en_US") == [
             #"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="eng",DEFAULT=NO,AUTOSELECT=NO,CHANNELS="2",URI="a0.m3u8""#,
             #"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Surround",LANGUAGE="jpn",DEFAULT=YES,AUTOSELECT=YES,CHANNELS="6",URI="a1.m3u8""#,
-            #"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="German",LANGUAGE="ger",DEFAULT=NO,AUTOSELECT=NO,CHANNELS="2",URI="a2.m3u8""#,
+            #"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Japanese",LANGUAGE="jpn",DEFAULT=NO,AUTOSELECT=NO,CHANNELS="2",URI="a2.m3u8""#,
+            #"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="German",LANGUAGE="ger",DEFAULT=NO,AUTOSELECT=NO,CHANNELS="2",URI="a3.m3u8""#,
         ])
-        #expect(audioLines("ja_JP").map { $0.firstMatch(of: /NAME="([^"]*)"/)?.1 } == ["英語", "Surround", "ドイツ語"])
+        #expect(audioLines("ja_JP").map { $0.firstMatch(of: /NAME="([^"]*)"/)?.1 } == ["英語", "Surround", "日本語", "ドイツ語"])
     }
 
     @Test("a repeated track name gets a number no other track's name already has", arguments: [

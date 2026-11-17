@@ -58,21 +58,21 @@ enum HLSPlaylist {
     /// Every audio track is in one group, whatever its codec, so the viewer can switch between
     /// all of them. `locale` is the language a track with no title is named in.
     static func master(for plan: BridgePlan, locale: Locale = .current) -> String {
-        let video = plan.video.rendition.stream
+        let video = plan.video.rendition
         let size = video.parameters.pixelSize
-        let codecs = ([plan.video.rendition.codec] + plan.audio.map(\.rendition.codec))
+        let codecs = ([video.codec] + plan.audio.map(\.rendition.codec))
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.joined(separator: ",")
         let frameRate = video.frameRate.map {
             ",FRAME-RATE=" + String(format: "%.3f", Double($0.numerator) / Double($0.denominator))
         } ?? ""
-        let dolbyVision = plan.video.rendition.supplementalCodec.map { ",SUPPLEMENTAL-CODECS=\"\($0)\"" } ?? ""
+        let dolbyVision = video.supplementalCodec.map { ",SUPPLEMENTAL-CODECS=\"\($0)\"" } ?? ""
         let names = audioNames(for: plan, locale: locale)
         let audio = plan.audio.indices.map { place in
-            let stream = plan.audio[place].rendition.stream
-            let language = stream.language.map { ",LANGUAGE=\"\(quotable($0))\"" } ?? ""
+            let rendition = plan.audio[place].rendition
+            let language = rendition.stream.language.map { ",LANGUAGE=\"\(quotable($0))\"" } ?? ""
             let isDefault = place == plan.defaultAudio ? "YES" : "NO"
             return "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"\(names[place])\"\(language)"
-                + ",DEFAULT=\(isDefault),AUTOSELECT=\(isDefault),CHANNELS=\"\(stream.parameters.playlistChannels)\""
+                + ",DEFAULT=\(isDefault),AUTOSELECT=\(isDefault),CHANNELS=\"\(rendition.parameters.playlistChannels)\""
                 + ",URI=\"\(BridgeResource.playlist(.audio(place)).path)\"\n"
         }
         return """

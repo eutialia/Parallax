@@ -19,7 +19,7 @@ struct MediaDemuxerTests {
 
         var description: String { "\(milliseconds)ms \(size)B\(isKeyframe ? " key" : "")" }
 
-        init(_ packet: DemuxedPacket) {
+        init(_ packet: MediaPacket) {
             milliseconds = packet.presentationTime.map { $0 / 1_000_000 } ?? .min
             size = packet.data.count
             isKeyframe = packet.isKeyframe
@@ -49,7 +49,7 @@ struct MediaDemuxerTests {
         }
     }
 
-    private static func samples(_ packets: [DemuxedPacket]) -> [Int: [Sample]] {
+    private static func samples(_ packets: [MediaPacket]) -> [Int: [Sample]] {
         packets.reduce(into: [:]) { $0[$1.stream, default: []].append(Sample($1)) }
     }
 
@@ -74,7 +74,7 @@ struct MediaDemuxerTests {
         let count = try await demuxer.keyframes().count
         try #require(count > 4)
 
-        var spans: [Int: [DemuxedPacket]] = [:]
+        var spans: [Int: [MediaPacket]] = [:]
         for lower in order.arranged(count) {
             spans[lower] = try await demuxer.packets(from: lower, to: lower + 1)
         }
@@ -115,7 +115,7 @@ struct MediaDemuxerTests {
         #expect(Set(listed.map { $0.time / 1_000_000 }).isSubset(of: Set(flagged)))
         #expect((3..<flagged.count).contains(listed.count))
 
-        var joined: [DemuxedPacket] = []
+        var joined: [MediaPacket] = []
         for lower in listed.indices {
             joined += try await demuxer.packets(from: lower, to: lower + 1)
         }
@@ -382,7 +382,7 @@ struct MediaDemuxerTests {
             InMemoryRandomAccessReader(data: Self.fixture("h264-mkvmerge", "mkv")))
 
         let wide = try await demuxer.packets(from: 5, to: 9)
-        var parts: [DemuxedPacket] = []
+        var parts: [MediaPacket] = []
         for lower in 5..<9 {
             parts += try await demuxer.packets(from: lower, to: lower + 1)
         }
@@ -465,5 +465,31 @@ struct MediaDemuxerTests {
         } throws: {
             if case MediaDemuxer.OpenFailure.unreadableContainer = $0 { true } else { false }
         }
+    }
+
+    /// Takes every packet and never has enough: a decoder that gives no more pictures.
+    private final class UnsatisfiedSink: PacketSink, Sendable {
+        let times = Mutex([Int64]())
+        var isCancelled: Bool { false }
+        var isSatisfied: Bool { false }
+        func accept(_ packet: MediaPacket) {
+            times.withLock { $0 += [packet.presentationTime].compactMap(\.self) }
+        }
+    }
+
+    @Test("a video read whose sink never has enough runs past its span and stops at the first keyframe two seconds on")
+    func videoReadRunsOnOnlySoFar() async throws {
+        let demuxer = try await BridgeFixture.demuxer("numbered-mpeg2-open-gop.ts")
+        let keyframes = try await demuxer.keyframes()
+        let upper = keyframes[1].time
+        let stop = try #require(keyframes.first { $0.time - upper >= 2_000_000_000 })
+        try #require(stop.time < keyframes[keyframes.count - 1].time)
+        let sink = UnsatisfiedSink()
+
+        try await demuxer.read(demuxer.videoStream, from: 0, to: 1, into: sink)
+
+        let latest = try #require(sink.times.withLock { $0.max() })
+        #expect(latest >= upper)
+        #expect(latest < stop.time)
     }
 }

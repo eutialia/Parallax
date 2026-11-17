@@ -2,7 +2,7 @@
 # Regenerates the media bridge's fixtures: small MKVs, ffprobe's packet list for the two the
 # demuxer and segment tests compare against, a clip whose picture is its own frame number, and
 # files the bridge has to refuse.
-# Usage: scripts/gen-demux-fixtures.sh    (needs macOS, ffmpeg with libx264 and libx265, ffprobe, mkvmerge, dovi_tool and python3)
+# Usage: scripts/gen-demux-fixtures.sh    (needs macOS, ffmpeg with libx264 and libx265, ffprobe, mkvmerge, dovi_tool, oggenc and python3)
 set -euo pipefail
 
 OUT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)/Packages/ParallaxPlayback/Tests/ParallaxPlaybackTests/Fixtures/demux"
@@ -199,12 +199,18 @@ clip() {
         -t 2 -map 0:v -map 1:a "$@" -bitexact -fflags +bitexact "$OUT/$name.mkv"
 }
 x264=(-c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -b:v 100k)
-clip refused-mpeg4-video -c:v mpeg4 -g 12 -b:v 100k -c:a aac -b:a 24k
-clip refused-dts-audio "${x264[@]}" -c:a dca -strict -2 -ac 2
+# TTA, which the bridge's libavcodec has no decoder for.
+clip refused-tta-audio "${x264[@]}" -c:a tta -ac 2
+# The same beside AAC: a file that plays without one of its tracks.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 2 -map 0:v -map 1:a -map 1:a "${x264[@]}" -c:a:0 aac -b:a:0 24k -c:a:1 tta -ac 2 \
+    -bitexact -fflags +bitexact "$OUT/aac-and-tta.mkv"
 # 10-bit H.264, which the bridge delivers to a device that decodes it.
 clip h264-high10 -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p10le -b:v 100k -c:a aac -b:a 24k
-# AAC Low Delay, object type 23, which only AudioToolbox's encoder writes.
-clip refused-ld-aac "${x264[@]}" -c:a aac_at -profile:a 22 -ac 2
+# AAC Low Delay, object type 23, which only AudioToolbox's encoder writes. AVPlayer does not
+# take it from a playlist, so the bridge converts it.
+clip ld-aac "${x264[@]}" -c:a aac_at -profile:a 22 -ac 2
 # HE-AAC and HE-AAC v2, object types 5 and 29, which the bridge delivers. Four seconds make two
 # segments.
 for profile in "he-aac 4" "he-aac-v2 28"; do
@@ -213,14 +219,20 @@ for profile in "he-aac 4" "he-aac-v2 28"; do
         -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
         -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a aac_at -profile:a "$2" -ac 2 -bitexact -fflags +bitexact "$OUT/$1.mkv"
 done
-# The other audio codecs the bridge delivers, and AV1 video.
-for codec in "flac flac" "eac3 eac3 -b:a 96k" "opus libopus -b:a 32k"; do
+# The other audio codecs the bridge delivers, and AV1 video. ALAC is the last it copies: the
+# ones after it are converted to FLAC.
+for codec in "flac flac" "eac3 eac3 -b:a 96k" "opus libopus -b:a 32k" "alac alac" \
+    "mp3 libmp3lame -b:a 64k" "mp2 mp2 -b:a 64k" "vorbis vorbis -strict -2" "wma wmav2 -b:a 64k"; do
     set -- $codec
     name=$1; shift
     ffmpeg -v error -y \
         -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
         -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a "$@" -ac 2 -bitexact -fflags +bitexact "$OUT/$name.mkv"
 done
+# MP3 at 44.1 kHz, whose frame of 1152 samples is no whole number of the file's milliseconds.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=44100" \
+    -t 6 -map 0:v -map 1:a "${x264[@]}" -c:a libmp3lame -b:a 64k -ac 2 -bitexact -fflags +bitexact "$OUT/mp3-44k.mkv"
 # E-AC-3 of three blocks a frame, 768 samples, which an MP4 sample holds two of. No encoder here
 # writes them, so six-block frames are relabeled, with the CRC that guards each frame redone:
 # the times are right and the sound is not.
@@ -267,8 +279,73 @@ ffmpeg -v error -y \
     -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
     -t 4 -map 0:v -map 1:a -c:v libsvtav1 -preset 10 -g 12 -svtav1-params "lp=1" -pix_fmt yuv420p \
     -c:a aac -b:a 24k -bitexact -fflags +bitexact "$OUT/av1.mkv" 2>/dev/null
+# Vorbis as libvorbis encodes it: bursts of noise make it change frame length, which ffmpeg's
+# own encoder never does.
+ffmpeg -v error -y \
+    -f lavfi -i "aevalsrc=exprs='0.125*sin(2*PI*440*t)+0.5*(random(0)-0.5)*gt(mod(t\,0.5)\,0.45)*gt(t\,1)':s=48000:c=stereo" \
+    -t 4 -f wav - | oggenc --quiet --quality 3 --serial 1 -o "$OUT/vorbis-bursts.ogg" -
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -i "$OUT/vorbis-bursts.ogg" \
+    -t 4 -map 0:v -map 1:a "${x264[@]}" -c:a copy -bitexact -fflags +bitexact "$OUT/vorbis-bursts.mkv"
+rm "$OUT/vorbis-bursts.ogg"
+# PCM at 8 kHz whose packets change length after the opening: 1024 samples, then 500.
+ffmpeg -v error -y -f lavfi -i "sine=frequency=440:sample_rate=8000" -t 1.536 -af asetnsamples=n=1024 \
+    -c:a pcm_s16le -ac 1 "$OUT/pcm-uneven-1.mka"
+ffmpeg -v error -y -f lavfi -i "sine=frequency=330:sample_rate=8000" -t 3 -af asetnsamples=n=500 \
+    -c:a pcm_s16le -ac 1 "$OUT/pcm-uneven-2.mka"
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" \
+    -f concat -safe 0 -i <(printf "file '%s'\nfile '%s'\n" "$OUT/pcm-uneven-1.mka" "$OUT/pcm-uneven-2.mka") \
+    -t 4.5 -map 0:v -map 1:a "${x264[@]}" -c:a copy -bitexact -fflags +bitexact "$OUT/pcm-uneven.mkv"
+rm "$OUT/pcm-uneven-1.mka" "$OUT/pcm-uneven-2.mka"
+# MP2 with no packets from 1.5 s to 2.7 s, across the join of the first two segments.
+ffmpeg -v error -y -i "$OUT/mp2.mkv" -map 0 -c copy -bsf:a "noise=drop='between(pts*tb\,1.5\,2.7)'" \
+    -bitexact -fflags +bitexact "$OUT/mp2-hole.mkv"
+# Audio the bridge converts, with a different tone in each channel so a test can tell them
+# apart. A subwoofer channel gets 60 Hz: DTS keeps nothing above 120 Hz of it. The lossless
+# clips come with the hash of their samples as ffmpeg decodes them, 24 bits in the top of 32.
+tones() {
+    local level=$1 expressions=""; shift
+    for hertz in "$@"; do expressions+="${expressions:+|}$level*sin(2*PI*$hertz*t)"; done
+    echo "$expressions"
+}
+lossless() {
+    local name=$1 rate=$2 layout=$3 seconds=$4 level=$5 codec=$6; shift 6
+    ffmpeg -v error -y \
+        -f lavfi -i "testsrc2=size=160x90:rate=24" \
+        -f lavfi -i "aevalsrc=exprs='$(tones "$level" "$@")':s=$rate:c=$layout" \
+        -t "$seconds" -map 0:v -map 1:a "${x264[@]}" -c:a "$codec" -strict -2 -bitexact -fflags +bitexact "$OUT/$name.tmp.mkv"
+    # mkvmerge's layout, which is what a disc's copy has, with the audio 7 ms late, as a track
+    # with a delay is. The frame a segment's read starts at then falls half way between two of
+    # the container's milliseconds, where its time alone does not say which frame it is.
+    mkvmerge --quiet --deterministic 0 -o "$OUT/$name.mkv" --sync 1:7 "$OUT/$name.tmp.mkv"
+    rm "$OUT/$name.tmp.mkv"
+    ffmpeg -v error -i "$OUT/$name.mkv" -map 0:a:0 -c:a pcm_s32le -f hash -hash sha256 - \
+        | cut -d= -f2 | tr -d '\n' > "$OUT/$name.samples.sha256"
+}
+# TrueHD is 40 samples a frame at 48 kHz, shorter than Matroska's millisecond. Quiet tones keep
+# the file small. The Mac's ffmpeg encodes TrueHD up to 5.1, so the 7.1 clip is PCM.
+lossless truehd-51 48000 "5.1(side)" 4.5 0.004 truehd 300 400 500 60 600 700
+lossless truehd-96k 96000 "5.1(side)" 2.5 0.004 truehd 300 400 500 60 600 700
+lossless pcm-71 48000 7.1 2.5 0.125 pcm_s24le 300 400 500 60 600 700 800 900
+# Layouts FLAC has no speakers for at their channel count: a subwoofer with no center, and one
+# rear speaker.
+for clip in "truehd-21 2.1 300 400 60" "truehd-40 4.0 300 400 500 650"; do
+    set -- $clip
+    name=$1 layout=$2; shift 2
+    ffmpeg -v error -y \
+        -f lavfi -i "testsrc2=size=160x90:rate=24" \
+        -f lavfi -i "aevalsrc=exprs='$(tones 0.004 "$@")':s=48000:c=$layout" \
+        -t 2.5 -map 0:v -map 1:a "${x264[@]}" -c:a truehd -strict -2 -bitexact -fflags +bitexact "$OUT/$name.mkv"
+done
+# HEVC Main 10 with AC-3 5.1 and DTS 5.1, the DTS marked as the default.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24" \
+    -f lavfi -i "aevalsrc=exprs='$(tones 0.125 300 400 500 60 600 700)':s=48000:c=5.1(side)" \
+    -t 6 -map 0:v -map 1:a -map 1:a \
+    -c:v libx265 -preset veryfast -x265-params "keyint=12:log-level=error" -pix_fmt yuv420p10le -b:v 100k \
+    -c:a:0 ac3 -b:a:0 192k -c:a:1 dca -strict -2 -b:a:1 768k \
+    -disposition:a:0 0 -disposition:a:1 default -bitexact -fflags +bitexact "$OUT/ac3-dts-51.mkv"
 # Four audio tracks, each with its own tone: untitled English AAC at 440 Hz, the file's default
-# track in AC-3 5.1 at 880 Hz with a title, DTS, which the bridge leaves out, and untitled FLAC
+# track in AC-3 5.1 at 880 Hz with a title, DTS at 440 Hz, and untitled FLAC
 # at 660 Hz whose language is "ger", the older of the two codes for German, which mkvmerge writes.
 ffmpeg -v error -y \
     -f lavfi -i "testsrc2=size=160x90:rate=24" \
@@ -367,6 +444,11 @@ rm "$OUT/late-start-source.mkv"
 # the MKV, whose times are rounded to its millisecond.
 ffmpeg -v error -y "${noisy_h264[@]}" -t 12 -f mpegts "$OUT/ts-h264.ts"
 packet_list ts-h264 ts
+# The same video with MP2 audio, as a broadcast recording has it.
+ffmpeg -v error -y \
+    -f lavfi -i "testsrc2=size=160x90:rate=24,noise=alls=40:allf=t" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+    -t 12 -map 0:v -map 1:a -c:v libx264 -preset veryfast -bf 2 -g 12 -keyint_min 12 -sc_threshold 0 -b:v 500k -pix_fmt yuv420p \
+    -c:a mp2 -b:a 64k -ac 2 -bitexact -fflags +bitexact -f mpegts "$OUT/ts-mp2.ts"
 # And as a Blu-ray or a camcorder stores one: four bytes ahead of each 188-byte packet.
 ffmpeg -v error -y "${noisy_h264[@]}" -t 4 -f mpegts -mpegts_m2ts_mode 1 "$OUT/m2ts-h264.m2ts"
 packet_list m2ts-h264 m2ts
@@ -400,10 +482,6 @@ ffmpeg -v error -y \
     -t 60 -map 0:v -map 1:a \
     -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -x264-params open-gop=1 -pix_fmt yuv420p \
     -c:a aac -b:a 24k -ac 1 -bitexact -fflags +bitexact -f mpegts "$OUT/ts-h264-open-gop.ts"
-# Interlaced H.264, which the bridge refuses. x264 codes fields only at a height that divides by four.
-ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x96:rate=25" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-    -t 2 -map 0:v -map 1:a -c:v libx264 -preset veryfast -flags +ilme+ildct -x264-params tff=1 -g 25 -pix_fmt yuv420p \
-    -c:a aac -b:a 24k -bitexact -fflags +bitexact -f mpegts "$OUT/refused-interlaced.ts"
 # Two programs in one transport stream, as a recording of a whole multiplex has: the second
 # program's audio is AC-3 at 880 Hz and is not the first program's to play.
 ffmpeg -v error -y \
@@ -439,13 +517,50 @@ packet_list flv-h264 flv
 ffmpeg -v error -y "${noisy_pair[@]}" -bf 0 -c:a ac3 -b:a 64k -ac 2 "$OUT/avi-h264.avi"
 packet_list avi-h264 avi
 # Files the bridge opens to say what stops them. With B-frames an AVI's pictures have no
-# times to show at. MPEG-4 part 2 with MP3 is what an old AVI holds, and WMV with WMA an ASF.
-# H.264 and AC-3 in an ASF are codecs the bridge delivers in a container it cannot read in spans.
+# times to show at. WMV with WMA is what an ASF holds, and H.264 with AC-3 are codecs the bridge
+# delivers: either way it cannot read the container in spans.
 short=(-f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 2 -map 0:v -map 1:a)
 ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 2 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-avi-b-frames.avi"
-ffmpeg -v error -y "${short[@]}" -c:v mpeg4 -g 12 -b:v 100k -c:a libmp3lame -b:a 32k -bitexact -fflags +bitexact "$OUT/refused-avi-mpeg4.avi"
 ffmpeg -v error -y "${short[@]}" -c:v wmv2 -g 12 -b:v 100k -c:a wmav2 -b:a 32k -bitexact -fflags +bitexact "$OUT/refused-asf-wmv.asf"
 ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 0 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-asf-h264.asf"
-# An MPEG program stream, as a DVD's VOB is: opened only to name its codec.
+# An MPEG program stream, as a DVD's VOB is: opened only to name its container.
 ffmpeg -v error -y "${short[@]}" -c:v mpeg2video -g 12 -b:v 200k -c:a mp2 -b:a 64k -bitexact -fflags +bitexact -f vob "$OUT/refused-program-stream.mpg"
+# Clips for converted video: the numbered picture in codecs no Apple decoder takes, or takes on
+# some devices only. Twelve seconds with a keyframe every two make six segments.
+numbered() {
+    local file=$1 seconds=$2; shift 2
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+        -t "$seconds" -map 0:v -map 1:a -c:a aac -b:a 24k -ac 1 "$@" -bitexact -fflags +bitexact "$OUT/$file"
+}
+# A minute, for a seek past what a player buffered.
+numbered numbered-av1.mkv 60 -c:v libsvtav1 -preset 10 -g 48 -svtav1-params "lp=1:keyint=48:scd=0" -pix_fmt yuv420p10le 2>/dev/null
+# MPEG-2 as its encoder writes it: every group of pictures open, so the two pictures shown
+# before each keyframe are stored after it and need the group before to decode.
+numbered numbered-mpeg2-open-gop.ts 60 -c:v mpeg2video -bf 2 -g 48 -sc_threshold 0 -b:v 60k -pix_fmt yuv420p -muxrate 0 -f mpegts
+numbered numbered-vp9.mkv 12 -c:v libvpx-vp9 -g 48 -keyint_min 48 -b:v 100k -deadline realtime -pix_fmt yuv420p
+numbered numbered-vp8.mkv 12 -c:v libvpx -g 48 -keyint_min 48 -b:v 100k -deadline realtime -auto-alt-ref 0 -pix_fmt yuv420p
+numbered numbered-mpeg4.mkv 12 -c:v mpeg4 -bf 2 -g 48 -sc_threshold 0 -b:v 100k
+numbered numbered-wmv2.mkv 12 -c:v wmv2 -g 48 -sc_threshold 0 -b:v 100k
+numbered numbered-h264-high10.mkv 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p10le
+numbered numbered-h264-422.mkv 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv422p
+numbered numbered-flv1.flv 12 -c:v flv -g 48 -sc_threshold 0 -b:v 100k -ar 44100
+# MPEG-4 part 2 is what an old AVI holds. Without B-frames a picture shows when it is decoded,
+# which is the only time an AVI gives it. AC-3, because the AVI muxer puts an empty picture
+# after the first to make up for an MP3 encoder's delay, and every later one is a frame late.
+numbered numbered-mpeg4.avi 12 -c:v mpeg4 -bf 0 -g 48 -sc_threshold 0 -b:v 100k -c:a ac3 -b:a 64k
+# Video stored as fields: fifty numbered pictures a second woven into 25 frames, the even
+# picture on the top field. Each field keeps its own number on its own rows. Both encoders code
+# fields only at a height that divides by 32 (MPEG-2) or four (x264).
+fields() {
+    local file=$1; shift
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x96:rate=50,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+        -t 12 -map 0:v -map 1:a -vf "tinterlace=interleave_top,fieldorder=tff" -flags +ilme+ildct -bf 2 -g 24 -sc_threshold 0 \
+        -pix_fmt yuv420p "$@" -c:a aac -b:a 24k -ac 1 -bitexact -fflags +bitexact -f mpegts "$OUT/$file"
+}
+fields numbered-interlaced-mpeg2.ts -c:v mpeg2video -b:v 150k -muxrate 0
+fields numbered-interlaced-h264.ts -c:v libx264 -preset veryfast -x264-params tff=1:open-gop=1 -keyint_min 24
 ls -l "$OUT"

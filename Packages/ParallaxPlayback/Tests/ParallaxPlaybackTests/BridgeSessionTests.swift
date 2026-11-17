@@ -9,9 +9,11 @@ import ParallaxTestScaling
 @Suite("BridgeSession", .scaledTimeLimit())
 struct BridgeSessionTests {
 
-    private static func session(_ name: String, fragmentLimits: FragmentLimits = .standard) async throws -> BridgeSession {
+    private static func session(
+        _ name: String, fragmentLimits: FragmentLimits = .standard, support: AVPlayerSupport = BridgeFixture.everyDecoder
+    ) async throws -> BridgeSession {
         try await BridgeSession.open(
-            InMemoryRandomAccessReader(data: BridgeFixture.data(name)), support: BridgeFixture.everyDecoder, showsHDR: true,
+            InMemoryRandomAccessReader(data: BridgeFixture.data(name)), support: support, showsHDR: true,
             fragmentLimits: fragmentLimits)
     }
 
@@ -202,11 +204,14 @@ struct BridgeSessionTests {
         ("h264-mkvmerge", "a0", 440.0, 6, 12.0), ("h264-mkvmerge", "a1", 440, 6, 12),
         ("frame-numbers-hevc", "a0", 440, 30, 60), ("he-aac", "a0", 440, 2, 4), ("he-aac-v2", "a0", 440, 2, 4),
         ("flac", "a0", 440, 2, 4), ("eac3", "a0", 440, 2, 4), ("opus", "a0", 440, 2, 4),
-        // AAC, AC-3 in 5.1, and FLAC. The DTS track between them is left out.
+        // AAC, AC-3 in 5.1, DTS converted to FLAC, and FLAC.
         ("four-audio-tracks", "a0", 440, 3, 6), ("four-audio-tracks", "a1", 880, 3, 6),
-        ("four-audio-tracks", "a2", 660, 3, 6),
+        ("four-audio-tracks", "a2", 440, 3, 6), ("four-audio-tracks", "a3", 660, 3, 6),
         // AAC behind ADTS headers, and AC-3.
         ("ts-h264.ts", "a0", 440, 6, 12), ("ts-h264.ts", "a1", 440, 6, 12),
+        // ALAC is copied. The five after it are converted to FLAC.
+        ("alac", "a0", 440, 2, 4), ("mp3", "a0", 440, 2, 4), ("mp2", "a0", 440, 2, 4), ("vorbis", "a0", 440, 2, 4),
+        ("wma", "a0", 440, 2, 4), ("ld-aac", "a0", 440, 1, 2),
         // AAC as an FLV holds it, and AC-3 timed by an AVI's count of frames.
         ("flv-h264.flv", "a0", 440, 6, 12), ("avi-h264.avi", "a0", 440, 6, 12),
     ])
@@ -275,7 +280,7 @@ struct BridgeSessionTests {
 
     /// Passes every request through, and remembers the paths in the order they came.
     private final class RecordingResponder: MediaResponder {
-        private let session: BridgeSession
+        let session: BridgeSession
         private let recorded = Mutex<[String]>([])
 
         init(_ session: BridgeSession) { self.session = session }
@@ -304,17 +309,6 @@ struct BridgeSessionTests {
         var isTheSourceFrameForItsTime: Bool { number == Int((seconds * 24).rounded()) }
     }
 
-    /// Reads the fixture's picture: 16 squares, 10 pixels wide, white for a set bit, lowest bit
-    /// on the left.
-    private static func frameNumber(in buffer: CVPixelBuffer) -> Int {
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return -1 }
-        let luma = base.assumingMemoryBound(to: UInt8.self)
-        let row = CVPixelBufferGetHeightOfPlane(buffer, 0) / 2 * CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
-        return (0..<16).reduce(0) { $0 | (luma[row + $1 * 10 + 5] > 128 ? 1 << $1 : 0) }
-    }
-
     /// Every new frame AVPlayer displays during `duration` of wall-clock time.
     @MainActor
     private static func framesShown(by output: AVPlayerItemVideoOutput, for duration: Duration) async -> [ShownFrame] {
@@ -326,7 +320,7 @@ struct BridgeSessionTests {
             var displayed = CMTime.invalid
             if output.hasNewPixelBuffer(forItemTime: time),
                let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &displayed) {
-                shown.append(ShownFrame(seconds: displayed.seconds, number: frameNumber(in: buffer)))
+                shown.append(ShownFrame(seconds: displayed.seconds, number: BridgeFixture.frameNumber(in: buffer)))
             }
             try? await Task.sleep(for: .milliseconds(4))
         }
@@ -393,6 +387,24 @@ struct BridgeSessionTests {
         #expect(furthest < session.keyframes[1].position)
     }
 
+    @Test("a converted audio segment reads half a second ahead of its span, not the whole span before it")
+    func convertedAudioReadsLittleBeforeItsSpan() async throws {
+        let reader = CountingReader(data: try BridgeFixture.data("ts-mp2.ts"))
+        // Sampled as a large recording is: a listed keyframe every 300 KB or so, five seconds apart.
+        let session = try await BridgeSession.open(
+            reader, support: BridgeFixture.everyDecoder, showsHDR: true, blockSize: 4096, bytesKept: 64 << 10,
+            listing: .init(wholeReadSize: 0, sampling: .init(densestSpacing: 300_000, largestSegment: 300_000)))
+        let segment = try #require(session.plan.audio.first?.segments.dropFirst().first)
+        try #require(session.plan.audio[0].segments.count > 2)
+        let span = Int(
+            session.keyframes[segment.entries.upperBound].position - session.keyframes[segment.entries.lowerBound].position)
+        let readAtOpen = reader.bytesRead
+
+        _ = try await Self.bytes(session, "a0-1.m4s")
+
+        #expect(reader.bytesRead - readAtOpen < span + span / 2, "\(reader.bytesRead - readAtOpen) bytes for a span of \(span)")
+    }
+
     @Test("a segment read cancelled after its first fragment fetches at most one more read, and returns")
     func cancelledSegmentStopsItsRead() async throws {
         let reader = CountingReader(data: try BridgeFixture.data("long-span"))
@@ -430,7 +442,7 @@ struct BridgeSessionTests {
                 record("a0-0.m4s", sent: 1 << 20, firstByte: 1_400, .dropped),
                 record("v-1.m4s", sent: 0, firstByte: nil, .failed(afterBytes: 0, reason: "timed out")),
             ],
-            bytesFetched: 6 << 20, memory: peaks, readsRunning: 1)
+            bytesFetched: 6 << 20, memory: peaks, readsRunning: 1, conversionSpeeds: [60, 12.5, 48])
 
         #expect(report.requests == 4)
         #expect(report.bytesServed == (4 << 20) + 900)
@@ -439,7 +451,21 @@ struct BridgeSessionTests {
         #expect(report.largestSegment == 3 << 20)
         #expect(report.description == "bridge: 4 requests, 4 MB served, 6 MB read (1.50x), worst first byte 1400 ms, "
             + "1 dropped, largest segment 3 MB, bridge peak 40 MB, footprint peak 300 MB, lowest headroom 2048 MB, "
-            + "1 reads not returned")
+            + "1 reads not returned, conversion 12.5x at its slowest, 48.0x in the middle")
+    }
+
+    @Test("the report gives a speed for each converted segment asked for, and none for a copied one")
+    func reportTimesConvertedSegments() async throws {
+        // The second audio track is AC-3, copied. The third is DTS, converted.
+        let session = try await Self.session("four-audio-tracks")
+
+        _ = try await Self.bytes(session, "a1-0.m4s")
+        #expect(session.report(of: []).slowestConversion == nil)
+        _ = try await Self.bytes(session, "a2-0.m4s")
+        _ = try await Self.bytes(session, "a2-1.m4s")
+        #expect(session.conversions.all.count == 2)
+        // Decoding and encoding two seconds of stereo takes a Mac a few milliseconds.
+        #expect(try #require(session.report(of: []).slowestConversion) > 1)
     }
 
     @Test("a segment whose read failed is read whole when it is asked for again")
@@ -503,8 +529,12 @@ struct BridgeSessionTests {
         let output: AVPlayerItemVideoOutput
         let player: AVPlayer
 
-        init(_ name: String, fragmentLimits: FragmentLimits = .standard) async throws {
-            responder = RecordingResponder(try await BridgeSessionTests.session(name, fragmentLimits: fragmentLimits))
+        init(
+            _ name: String, fragmentLimits: FragmentLimits = .standard,
+            support: AVPlayerSupport = BridgeFixture.everyDecoder
+        ) async throws {
+            responder = RecordingResponder(
+                try await BridgeSessionTests.session(name, fragmentLimits: fragmentLimits, support: support))
             server = LocalMediaServer(responder: responder)
             let item = AVPlayerItem(url: try await server.start(scope: .loopback))
             // Three seconds keeps AVPlayer from fetching all of a minute-long file.
@@ -556,7 +586,24 @@ struct BridgeSessionTests {
             ("ts-hevc-open-gop.ts", .standard), ("ts-h264-open-gop.ts", .standard),
         ])
     func avPlayerShowsEachSourceFrameAtItsTime(name: String, fragmentLimits: FragmentLimits) async throws {
-        let fixture = try await LoadedFixture(name, fragmentLimits: fragmentLimits)
+        try await Self.expectEachSourceFrameAtItsTime(from: LoadedFixture(name, fragmentLimits: fragmentLimits))
+    }
+
+    @MainActor
+    @Test(
+        "AVPlayer shows each source frame of a video converted to HEVC at its own time, from the start and after a seek past what it had buffered",
+        // AV1 in 10 bits on a device with no decoder for it, and MPEG-2 with open groups of
+        // pictures in a transport stream.
+        arguments: ["numbered-av1", "numbered-mpeg2-open-gop.ts"])
+    func avPlayerShowsEachSourceFrameOfConvertedVideo(name: String) async throws {
+        let fixture = try await LoadedFixture(name, support: BridgeFixture.fewestDecoders)
+        #expect(fixture.responder.session.plan.video.rendition.codec.hasPrefix("hvc1"))
+        try await Self.expectEachSourceFrameAtItsTime(from: fixture)
+    }
+
+    /// Plays a minute-long numbered fixture from the start, then from 40.5 s.
+    @MainActor
+    private static func expectEachSourceFrameAtItsTime(from fixture: LoadedFixture) async throws {
         let responder = fixture.responder
 
         let fromStart = await fixture.framesShown(for: .seconds(4))
@@ -586,6 +633,9 @@ struct BridgeSessionTests {
     @MainActor
     @Test("AVPlayer plays each codec the bridge delivers", arguments: [
         "flac", "eac3", "opus", "av1", "h264-high10", "dolby-vision-8-4",
+        // ALAC copied, and FLAC converted from MP3, from TrueHD in 5.1 at 48 and 96 kHz, and from
+        // PCM in 7.1.
+        "alac", "mp3", "truehd-51", "truehd-96k", "pcm-71",
         // A transport stream copied from a Matroska file: its times are still rounded to the
         // millisecond, under a tick ninety times finer.
         "ts-copied-from-mkv.ts",
@@ -611,13 +661,14 @@ struct BridgeSessionTests {
 
         // AVPlayer shows a track's language, not the playlist's name for it: the second track's
         // title, "Surround", is not shown. The file spells German "ger".
-        #expect(group.options.map(\.displayName) == ["English", "Japanese", "German"])
-        #expect(group.options.map(\.extendedLanguageTag) == ["eng", "jpn", "ger"])
+        #expect(group.options.map(\.displayName) == ["English", "Japanese", "Japanese", "German"])
+        #expect(group.options.map(\.extendedLanguageTag) == ["eng", "jpn", "jpn", "ger"])
         _ = await fixture.framesShown(for: .seconds(1))
         #expect(item.currentMediaSelection.selectedMediaOption(in: group) == group.options[1])
         #expect(fixture.responder.paths.contains("a1-0.m4s"))
         #expect(!fixture.responder.paths.contains("a0-0.m4s") && !fixture.responder.paths.contains("a2-0.m4s"))
 
+        // The third track is DTS, which the bridge converts to FLAC.
         item.select(group.options[2], in: group)
         let shown = await fixture.framesShown(for: .seconds(2))
         await fixture.server.stop()

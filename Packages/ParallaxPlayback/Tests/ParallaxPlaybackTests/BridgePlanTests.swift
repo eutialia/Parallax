@@ -72,16 +72,12 @@ struct BridgePlanTests {
     }
 
     @Test("a file the bridge cannot deliver is refused with the reason", arguments: [
-        ("refused-mpeg4-video", BridgeRefusal.videoCodec(name: "mpeg4 Simple Profile")),
-        ("refused-dolby-vision-5", .videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
-        ("refused-dts-audio", .noDeliverableAudio(names: ["dts DTS"])),
-        ("refused-ld-aac", .noDeliverableAudio(names: ["aac LD"])),
+        ("refused-dolby-vision-5", BridgeRefusal.videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
+        ("refused-tta-audio", .noDeliverableAudio(names: ["tta"])),
         ("refused-one-keyframe", .noCues),
         ("refused-no-duration", .noDuration),
-        ("refused-interlaced.ts", .interlacedVideo),
         ("refused-avi-b-frames.avi", .untimedVideo),
-        ("refused-avi-mpeg4.avi", .videoCodec(name: "mpeg4 Simple Profile")),
-        ("refused-asf-wmv.asf", .videoCodec(name: "wmv2")),
+        ("refused-asf-wmv.asf", .container(name: "asf")),
         ("refused-asf-h264.asf", .container(name: "asf")),
     ])
     func undeliverableFileIsRefused(name: String, reason: BridgeRefusal) async throws {
@@ -89,33 +85,51 @@ struct BridgePlanTests {
         await #expect(throws: reason) { _ = try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true) }
     }
 
-    @Test("AV1 and 10-bit H.264 are delivered to a device that decodes them and refused on one without that decoder", arguments: [
-        ("av1", "av01.0.00M.08", "av1 Main", AVPlayerSupport(
+    @Test("AV1 and 10-bit H.264 are delivered as they are to a device that decodes them, and as HEVC to one without that decoder", arguments: [
+        ("av1", "av01.0.00M.08", "hvc1.1.6.L30.B0", AVPlayerSupport(
             containers: [.mp4, .mov, .hls], videoCodecs: [.h264, .hevc, .vp9],
             audioCodecs: Set(AudioCodec.allCases), decodesH264High10: true)),
-        ("h264-high10", "avc1.6e0009", "h264 High 10", AVPlayerSupport(
+        ("h264-high10", "avc1.6e0009", "hvc1.2.4.L30.B0", AVPlayerSupport(
             containers: [.mp4, .mov, .hls], videoCodecs: Set(VideoCodec.allCases),
             audioCodecs: Set(AudioCodec.allCases), decodesH264High10: false)),
     ])
-    func videoNeedsADecoder(name: String, codec: String, refused: String, withoutDecoder: AVPlayerSupport) async throws {
+    func videoNeedsADecoder(name: String, codec: String, converted: String, withoutDecoder: AVPlayerSupport) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)
 
         #expect(try await BridgePlan(reading: demuxer, support: BridgeFixture.everyDecoder, showsHDR: true).video.rendition.codec == codec)
-        await #expect(throws: BridgeRefusal.videoCodec(name: refused)) {
-            _ = try await BridgePlan(reading: demuxer, support: withoutDecoder, showsHDR: true)
-        }
+        #expect(try await BridgePlan(reading: demuxer, support: withoutDecoder, showsHDR: true).video.rendition.codec == converted)
     }
 
-    @Test("the plan holds every audio track it can deliver, names the ones it cannot, and starts on the file's default")
+    @Test("the plan holds every audio track of a file in the file's order, and starts on the file's default")
     func audioTracksOfAFile() async throws {
         // AAC, AC-3 marked as the default, DTS, FLAC.
         let plan = try await BridgePlan(reading: BridgeFixture.demuxer("four-audio-tracks"), support: BridgeFixture.everyDecoder, showsHDR: true)
 
-        #expect(plan.audio.map(\.rendition.codec) == ["mp4a.40.2", "ac-3", "fLaC"])
-        #expect(plan.omittedAudio == ["dts DTS"])
+        // The DTS is converted to FLAC.
+        #expect(plan.audio.map(\.rendition.codec) == ["mp4a.40.2", "ac-3", "fLaC", "fLaC"])
+        #expect(plan.omittedAudio == [])
         #expect(plan.defaultAudio == 1)
-        // Each track is timed in its own frames: 1024 samples for AAC and this FLAC, 1536 for AC-3.
-        #expect(plan.audio.map { $0.rendition.clock.grid?.step } == [1024, 1536, 1024])
+        // A copied track is timed in its own frames: 1024 samples for AAC and this FLAC, 1536
+        // for AC-3. A converted one is timed sample by sample.
+        #expect(plan.audio.map { $0.rendition.clock.grid?.step } == [1024, 1536, nil, 1024])
+    }
+
+    @Test("playback starts on a converted track when it is the file's default")
+    func convertedTrackCanBeTheDefault() async throws {
+        // AC-3, and DTS marked as the default.
+        let plan = try await BridgePlan(reading: BridgeFixture.demuxer("ac3-dts-51"), support: BridgeFixture.everyDecoder, showsHDR: true)
+
+        #expect(plan.audio.map(\.rendition.codec) == ["ac-3", "fLaC"])
+        #expect(plan.defaultAudio == 1)
+    }
+
+    @Test("a track this build has no decoder for is left out by name, and the file plays with the rest")
+    func undecodableTrackIsLeftOut() async throws {
+        // AAC and TTA.
+        let plan = try await BridgePlan(reading: BridgeFixture.demuxer("aac-and-tta"), support: BridgeFixture.everyDecoder, showsHDR: true)
+
+        #expect(plan.audio.map(\.rendition.codec) == ["mp4a.40.2"])
+        #expect(plan.omittedAudio == ["tta"])
     }
 
     @Test("a transport stream's plan holds the audio of the video's own program, and no other program's")
