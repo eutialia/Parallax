@@ -121,10 +121,6 @@ struct MediaDeliveryTests {
         ("refused-tta-audio", "audio: tta"),
         ("refused-one-keyframe", "no keyframe index"),
         ("refused-avi-b-frames.avi", "video: no presentation times"),
-        // The bridge decodes what these hold and cannot read the container in spans.
-        ("refused-asf-wmv.asf", "container: asf"),
-        ("refused-asf-h264.asf", "container: asf"),
-        ("refused-program-stream.mpg", "container: mpeg"),
     ])
     func refusalReadsAsOneLine(name: String, line: String) async throws {
         let reader = try Self.fixture(name)
@@ -339,4 +335,20 @@ struct MediaDeliveryTests {
             return (underlying as? POSIXError)?.code == .ENOENT
         }
     }
+
+    @Test("an MP4 whose audio AVPlayer cannot play is bridged, and plays with that audio converted to FLAC",
+          .disabled("Pending: MP4 through the bridge"))
+    func mp4WithUnplayableAudioIsBridged() async throws {}
+
+    @Test("an MP4 whose video the device cannot decode is bridged, and plays converted to HEVC",
+          .disabled("Pending: MP4 through the bridge"))
+    func mp4WithUndecodableVideoIsBridged() async throws {}
+
+    @Test("an MP4 that AVPlayer would play wrong is bridged, not handed to AVPlayer",
+          .disabled("Pending: MP4 through the bridge"))
+    func mp4WithAVPlayerHazardIsBridged() async throws {}
+
+    @Test("an interlaced MP4 is bridged, and plays as a picture for each field",
+          .disabled("Pending: MP4 through the bridge"))
+    func interlacedMP4IsBridged() async throws {}
 }

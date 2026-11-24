@@ -79,7 +79,7 @@ enum HLSPlaylist {
             #EXTM3U
             #EXT-X-VERSION:7
             #EXT-X-INDEPENDENT-SEGMENTS
-            \(audio.joined())#EXT-X-STREAM-INF:BANDWIDTH=\(plan.peakBitrate),CODECS="\(codecs)"\(dolbyVision),RESOLUTION=\(size.width)x\(size.height)\(frameRate),VIDEO-RANGE=\(video.parameters.videoRange),AUDIO="audio"
+            \(audio.joined())#EXT-X-STREAM-INF:BANDWIDTH=\(plan.peakBitrate),CODECS="\(codecs)"\(dolbyVision),RESOLUTION=\(size.width)x\(size.height)\(frameRate),VIDEO-RANGE=\(video.parameters.videoRange)\(audio.isEmpty ? "" : ",AUDIO=\"audio\"")
             \(BridgeResource.playlist(.video).path)
 
             """

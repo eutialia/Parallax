@@ -80,6 +80,12 @@ final class CodecParameters: @unchecked Sendable {
     var pixelSize: (width: Int, height: Int) { (Int(pointer.pointee.width), Int(pointer.pointee.height)) }
     /// How many frames a picture can be stored ahead of the ones that display before it.
     var reorderDepth: Int { Int(pointer.pointee.video_delay) }
+    /// True for a codec whose B-pictures no picture is predicted from, so that its decoder
+    /// holds back one picture and no more.
+    var holdsBackOnePicture: Bool {
+        [AV_CODEC_ID_MPEG1VIDEO, AV_CODEC_ID_MPEG2VIDEO, AV_CODEC_ID_MPEG4, AV_CODEC_ID_VC1, AV_CODEC_ID_WMV3]
+            .contains(pointer.pointee.codec_id)
+    }
     var sampleRate: Int { Int(pointer.pointee.sample_rate) }
     /// The HLS name of the video's transfer function: "PQ" for HDR10 and Dolby Vision over PQ, "HLG",
     /// and "SDR" for everything else. AVPlayer reads the function from the video itself and

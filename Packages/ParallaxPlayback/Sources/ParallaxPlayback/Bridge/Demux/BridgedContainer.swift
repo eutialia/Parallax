@@ -7,14 +7,12 @@ enum BridgedContainer {
     case transportStream
     case flashVideo
     case avi
+    case asf
+    /// An MPEG program stream: MPG, and a DVD's VOB.
+    case programStream
 
     /// `formatName` is libavformat's own: "matroska,webm", "mpegts". Nil for a reader whose span
-    /// reads are not proven:
-    /// - The MPEG program stream reader. A byte seek to a keyframe's position gave other packets
-    ///   than a read of the whole file did (4 of 5 keyframes of a synthetic file), and its
-    ///   index lists every packet as a keyframe.
-    /// - The ASF reader. It keeps its place inside a data packet across a byte seek, and a
-    ///   seek by time landed one keyframe early (24 of 24 keyframes of two synthetic files).
+    /// reads are not proven, as RealMedia's.
     init?(formatName: String) {
         if formatName.contains("matroska") {
             self = .matroska
@@ -24,6 +22,10 @@ enum BridgedContainer {
             self = .flashVideo
         } else if formatName == "avi" {
             self = .avi
+        } else if formatName == "asf" {
+            self = .asf
+        } else if formatName == "mpeg" {
+            self = .programStream
         } else {
             return nil
         }
@@ -55,6 +57,12 @@ enum BridgedContainer {
         // keyframes of two synthetic files). A tag has nothing to resync on, and the keyframe
         // list a file's metadata may hold is written by tools that get it wrong.
         case .flashVideo: .packetReadFromTheStart
+        // The index libavformat held after a seek was empty (two synthetic files).
+        case .asf: .packetReadFromTheStart
+        // Its index lists every packet as a keyframe. A read from each of 60 bytes spread
+        // over each of two real files came to a keyframe a read of the whole file listed, at
+        // the same times.
+        case .programStream: .packet
         }
     }
 
@@ -64,6 +72,9 @@ enum BridgedContainer {
         case byte
         /// To the keyframe's time, through the file's index.
         case time
+        /// To this many nanoseconds before the keyframe's decode time. The read skips forward
+        /// to the keyframe.
+        case timeBeforeDecodeTime(Int64)
     }
 
     var seek: Seek {
@@ -73,6 +84,19 @@ enum BridgedContainer {
         // none of 48 keyframes of two synthetic files came back at its own time. A seek by
         // time gave every one, and put the audio at its own packet for that time.
         case .avi: .time
+        // The reader keeps its place inside a data packet across a byte seek. A seek by time
+        // lands on the keyframe or one keyframe early, and a read skips to the keyframe: the
+        // spans of 25 keyframes of four synthetic files and 221 of three real ones gave the
+        // packets a read of the whole file did, the real ones read by a demuxer that had not
+        // listed the keyframes itself.
+        case .asf: .time
+        // A byte seek to a keyframe's position gave other packets than a read of the whole
+        // file did (4 of 5 keyframes of a synthetic file). A seek by time goes by decode
+        // time, and one to the keyframe's own landed past its first bytes: 336 of the 350
+        // tried in two real files were not read. From 0.1 s, 0.7 s, 1 s and 2 s before it,
+        // each of the files' 1,201 was, and spans cut at sampled keyframes gave every video
+        // and audio packet of a read of the whole file. A program stream times a packet every 0.7 s at least.
+        case .programStream: .timeBeforeDecodeTime(700_000_000)
         }
     }
 
@@ -81,8 +105,43 @@ enum BridgedContainer {
     /// the order they show.
     var storesPresentationTimes: Bool {
         switch self {
-        case .matroska, .transportStream, .flashVideo: true
-        case .avi: false
+        case .matroska, .transportStream, .flashVideo, .programStream: true
+        case .avi, .asf: false
+        }
+    }
+
+    /// False where the rate libavformat reports is its average over the packets it read to
+    /// describe the file.
+    var declaresFrameRate: Bool {
+        switch self {
+        case .matroska, .transportStream, .flashVideo, .avi, .programStream: true
+        // That average was 293/12 for H.264 at 24 pictures a second in a synthetic file. The
+        // rate libavformat fits to the spacing of the packets' times was 24.
+        case .asf: false
+        }
+    }
+
+    /// True where a read after a seek may give a keyframe no presentation time, so a span's
+    /// keyframe is known by its decode time.
+    var findsKeyframesByDecodeTime: Bool {
+        switch self {
+        case .matroska, .transportStream, .flashVideo, .avi, .asf: false
+        // Where a seek lands decides it: 17 of 1,330 keyframes of four files came back with
+        // no presentation time after a seek to the keyframe before, 1 of 1,201 of two real
+        // files after one to 1 s before its decode time, none of those after one to 0.7 s
+        // before. Each had the decode time a read of the whole file gave it.
+        case .programStream: true
+        }
+    }
+
+    /// True where libavformat gives an audio frame that starts in one packet and ends in the
+    /// next the next one's time, a frame late. The frame after it carries the same time, which
+    /// is its own.
+    var timesSplitAudioFramesLate: Bool {
+        switch self {
+        case .matroska, .transportStream, .flashVideo, .avi, .asf: false
+        // 95 of 9,374 AC-3 frames of a real file, and 9 of 1,876 of a synthetic one.
+        case .programStream: true
         }
     }
 
@@ -114,7 +173,7 @@ enum BridgedContainer {
         case .transportStream: .before(.bytesBefore(Self.wholePackets))
         // Tags are stored in the order they decode, as a transport stream's packets are.
         case .flashVideo: .before(.flashVideoTags(Self.wholePackets))
-        case .avi: .bySeek
+        case .avi, .asf, .programStream: .bySeek
         }
     }
 
@@ -134,7 +193,7 @@ enum BridgedContainer {
         // This is libavformat's own limit.
         case .transportStream: 5_000_000
         // libavformat's own limit.
-        case .flashVideo, .avi: 5_000_000
+        case .flashVideo, .avi, .asf, .programStream: 5_000_000
         }
     }
 
@@ -151,7 +210,7 @@ enum BridgedContainer {
             // The file's metadata gives the time its last tag ends, counted from zero. A
             // capture that starts part way through a stream gives a length.
             duration > lastSegmentStart ? duration : firstKeyframe + duration
-        case .transportStream, .avi:
+        case .transportStream, .avi, .asf, .programStream:
             // libavformat measures from the first timestamp of the file to the last.
             start + duration
         }

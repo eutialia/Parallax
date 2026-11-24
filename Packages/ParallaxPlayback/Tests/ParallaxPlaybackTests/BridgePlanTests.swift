@@ -77,8 +77,6 @@ struct BridgePlanTests {
         ("refused-one-keyframe", .noCues),
         ("refused-no-duration", .noDuration),
         ("refused-avi-b-frames.avi", .untimedVideo),
-        ("refused-asf-wmv.asf", .container(name: "asf")),
-        ("refused-asf-h264.asf", .container(name: "asf")),
     ])
     func undeliverableFileIsRefused(name: String, reason: BridgeRefusal) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)

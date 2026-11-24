@@ -73,9 +73,10 @@ struct BridgeSessionTests {
 
     /// FLV holds H.264 and AAC as an MP4 does, so both come back as the file's own packets. An
     /// AVI holds H.264 behind start codes, which is counted and timed, and its AC-3 comes back
-    /// as stored. The AVI's packets carry no presentation time.
-    @Test("an FLV's and an AVI's segments, asked for out of order, hold every source sample once, evenly spaced",
-          arguments: [("flv-h264.flv", true, Int64(1024)), ("avi-h264.avi", false, 1536)])
+    /// as stored. The AVI's packets carry no presentation time. An ASF holds the same as the
+    /// AVI, timed in whole milliseconds.
+    @Test("an FLV's, an AVI's and an ASF's segments, asked for out of order, hold every source sample once, evenly spaced",
+          arguments: [("flv-h264.flv", true, Int64(1024)), ("avi-h264.avi", false, 1536), ("asf-h264.asf", false, 1536)])
     func segmentsHoldEverySourceSample(name: String, videoIsInMP4Form: Bool, audioFrameLength: Int64) async throws {
         let session = try await Self.session(name)
         func file(_ rendition: String) async throws -> Data {
@@ -214,6 +215,10 @@ struct BridgeSessionTests {
         ("wma", "a0", 440, 2, 4), ("ld-aac", "a0", 440, 1, 2),
         // AAC as an FLV holds it, and AC-3 timed by an AVI's count of frames.
         ("flv-h264.flv", "a0", 440, 6, 12), ("avi-h264.avi", "a0", 440, 6, 12),
+        // WMA converted to FLAC, timed by an ASF's packets in whole milliseconds.
+        ("numbered-wmv2.asf", "a0", 440, 5, 12),
+        // AC-3 copied out of a program stream, where some frames carry the time of the frame after them.
+        ("numbered-mpeg2.mpg", "a0", 440, 6, 12),
     ])
     func audioRenditionDecodesToTheSourceTone(
         name: String, rendition: String, hertz: Double, segmentCount: Int, seconds: Double
@@ -592,18 +597,89 @@ struct BridgeSessionTests {
     @MainActor
     @Test(
         "AVPlayer shows each source frame of a video converted to HEVC at its own time, from the start and after a seek past what it had buffered",
-        // AV1 in 10 bits on a device with no decoder for it, and MPEG-2 with open groups of
-        // pictures in a transport stream.
-        arguments: ["numbered-av1", "numbered-mpeg2-open-gop.ts"])
+        // AV1 in 10 bits on a device with no decoder for it, MPEG-2 with open groups of
+        // pictures in a transport stream, and MPEG-4 with B-pictures in an AVI, which stores
+        // decode times only.
+        arguments: ["numbered-av1", "numbered-mpeg2-open-gop.ts", "numbered-mpeg4-b.avi"])
     func avPlayerShowsEachSourceFrameOfConvertedVideo(name: String) async throws {
         let fixture = try await LoadedFixture(name, support: BridgeFixture.fewestDecoders)
         #expect(fixture.responder.session.plan.video.rendition.codec.hasPrefix("hvc1"))
         try await Self.expectEachSourceFrameAtItsTime(from: fixture)
     }
 
+    @MainActor
+    @Test(
+        "a file with no audio stream plays silent, each source frame at its own time, from the start and after a seek",
+        // H.264 that is copied, and MPEG-4 with B-pictures in an AVI that is converted.
+        arguments: ["numbered-h264-silent", "numbered-mpeg4-silent.avi"])
+    func videoOnlyFilePlaysSilent(name: String) async throws {
+        let fixture = try await LoadedFixture(name)
+        let plan = fixture.responder.session.plan
+        #expect(plan.audio.isEmpty)
+        #expect(!HLSPlaylist.master(for: plan).contains("AUDIO"))
+        try await Self.expectEachSourceFrameAtItsTime(from: fixture, hasAudio: false)
+    }
+
+    @Test("the same clip is delivered with the same video and audio codecs from every container the bridge reads",
+          .disabled("Pending: needs H.264 with B-frames copied from an AVI, a WMV and an MPG"))
+    func sameClipIsDeliveredTheSameFromEveryContainer() async throws {}
+
+    /// Nine of the fixture's frames start in one PES packet and end in the next, and libavformat
+    /// gives each the time of the frame after it.
+    @Test("AC-3 in an MPG or VOB is copied, and its segments, asked for in any order, hold every frame once")
+    func ac3InProgramStreamIsCopied() async throws {
+        let name = "numbered-h264-ac3.mpg"
+        let session = try await Self.session(name)
+        let track = try #require(session.plan.audio.first)
+        var segments: [Int: Data] = [:]
+        for index in track.segments.indices.shuffled() {
+            segments[index] = try await Self.bytes(session, "a0-\(index).m4s")
+        }
+        let file = try await Self.bytes(session, "a0-init.mp4") + track.segments.indices.flatMap { segments[$0] ?? Data() }
+        let frames = try readBackSamples(of: file, pathExtension: "mp4")
+        let first = try #require(frames.first?.presentation)
+
+        #expect(track.rendition.codec == "ac-3")
+        #expect(frames.map(\.md5) == (try BridgeFixture.sourcePackets(name, stream: 1).map(\.md5)))
+        // 1,536 samples a frame at 48 kHz.
+        #expect(frames.map(\.presentation) == frames.indices.map { first + Int64($0) * 1536 })
+    }
+
+    /// The second audio stream plays from 20 s to 24 s only: libavformat finds it neither in
+    /// what it reads to describe the file nor in what it reads of the end, as a DVD's
+    /// subtitles are.
+    @Test("an MPG with a stream that first appears partway through is delivered without that stream, every segment of it")
+    func streamFirstSeenPartwayThroughIsLeftOut() async throws {
+        let session = try await Self.session("numbered-h264-late-audio.mpg")
+        let plan = session.plan
+
+        #expect(plan.audio.map(\.rendition.codec) == ["ac-3"])
+        for index in plan.video.segments.indices { _ = try await Self.bytes(session, "v-\(index).m4s") }
+        for index in try #require(plan.audio.first).segments.indices { _ = try await Self.bytes(session, "a0-\(index).m4s") }
+    }
+
+    @MainActor
+    @Test("AVPlayer plays AC-3 copied out of an MPG from the start and after a seek, fetching its audio on both sides of the seek")
+    func avPlayerPlaysAC3CopiedOutOfProgramStream() async throws {
+        let fixture = try await LoadedFixture("numbered-h264-ac3.mpg")
+        #expect(fixture.responder.session.plan.audio.first?.rendition.codec == "ac-3")
+        try await Self.expectEachSourceFrameAtItsTime(from: fixture)
+        let target = try #require(Self.segment(holding: 40.5, in: fixture.responder.session.plan))
+        #expect(fixture.responder.paths.contains("a0-\(target).m4s"), "\(fixture.responder.paths)")
+        #expect(fixture.player.currentItem?.error == nil)
+    }
+
+    @Test("H.264 with B-frames in an AVI or WMV is copied, and AVPlayer shows each source frame at its own time, from the start and after a seek",
+          .disabled("Pending: H.264 timed by its picture order count"))
+    func h264WithBFramesInDecodeTimeContainersIsCopied() async throws {}
+
+    @Test("H.264 in an MPG or VOB is copied, and AVPlayer shows each source frame at its own time, from the start and after a seek",
+          .disabled("Pending: H.264 timed by its picture order count"))
+    func h264InProgramStreamIsCopied() async throws {}
+
     /// Plays a minute-long numbered fixture from the start, then from 40.5 s.
     @MainActor
-    private static func expectEachSourceFrameAtItsTime(from fixture: LoadedFixture) async throws {
+    private static func expectEachSourceFrameAtItsTime(from fixture: LoadedFixture, hasAudio: Bool = true) async throws {
         let responder = fixture.responder
 
         let fromStart = await fixture.framesShown(for: .seconds(4))
@@ -620,14 +696,27 @@ struct BridgeSessionTests {
         #expect(afterSeek.first?.number == 972)
         #expect(afterSeek.filter { !$0.isTheSourceFrameForItsTime }.isEmpty)
 
-        // Segments are two seconds long, so 40.5 s is in segment 20. AVPlayer went straight
-        // there: nothing between what it had buffered at the start and the target was read.
+        // AVPlayer went straight to the segment that holds 40.5 s: nothing that starts between
+        // 16 s, past what it had buffered at the start, and that segment was read.
+        let starts = Self.segmentStarts(in: responder.session.plan)
+        let target = try #require(Self.segment(holding: 40.5, in: responder.session.plan))
         let videoSegments = responder.paths.compactMap { path -> Int? in
             if case .mediaSegment(.video, let index) = BridgeResource(path: path) { index } else { nil }
         }
-        #expect(requestedBeforeSeek.contains("v-0.m4s") && requestedBeforeSeek.contains("a0-0.m4s"))
-        #expect(videoSegments.contains(20))
-        #expect(videoSegments.filter { (8..<20).contains($0) }.isEmpty, "\(videoSegments)")
+        #expect(requestedBeforeSeek.contains("v-0.m4s"))
+        #expect(requestedBeforeSeek.contains("a0-0.m4s") == hasAudio)
+        #expect(videoSegments.contains(target))
+        #expect(videoSegments.filter { starts[$0] >= 16 && $0 < target }.isEmpty, "\(videoSegments)")
+    }
+
+    /// Seconds from the start at which each video segment plays.
+    private static func segmentStarts(in plan: BridgePlan) -> [Double] {
+        plan.video.segments.dropLast().reduce(into: [0]) { starts, segment in starts.append(starts[starts.count - 1] + segment.seconds) }
+    }
+
+    /// The index of the video segment that plays at `seconds` from the start.
+    private static func segment(holding seconds: Double, in plan: BridgePlan) -> Int? {
+        segmentStarts(in: plan).lastIndex { $0 <= seconds }
     }
 
     @MainActor
@@ -639,8 +728,9 @@ struct BridgeSessionTests {
         // A transport stream copied from a Matroska file: its times are still rounded to the
         // millisecond, under a tick ninety times finer.
         "ts-copied-from-mkv.ts",
-        // H.264 as an FLV holds it, and behind start codes with no presentation times in an AVI.
-        "flv-h264.flv", "avi-h264.avi",
+        // H.264 as an FLV holds it, and behind start codes with no presentation times in an AVI
+        // and an ASF.
+        "flv-h264.flv", "avi-h264.avi", "asf-h264.asf",
     ])
     func avPlayerPlaysEachDeliveredCodec(name: String) async throws {
         let fixture = try await LoadedFixture(name)
