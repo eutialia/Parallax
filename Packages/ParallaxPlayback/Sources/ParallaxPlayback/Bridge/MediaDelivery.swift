@@ -71,7 +71,7 @@ public struct MediaDelivery: Sendable {
     static let samplingTime: Duration = .milliseconds(2500)
 
     /// The containers AVPlayer cannot open that the bridge opens. It reads Matroska, transport
-    /// streams, FLV and AVI in spans; ASF and program streams it opens to name what stops them.
+    /// streams, FLV, AVI, ASF and program streams in spans.
     static let bridgedContainers: Set<Container> = [.mkv, .ts, .flv, .avi, .asf, .mpegps]
 
     /// What serves the file. Throws an `Unplayable`, or the reader's own error.

@@ -75,6 +75,14 @@ struct ConvertedVideoTests {
             // 10-bit H.264 on a device with no decoder for it, and 4:2:2, which no device has.
             ("numbered-h264-high10", "hvc1.2.4.L30.B0"), ("numbered-h264-422", "hvc1.1.6.L30.B0"),
             ("numbered-flv1.flv", "hvc1.1.6.L30.B0"), ("numbered-mpeg4.avi", "hvc1.1.6.L30.B0"),
+            ("numbered-wmv2.asf", "hvc1.1.6.L30.B0"),
+            // MPEG-4 with B-pictures, in containers that store decode times only.
+            ("numbered-mpeg4-b.avi", "hvc1.1.6.L30.B0"), ("numbered-mpeg4-b.asf", "hvc1.1.6.L30.B0"),
+            // MPEG-2 in a program stream. In the second, a read after a seek gives one keyframe
+            // no presentation time.
+            ("numbered-mpeg2.mpg", "hvc1.1.6.L30.B0"), ("numbered-mpeg2-mp2.mpg", "hvc1.1.6.L30.B0"),
+            // H.264 the device decodes, which is copied out of any other container.
+            ("numbered-h264.mpg", "hvc1.1.6.L30.B0"),
         ])
     func segmentsHoldTheirOwnPictures(name: String, codec: String) async throws {
         let session = try await BridgeSession.open(
@@ -91,8 +99,8 @@ struct ConvertedVideoTests {
         // 24 pictures a second on a clock of 120,000 ticks.
         let first = try #require(all.first)
         #expect(all.map(\.number) == Array(0..<all.count))
-        // The clips are twelve seconds long, or a minute.
-        #expect([288, 1440].contains(all.count), "\(all.count)")
+        // The clips are twelve or sixteen seconds long, or a minute.
+        #expect([288, 384, 1440].contains(all.count), "\(all.count)")
         #expect(all.map { $0.tick - first.tick } == all.indices.map { Int64($0) * 5000 })
         for (segment, made) in zip(segments, inOrder) {
             #expect(made.pictures.first?.isKeyframe == true)
@@ -144,6 +152,27 @@ struct ConvertedVideoTests {
             }
         }
         #expect("\(BridgeRefusal.videoEncoder(name: "vp9 Profile 0"))" == "video: vp9 Profile 0, and this device has no HEVC encoder")
+    }
+
+    /// A keyframe may come back with no presentation time from a read after a seek. No clip
+    /// does it under the seek spans use, so the packet here has its time taken away.
+    @Test("a program stream's keyframe with no presentation time is decoded at the time it was listed at")
+    func untimedKeyframeDecodesAtItsListedTime() async throws {
+        let demuxer = try await MediaDemuxer.open(
+            InMemoryRandomAccessReader(data: try BridgeFixture.data("numbered-mpeg2-mp2.mpg")))
+        let keyframes = try await demuxer.keyframes()
+        let video = demuxer.videoStream
+        let packets = try await demuxer.packets(video, from: 4, to: 6)
+        let first = try #require(packets.first)
+        let untimed = MediaPacket(
+            stream: first.stream, presentationTime: nil, decodeTime: first.decodeTime, duration: first.duration,
+            isKeyframe: first.isKeyframe, data: first.data)
+
+        let decoder = try VideoDecoder(demuxer.streams[video].parameters, timedByDecodeOrder: false)
+        var times: [Int64] = []
+        for packet in [untimed] + packets.dropFirst() { try decoder.decode(packet) { times.append($0.pointee.pts) } }
+
+        #expect(times.first == keyframes[4].time)
     }
 
     @Test("a segment whose damaged stream decodes a picture timed before one it already gave still arrives, its pictures in order")

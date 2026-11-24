@@ -516,15 +516,13 @@ packet_list flv-h264 flv
 # B-frames a picture shows when it is decoded.
 ffmpeg -v error -y "${noisy_pair[@]}" -bf 0 -c:a ac3 -b:a 64k -ac 2 "$OUT/avi-h264.avi"
 packet_list avi-h264 avi
+# ASF: no index libavformat lists, times in milliseconds, and decode times only for H.264.
+ffmpeg -v error -y "${noisy_pair[@]}" -bf 0 -c:a ac3 -b:a 64k -ac 2 "$OUT/asf-h264.asf"
+packet_list asf-h264 asf
 # Files the bridge opens to say what stops them. With B-frames an AVI's pictures have no
-# times to show at. WMV with WMA is what an ASF holds, and H.264 with AC-3 are codecs the bridge
-# delivers: either way it cannot read the container in spans.
+# times to show at.
 short=(-f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 2 -map 0:v -map 1:a)
 ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 2 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-avi-b-frames.avi"
-ffmpeg -v error -y "${short[@]}" -c:v wmv2 -g 12 -b:v 100k -c:a wmav2 -b:a 32k -bitexact -fflags +bitexact "$OUT/refused-asf-wmv.asf"
-ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 0 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-asf-h264.asf"
-# An MPEG program stream, as a DVD's VOB is: opened only to name its container.
-ffmpeg -v error -y "${short[@]}" -c:v mpeg2video -g 12 -b:v 200k -c:a mp2 -b:a 64k -bitexact -fflags +bitexact -f vob "$OUT/refused-program-stream.mpg"
 # Clips for converted video: the numbered picture in codecs no Apple decoder takes, or takes on
 # some devices only. Twelve seconds with a keyframe every two make six segments.
 numbered() {
@@ -550,6 +548,57 @@ numbered numbered-flv1.flv 12 -c:v flv -g 48 -sc_threshold 0 -b:v 100k -ar 44100
 # which is the only time an AVI gives it. AC-3, because the AVI muxer puts an empty picture
 # after the first to make up for an MP3 encoder's delay, and every later one is a frame late.
 numbered numbered-mpeg4.avi 12 -c:v mpeg4 -bf 0 -g 48 -sc_threshold 0 -b:v 100k -c:a ac3 -b:a 64k
+# An MPEG program stream, as a DVD's VOB is. At a constant 800 kbit/s each picture starts a PES
+# packet of its own and so has a time, as in real files; at the encoder's own low rate a third
+# of them have none.
+numbered numbered-mpeg2.mpg 12 -c:v mpeg2video -bf 2 -g 48 -sc_threshold 0 -b:v 800k -minrate 800k -maxrate 800k -bufsize 200k -pix_fmt yuv420p -c:a ac3 -b:a 64k -ac 2 -f vob
+# H.264 in a program stream, each picture with a time of its own as above.
+numbered numbered-h264.mpg 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -b:v 600k -minrate 600k -maxrate 600k -bufsize 150k -x264-params nal-hrd=cbr -c:a mp2 -b:a 64k -f vob
+# AC-3 in a program stream, a minute long, for a seek past what a player buffered. 9 of its
+# 1,876 frames start in one PES packet and end in the next, and libavformat gives each the next
+# one's time. At a constant rate each picture has a time, down to 100 kbit/s.
+numbered numbered-h264-ac3.mpg 60 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -b:v 100k -minrate 100k -maxrate 100k -bufsize 50k -x264-params nal-hrd=cbr -c:a ac3 -b:a 64k -ac 2 -f vob
+packet_list numbered-h264-ac3 mpg
+# A program stream whose second audio stream plays from 20 s to 24 s only, so libavformat finds
+# it neither at open nor at the end, as a DVD's subtitles are. Three files joined byte for byte,
+# as a DVD's VOBs are. The first is delayed 0.583 s and the others are moved by as much, so the
+# times run on across each join, and each one's audio ends with its video.
+late_part() {
+    local file=$1 start=$2 seconds=$3 streams=$4
+    local audio offset=0 extra=() maps=(-map 0:v -map 1:a)
+    audio=$(echo "$seconds - 0.03" | bc)
+    [ "$start" != 0 ] && offset=$(echo "$start + 0.583333" | bc)
+    if [ "$streams" = 2 ]; then
+        extra=(-f lavfi -i "sine=frequency=880:sample_rate=48000:duration=$audio")
+        maps+=(-map 2:a)
+    fi
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor((N+$((start * 24)))/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=$audio" "${extra[@]}" \
+        -t "$seconds" "${maps[@]}" -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p \
+        -b:v 100k -minrate 100k -maxrate 100k -bufsize 50k -x264-params nal-hrd=cbr -c:a ac3 -b:a 64k -ac 2 \
+        -output_ts_offset "$offset" -f vob -bitexact -fflags +bitexact "$file"
+}
+late_parts=$(mktemp -d)
+late_part "$late_parts/1.mpg" 0 20 1
+late_part "$late_parts/2.mpg" 20 4 2
+late_part "$late_parts/3.mpg" 24 16 1
+cat "$late_parts/1.mpg" "$late_parts/2.mpg" "$late_parts/3.mpg" > "$OUT/numbered-h264-late-audio.mpg"
+rm -r "$late_parts"
+# Sixteen seconds with a keyframe every half second, enough to be sampled for its keyframes.
+numbered numbered-mpeg2-mp2.mpg 16 -c:v mpeg2video -bf 2 -g 12 -b:v 800k -minrate 800k -maxrate 800k -bufsize 200k -pix_fmt yuv420p -c:a mp2 -b:a 64k -f vob
+# MPEG-4 with B-pictures where the container stores decode times only, as DivX and Xvid are in
+# an AVI. Closed groups of pictures, as those encoders write. The AVI is a minute long, for a
+# seek past what a player buffered, with its keyframes forced: -g 48 with B-pictures puts one
+# every 46 pictures.
+numbered numbered-mpeg4-b.avi 60 -c:v mpeg4 -bf 2 -flags +cgop -g 480 -force_key_frames 'expr:eq(mod(n,48),0)' -sc_threshold 1000000000 -b:v 100k -c:a ac3 -b:a 64k -ac 2
+# Files with no audio stream, a minute long: H.264 that is copied, and MPEG-4 with B-pictures in
+# an AVI that is converted.
+numbered numbered-h264-silent.mkv 60 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -an
+numbered numbered-mpeg4-silent.avi 60 -c:v mpeg4 -bf 2 -flags +cgop -g 480 -force_key_frames 'expr:eq(mod(n,48),0)' -sc_threshold 1000000000 -b:v 100k -an
+numbered numbered-mpeg4-b.asf 12 -c:v mpeg4 -bf 2 -flags +cgop -g 48 -sc_threshold 1000000000 -b:v 200k -c:a wmav2 -b:a 32k -ac 2
+# WMV with WMA is what an ASF holds.
+numbered numbered-wmv2.asf 12 -c:v wmv2 -g 48 -sc_threshold 0 -b:v 100k -c:a wmav2 -b:a 32k -ac 2
 # Video stored as fields: fifty numbered pictures a second woven into 25 frames, the even
 # picture on the top field. Each field keeps its own number on its own rows. Both encoders code
 # fields only at a height that divides by 32 (MPEG-2) or four (x264).

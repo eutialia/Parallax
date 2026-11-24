@@ -34,7 +34,9 @@ struct ConvertedVideo: Sendable {
         openEncoder: (HEVCFormat) throws -> HEVCEncoder
     ) throws(BridgeRefusal) {
         let name = stream.parameters.displayName
-        guard let decoder = try? VideoDecoder(stream.parameters) else { throw .videoCodec(name: name) }
+        guard let decoder = try? VideoDecoder(stream.parameters, timedByDecodeOrder: stream.packetTimes == .decodeOnly) else {
+            throw .videoCodec(name: name)
+        }
         // The rate of a stream of fields is read off its first two pictures.
         let isInterlaced = stream.parameters.isInterlaced
         var times: [Int64] = []
@@ -81,7 +83,7 @@ struct ConvertedVideo: Sendable {
         self.frameRate = frameRate
         firstPicture = [
             MediaPacket(
-                stream: stream.index, presentationTime: start, duration: nil, isKeyframe: true, data: made.picture.data)
+                stream: stream.index, presentationTime: start, decodeTime: nil, duration: nil, isKeyframe: true, data: made.picture.data)
         ]
     }
 
@@ -166,7 +168,7 @@ final class VideoConversion: PacketSink {
         timer = ConversionTimer(stopwatch)
         self.cancelled = cancelled
         self.take = take
-        decoder = try VideoDecoder(video.stream.parameters)
+        decoder = try VideoDecoder(video.stream.parameters, timedByDecodeOrder: video.stream.packetTimes == .decodeOnly)
         encoder = try HEVCEncoder(video.format, timescale: rendition.clock.timescale)
     }
 

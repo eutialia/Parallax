@@ -18,6 +18,9 @@ final class VideoDecoder {
     private let packet: UnsafeMutablePointer<AVPacket>
     private let frame: UnsafeMutablePointer<AVFrame>
     private let isInterlaced: Bool
+    private let timedByDecodeOrder: Bool
+    /// The decode times of the packets handed over so far, for `timedByDecodeOrder`.
+    private var decodeTimes: [Int64] = []
     private var deinterlacer: Deinterlacer?
 
     /// Whether this build of libavcodec has a software decoder for the stream.
@@ -31,7 +34,11 @@ final class VideoDecoder {
         return id == AV_CODEC_ID_AV1 ? avcodec_find_decoder_by_name("libdav1d") : avcodec_find_decoder(id)
     }
 
-    init(_ parameters: CodecParameters) throws(Failure) {
+    /// With `timedByDecodeOrder`, the packets' times are decode times and no packet says when
+    /// its picture shows. A decoder that holds back one picture (`holdsBackOnePicture`) gives
+    /// each picture as it is handed the packet stored after the last one shown before it, so
+    /// a picture shows at the decode time of the packet before the one that brought it out.
+    init(_ parameters: CodecParameters, timedByDecodeOrder: Bool) throws(Failure) {
         guard let codec = Self.codec(for: parameters) else { throw .noDecoder }
         var context = avcodec_alloc_context3(codec)
         guard let allocated = context else { throw .outOfMemory }
@@ -59,6 +66,7 @@ final class VideoDecoder {
         self.packet = packet
         self.frame = frame
         isInterlaced = parameters.isInterlaced
+        self.timedByDecodeOrder = timedByDecodeOrder
     }
 
     deinit {
@@ -78,7 +86,15 @@ final class VideoDecoder {
         guard av_new_packet(packet, Int32(source.data.count)) >= 0 else { throw Failure.outOfMemory }
         defer { av_packet_unref(packet) }
         source.data.copyBytes(to: packet.pointee.data, count: source.data.count)
-        packet.pointee.pts = source.presentationTime ?? Self.noTime
+        if timedByDecodeOrder {
+            packet.pointee.pts = Self.noTime
+            packet.pointee.dts = source.presentationTime ?? Self.noTime
+            if let time = source.presentationTime { decodeTimes.append(time) }
+        } else {
+            packet.pointee.pts = source.presentationTime ?? Self.noTime
+            // The decoder times a picture whose packet has no presentation time from this.
+            packet.pointee.dts = source.decodeTime ?? Self.noTime
+        }
         if source.isKeyframe { packet.pointee.flags |= AV_PKT_FLAG_KEY }
         guard avcodec_send_packet(context, packet) >= 0 else { return }
         try receive(into: take)
@@ -93,7 +109,14 @@ final class VideoDecoder {
     private func receive(into take: (UnsafePointer<AVFrame>) throws -> Void) throws {
         while avcodec_receive_frame(context, frame) >= 0 {
             defer { av_frame_unref(frame) }
-            if frame.pointee.pts == Self.noTime { frame.pointee.pts = frame.pointee.best_effort_timestamp }
+            if timedByDecodeOrder {
+                // The last pictures come out with no packet behind them.
+                let broughtOutBy = frame.pointee.pkt_dts
+                frame.pointee.pts = (broughtOutBy == Self.noTime
+                    ? decodeTimes.last : decodeTimes.last { $0 < broughtOutBy }) ?? Self.noTime
+            } else if frame.pointee.pts == Self.noTime {
+                frame.pointee.pts = frame.pointee.best_effort_timestamp
+            }
             guard isInterlaced else {
                 try take(frame)
                 continue

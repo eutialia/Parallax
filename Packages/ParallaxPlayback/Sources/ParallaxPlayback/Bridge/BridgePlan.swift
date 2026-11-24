@@ -110,19 +110,17 @@ public enum BridgeRefusal: Error, Equatable, Sendable {
     /// TV whose output is SDR. AVPlayer refuses an HDR playlist there before it loads a
     /// segment, and a playlist that calls the video SDR fails at its first segment.
     case hdrVideo(range: String)
-    /// No audio stream that is both in a codec the bridge delivers and present at the start of
-    /// the file. `names` are the codecs the file does have, of the video's own program.
+    /// Audio streams, of which none is both in a codec the bridge delivers and present at the
+    /// start of the file. `names` are their codecs, of the video's own program.
     case noDeliverableAudio(names: [String])
     /// The index stops: after its last entry more of the file runs than any keyframe interval
     /// does, with nowhere to start a segment. `after` is that entry, in whole seconds from the
     /// first keyframe.
     case indexGap(after: Int)
     /// Video whose packets carry no presentation time and are stored out of the order they
-    /// show in, as H.264 with B-frames is in an AVI.
+    /// show in, in a codec whose decoder holds back more than one picture, as H.264 with
+    /// B-frames is in an AVI.
     case untimedVideo
-    /// The codecs are ones the bridge delivers, in a container it cannot read in spans.
-    /// `name` is libavformat's: "asf", "mpeg".
-    case container(name: String)
     /// The file's times go back part way through, as in two recordings joined into one file.
     /// `after` is the last keyframe before that, in whole seconds from the first.
     case timestampsRestart(after: Int)
@@ -140,11 +138,10 @@ extension BridgeRefusal: CustomStringConvertible {
         case .videoCodec(let name): "video: \(name)"
         case .videoEncoder(let name): "video: \(name), and this device has no HEVC encoder"
         case .hdrVideo(let range): "video: \(range), and this display shows no HDR"
-        case .noDeliverableAudio(let names): "audio: \(names.isEmpty ? "none" : names.joined(separator: ", "))"
+        case .noDeliverableAudio(let names): "audio: \(names.joined(separator: ", "))"
         case .indexGap(let after):
             "no keyframe index after \(Self.clockTime(after))"
         case .untimedVideo: "video: no presentation times"
-        case .container(let name): "container: \(name)"
         case .timestampsRestart(let after): "timestamps restart after \(Self.clockTime(after))"
         case .unreadable(let detail): "unreadable: \(detail)"
         }
@@ -178,11 +175,12 @@ struct BridgePlan: Sendable {
     }
 
     let video: Track
-    /// The audio tracks the bridge delivers, in file order. Never empty.
+    /// The audio tracks the bridge delivers, in file order. Empty for a file with no audio
+    /// stream, which plays silent.
     let audio: [Track]
     /// The place in `audio` of the track that plays when the viewer chose none: the first the
-    /// file marks as its default, or the first.
-    let defaultAudio: Int
+    /// file marks as its default, or the first. Nil for a file with no audio stream.
+    let defaultAudio: Int?
     /// The codecs of the audio tracks the bridge left out: "truehd", "dts DTS-HD MA".
     let omittedAudio: [String]
     /// Bits per second of the densest segment, all streams of the file counted.
@@ -230,13 +228,15 @@ struct BridgePlan: Sendable {
         let videoStream = demuxer.streams[demuxer.videoStream]
         let videoDecision = VideoDecision(for: videoStream, on: support, showingHDR: showsHDR)
         if case .refuse(let refusal) = videoDecision { throw refusal }
-        guard demuxer.timesItsPictures else { throw BridgeRefusal.untimedVideo }
 
         let audioStreams = demuxer.streams.filter { $0.kind == .audio }
         let noDeliverableAudio = BridgeRefusal.noDeliverableAudio(names: audioStreams.map(\.parameters.displayName))
-        let copyable = audioStreams.filter { $0.parameters.playlistCodec != nil }
-        let convertible = audioStreams.filter { $0.parameters.playlistCodec == nil && AudioDecoder.decodes($0.parameters) }
-        guard !copyable.isEmpty || !convertible.isEmpty else { throw noDeliverableAudio }
+        func isCopied(_ stream: DemuxedStream) -> Bool {
+            stream.packetTimes == .presentation && stream.parameters.playlistCodec != nil
+        }
+        let copyable = audioStreams.filter(isCopied)
+        let convertible = audioStreams.filter { !isCopied($0) && AudioDecoder.decodes($0.parameters) }
+        guard audioStreams.isEmpty || !copyable.isEmpty || !convertible.isEmpty else { throw noDeliverableAudio }
 
         let keyframes = try await demuxer.keyframes()
         guard keyframes.count >= 2 else { throw BridgeRefusal.noCues }
@@ -262,8 +262,9 @@ struct BridgePlan: Sendable {
             throw SegmentWriter.Failure.untimedSample
         }
 
-        let audioDecisions = audioStreams.map { AudioDecision(for: $0, openingWith: packets(of: $0)) }
-        guard let audioStart = audioDecisions.compactMap(\.start).min() else { throw noDeliverableAudio }
+        let audioDecisions = audioStreams.map { AudioDecision(for: $0, copied: isCopied($0), openingWith: packets(of: $0)) }
+        let audioStart = audioDecisions.compactMap(\.start).min()
+        guard audioStreams.isEmpty || audioStart != nil else { throw noDeliverableAudio }
 
         let videoDelivery: Delivery
         switch videoDecision {
@@ -273,14 +274,15 @@ struct BridgePlan: Sendable {
                     of: videoStream, startingAt: videoStart, firstPacket: packets(of: videoStream).first))
         case .convert:
             videoDelivery = .video(try ConvertedVideo(
-                videoStream, openingWith: packets(of: videoStream), startingAt: videoStart, openEncoder: openEncoder))
+                videoStream, openingWith: packets(of: videoStream), startingAt: videoStart,
+                openEncoder: openEncoder))
         case .refuse(let refusal):
             throw refusal
         }
         // Enough that the earliest decode time and the earliest audio sample are both at or
         // above zero.
         let leadTime = (videoDelivery.decodeLead * 1_000_000_000 + Self.videoTimescale - 1) / Self.videoTimescale
-        let origin = max(0, leadTime - min(videoStart, audioStart))
+        let origin = max(0, leadTime - min(videoStart, audioStart ?? videoStart))
 
         // A converted picture keeps its source time, so the clock is the one a copied stream has.
         let videoRendition = Rendition(
@@ -319,7 +321,7 @@ struct BridgePlan: Sendable {
                 segments: segments[..<lastWithAudio] + [cuts.segment(from: lastWithAudio, on: videoRendition.clock)]))
         }
         self.audio = audio
-        defaultAudio = renditions.firstIndex { $0.stream.isDefault } ?? 0
+        defaultAudio = renditions.firstIndex { $0.stream.isDefault } ?? renditions.indices.first
         omittedAudio = audioDecisions.compactMap(\.omitted)
         // A converted audio track is counted at the rate of its samples, which no FLAC frame
         // exceeds. Converted video is counted at half again its average, on top of the file's
@@ -369,10 +371,14 @@ enum VideoDecision {
             return
         }
         // AVPlayer shows video stored as fields combed or black, whatever its codec.
-        if !stream.parameters.isInterlaced, let codec = stream.parameters.playlistCodec, Self.decodes(codec, on: support) {
+        if stream.packetTimes == .presentation, !stream.parameters.isInterlaced,
+           let codec = stream.parameters.playlistCodec, Self.decodes(codec, on: support) {
             self = .copy(codec: codec)
         } else if VideoDecoder.decodes(stream.parameters) {
-            self = .convert
+            // A decoder that holds back one picture times the pictures of a stream that
+            // carries decode times only (`VideoDecoder`).
+            self = stream.packetTimes == .decodeOnly && !stream.parameters.holdsBackOnePicture
+                ? .refuse(.untimedVideo) : .convert
         } else {
             self = .refuse(.videoCodec(name: stream.parameters.displayName))
         }
@@ -446,8 +452,8 @@ enum AudioDecision {
     }
 
     /// `packets` are the stream's own, of those the file opens with.
-    init(for stream: DemuxedStream, openingWith packets: [MediaPacket]) {
-        let delivered = stream.parameters.playlistCodec != nil
+    init(for stream: DemuxedStream, copied: Bool, openingWith packets: [MediaPacket]) {
+        let delivered = copied
             ? CopiedAudio(stream, openingWith: packets).map(Self.copy)
             : ConvertedAudio(stream, openingWith: packets).map(Self.convert)
         self = delivered ?? .omit(name: stream.parameters.displayName)

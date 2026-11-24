@@ -7,6 +7,7 @@ struct ConvertedAudio: Sendable {
 
     let stream: DemuxedStream
     /// Nanoseconds: where the first sample the stream decodes to is, in the file's own time.
+    /// The time of its first packet where the decoder times none of the opening's frames.
     let start: Int64
     let sampleRate: Int
     let channelCount: Int
@@ -37,7 +38,11 @@ struct ConvertedAudio: Sendable {
             if run.isPlaced { break }
             run.add(frame, timed: run.agrees(with: frame.time))
         }
-        guard let start = run.start,
+        // A WMA Pro frame runs from one packet into the next, and its decoder times one only
+        // where it starts a packet: none of the first 853 ms of one real file and 1,194 ms of
+        // another. The stream then starts no earlier than its first packet. A segment places
+        // its own samples by the timed frames it reads on to.
+        guard let start = run.start ?? packets.first?.presentationTime,
               let encoder = try? FLACEncoder(sampleRate: format.sampleRate, channelCount: format.channelCount)
         else { return nil }
         var encodedFrames: [(data: Data, length: Int64)] = []
@@ -56,7 +61,7 @@ struct ConvertedAudio: Sendable {
         encoded = encoder.parameters
         firstFrame = [
             MediaPacket(
-                stream: stream.index, presentationTime: start,
+                stream: stream.index, presentationTime: start, decodeTime: nil,
                 duration: flac.length * 1_000_000_000 / Int64(format.sampleRate), isKeyframe: true, data: flac.data)
         ]
     }

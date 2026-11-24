@@ -84,7 +84,7 @@ struct MediaDemuxerTests {
     }
 
     @Test("a file with no index is given every keyframe of its video, each where a read of it starts",
-          arguments: ["ts-h264.ts", "m2ts-h264.m2ts", "flv-h264.flv"])
+          arguments: ["ts-h264.ts", "m2ts-h264.m2ts", "flv-h264.flv", "asf-h264.asf"])
     func fileWithNoIndexListsItsKeyframes(name: String) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)
         let listed = try await demuxer.keyframes()
@@ -95,6 +95,26 @@ struct MediaDemuxerTests {
             let first = try #require(try await demuxer.packets(0, from: index, to: index + 1).first)
             #expect(Sample(first) == flagged[index])
         }
+    }
+
+    /// The spans are read by a demuxer that was handed the keyframe list, as a session's
+    /// second demuxer is.
+    @Test("a program stream's spans, each read after a seek of its own, hold every video packet of the file")
+    func programStreamSpansHoldEveryVideoPacket() async throws {
+        let reader = InMemoryRandomAccessReader(data: try BridgeFixture.data("numbered-mpeg2-mp2.mpg"))
+        let listing = try await MediaDemuxer.open(reader)
+        let keyframes = try await listing.keyframes()
+        let whole = try await listing.packets(listing.videoStream, from: 0, to: keyframes.count)
+        let demuxer = try await MediaDemuxer.open(
+            SessionBlockCache(reader: reader, size: try await reader.fileSize), keyframes: keyframes)
+
+        var spans: [[MediaPacket]] = []
+        for lower in keyframes.indices.reversed() {
+            spans.insert(try await demuxer.packets(demuxer.videoStream, from: lower, to: lower + 1), at: 0)
+        }
+
+        #expect(spans.joined().map(\.data) == whole.map(\.data))
+        #expect(spans.joined().map(\.decodeTime) == whole.map(\.decodeTime))
     }
 
     private static func sampled(_ data: Data, every spacing: Int64) async throws -> MediaDemuxer {
@@ -120,6 +140,28 @@ struct MediaDemuxerTests {
             joined += try await demuxer.packets(from: lower, to: lower + 1)
         }
         #expect(Self.samples(joined) == (try Self.expectedSamples(name)))
+    }
+
+    @Test("a program stream sampled for its keyframes is cut at some of those a whole read lists, and its spans add up to exactly the file's packets")
+    func sampledProgramStreamIsCutAtTrueKeyframes() async throws {
+        let data = try BridgeFixture.data("numbered-mpeg2-mp2.mpg")
+        let whole = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: data))
+        let all = try await whole.keyframes()
+        let demuxer = try await Self.sampled(data, every: 80_000)
+        let listed = try await demuxer.keyframes()
+
+        #expect(listed.first == all.first)
+        #expect(listed.allSatisfy(all.contains))
+        #expect((3..<all.count).contains(listed.count))
+
+        var joined: [MediaPacket] = []
+        for lower in listed.indices.reversed() {
+            joined.insert(contentsOf: try await demuxer.packets(from: lower, to: lower + 1), at: 0)
+        }
+        let want = try await whole.packets(from: 0, to: all.count)
+        for stream in Set(want.map(\.stream)) {
+            #expect(joined.filter { $0.stream == stream } == want.filter { $0.stream == stream })
+        }
     }
 
     /// The fixture twice over: twelve seconds, then the same twelve seconds again.
@@ -449,13 +491,14 @@ struct MediaDemuxerTests {
         #expect(try await short.packets(from: 20, to: 22) == whole.packets(from: 20, to: 22))
     }
 
-    @Test("a container that cannot be read in spans is described, and has no keyframe list",
-          arguments: ["refused-asf-h264.asf"])
-    func containerNotReadInSpansIsDescribedOnly(name: String) async throws {
-        let demuxer = try await BridgeFixture.demuxer(name)
+    @Test("a container the bridge has no rules for is refused at open by its name")
+    func unbridgedContainerIsRefused() async throws {
+        let mp4 = try Data(contentsOf: try #require(
+            Bundle.module.url(forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures")))
 
-        #expect(demuxer.streams.map(\.parameters.codecName) == ["h264", "ac3"])
-        await #expect(throws: BridgeRefusal.container(name: "asf")) { _ = try await demuxer.keyframes() }
+        await #expect(throws: MediaDemuxer.OpenFailure.unbridgedContainer(name: "mov,mp4,m4a,3gp,3g2,mj2")) {
+            _ = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: mp4))
+        }
     }
 
     @Test("bytes that are no media file are refused at open")
