@@ -22,8 +22,8 @@ public nonisolated struct MediaArtwork: Sendable, Equatable {
 }
 
 /// Resolves a poster for a source-neutral `Item` that carries no server artwork — today only the
-/// SMB path, which prefers a strict sidecar image beside the file, then (for MKV) an embedded
-/// Matroska cover-art attachment, and otherwise generates a frame-grab from the video itself.
+/// SMB path, which prefers a strict sidecar image beside the file, and otherwise asks the
+/// thumbnailer for the file's own picture: its cover art, or a frame of its video.
 ///
 /// Owns the whole generation pipeline so the call site (a grid tile's `.task`) stays trivial:
 ///   disk-cache hit (instant) → negative-cache skip (instant) → coalesced generation on a real miss.
@@ -52,12 +52,12 @@ public nonisolated struct MediaArtwork: Sendable, Equatable {
 /// budget; a struggling link self-throttles without a hardcoded permanent cap.
 ///
 /// **Pooled sessions.** Generation borrows warm SMB connections from a shared `SMBConnectionPool`
-/// (injected) instead of standing up a fresh session per fetch. The sidecar reader, the cover-art
-/// walker, and the frame-grab bridge all ride the pool; check-in/discard and the libsmb2 teardown
-/// guard live in the reader + pool (see `SMBRandomAccessReader.disconnect()`).
+/// (injected) instead of standing up a fresh session per fetch. The sidecar read and the
+/// thumbnailer's reads both ride the pool; check-in/discard and the libsmb2 teardown guard live in
+/// the reader + pool (see `SMBRandomAccessReader.disconnect()`).
 ///
 /// **Failure memory.** A generation failure is recorded both in-memory (fast path) and as a
-/// persistent `.fail` marker on disk, so a file that will not decode isn't re-attempted (and
+/// persistent failure marker on disk, so a file that will not decode isn't re-attempted (and
 /// re-charged the full timeout) every launch. Backoff is exponential, capped at 24h — never
 /// permanent, so a decodable-but-slow-over-VPN file self-heals when circumstances change; Clear
 /// Cache or a file change (new size/mtime = new key) resets early.
@@ -71,7 +71,7 @@ public actor MediaArtworkProvider {
     private static let log = Logger(subsystem: "com.lhdev.parallax", category: "thumbnails")
 
     private let cache: SMBThumbnailCache
-    private let thumbnailer: any FrameThumbnailing
+    private let thumbnailer: any Thumbnailing
     private let serverStore: ServerStore
     /// Shared warm-connection pool. Its cold-connect latency also classes the link (LAN/WAN), which
     /// seeds each host's AIMD admission window (WAN/unknown start narrow; LAN starts wider).
@@ -85,29 +85,15 @@ public actor MediaArtworkProvider {
     /// removes its own entry when it finishes; the last release removes it and cancels the task.
     private var pending: [SMBThumbnailKey: (task: Task<MediaArtwork, Never>, claims: Int)] = [:]
 
-    /// Hard ceiling for the WHOLE post-sidecar pipeline, anchored when cover-art / frame-grab
-    /// work starts: the MKV cover-art extract, the container probe and the frame decode
-    /// all draw from this ONE budget (see `GenerationDeadline`) rather than each arming
-    /// its own. 30s, not the thumbnailer's 20s default: over VPN a *successful* fetch measured
-    /// 11.1s and several legitimate files timed out at 20s, so the default ceiling sat inside the
-    /// observed success band. On LAN a fetch takes 1–3s, so only genuinely broken files ever pay
-    /// this — and they're then backed off anyway.
-    private static let generationTimeout: Duration = .seconds(30)
-
-    /// Where a frame-grab tries again after a grey frame (see `FrameQuality`). A different seek
-    /// target lands at a different distance from the previous keyframe.
-    private static let greyRetryPositions: [Float] = [0.15, 0.25]
-
-    /// Cap on the embedded cover-art extract WITHIN the generation budget. Metadata seeks are a
-    /// handful of KiB when the SeekHead points cleanly; 6s is generous on LAN and still leaves the
-    /// bulk of the 30s budget for a frame-grab fallback when the walk wedges over a bad link.
-    private static let coverArtTimeout: Duration = .seconds(6)
+    /// Hard ceiling on the thumbnailer. 30s: over VPN a *successful* fetch measured 11.1s and
+    /// several legitimate files timed out at 20s. On LAN a fetch takes 1–3s, so only genuinely
+    /// broken files ever pay this — and they're then backed off anyway.
+    private static let generationTimeout: TimeInterval = 30
 
     /// Sidecar reads are bounded tighter: a poster is small, and a sidecar that can't stream in ~10s
-    /// is a wedge worth abandoning to the later tiers (cover-art for MKV, then the frame-grab —
-    /// both drawing from the shared generation deadline rather than their own ceilings).
+    /// is a wedge worth abandoning to the thumbnailer.
     private static let sidecarReadTimeout: TimeInterval = 10
-    /// A sidecar image larger than this isn't a tile poster — skip it and frame-grab instead. 8 MiB
+    /// A sidecar image larger than this isn't a tile poster — skip it and ask the thumbnailer instead. 8 MiB
     /// comfortably covers a 4K-ish JPEG/PNG scraper poster without reading a misplaced huge file.
     private static let maxSidecarBytes: Int64 = 8 * 1024 * 1024
     /// Downscale sidecars to this long-edge before HEIC-encoding — a browse tile never needs more,
@@ -115,7 +101,7 @@ public actor MediaArtworkProvider {
     private static let sidecarMaxPixel = 1280
 
     /// In-memory MIRROR of the persistent failure state (attempts + when last recorded), the fast
-    /// path consulted before the on-disk `.fail` marker. Counts are adopted FROM the cache
+    /// path consulted before the on-disk failure marker. Counts are adopted FROM the cache
     /// (`recordFailure`'s return value), never seeded independently — the disk marker is the source
     /// of truth, so a relaunch can't restart a permanently-poisoned key at attempt 1 and sneak past
     /// its backoff. Transient failures self-heal by backoff EXPIRY (exponential, capped), not by
@@ -124,12 +110,10 @@ public actor MediaArtworkProvider {
     /// The app's clock, read as time since this provider was built: the failure stamps, the
     /// generation budget and the logged timings.
     private let elapsed: @Sendable () -> Duration
-    /// The probe's deadline sleeps on it.
+    /// The sidecar read's ceiling sleeps on it.
     private let clock: any Clock<Duration>
-    /// Wall time: the persisted `.fail` marker is a date that has to survive a relaunch.
+    /// Wall time: the persisted failure marker is a date that has to survive a relaunch.
     private let now: @Sendable () -> Date
-    /// Its `avPlayer` support goes to `SMBDelivery.start`, the same decision playback makes.
-    private let deviceProfileBuilder: DeviceProfileBuilder
     private static let failureBackoff: Duration = .seconds(180)
     /// Backoff ceiling — deliberately NOT permanent: a decodable-but-slow file (one that times
     /// out over VPN but grabs in 1–3s on LAN) must get another chance when circumstances
@@ -151,17 +135,15 @@ public actor MediaArtworkProvider {
     ///     warm connections.
     ///   - cacheDirectory: where generated thumbnails are stored.
     public init(
-        thumbnailer: any FrameThumbnailing,
+        thumbnailer: any Thumbnailing,
         serverStore: ServerStore,
         connections: SMBConnections,
         cacheDirectory: URL,
         clock: any Clock<Duration>,
-        now: @escaping @Sendable () -> Date,
-        deviceProfileBuilder: DeviceProfileBuilder
+        now: @escaping @Sendable () -> Date
     ) {
         self.clock = clock
         self.now = now
-        self.deviceProfileBuilder = deviceProfileBuilder
         self.elapsed = clock.stopwatch()
         self.thumbnailer = thumbnailer
         self.serverStore = serverStore
@@ -171,7 +153,7 @@ public actor MediaArtworkProvider {
 
     /// The artwork for a browsed SMB `Item`, coalescing onto (or starting) a shared generation on a
     /// miss. `sidecar` is the strict sibling-image match from the browse listing (nil = none), tried
-    /// before any frame-grab.
+    /// before the thumbnailer.
     ///
     /// Order matters for cost: the cache key is built from the ItemID's decoded path alone (no
     /// Keychain), so a disk hit or a negative-cache skip returns WITHOUT a Keychain round-trip or the
@@ -306,7 +288,7 @@ public actor MediaArtworkProvider {
     /// already has one never pays for a frame capture; `captureFrame` is only invoked on a real
     /// miss. Best-effort throughout: any nil from `captureFrame`, or a storage failure, is a silent
     /// no-op — this must never surface an error to playback. A successful store also clears any
-    /// persistent `.fail` marker (see `SMBThumbnailCache.store`), so a previously-failed file heals
+    /// persistent failure marker (see `SMBThumbnailCache.store`), so a previously-failed file heals
     /// itself just by being watched. The movie→key recipe lives only here (via `thumbnailKey`) so
     /// the player never reimplements it.
     ///
@@ -322,7 +304,7 @@ public actor MediaArtworkProvider {
         // Cross-actor call into `SMBThumbnailCache` — needs await even from this actor.
         guard await cache.existing(for: key) == nil else { return }
         guard await connections.linkClass(ref.data.host) == .lan else { return }
-        guard let data = await captureFrame(), FrameQuality.isUsable(data) else { return }
+        guard let data = await captureFrame() else { return }
         _ = await cache.store(data, duration: duration, for: key)
     }
 
@@ -342,7 +324,7 @@ public actor MediaArtworkProvider {
 
     /// One full generation: read the link class, acquire a gate permit for this host (or bail if
     /// the bounded prefetch backlog evicted this waiter or it was cancelled), run the held-permit pipeline
-    /// (sidecar → cover-art → frame-grab), then release with a completion outcome that feeds the
+    /// (sidecar → thumbnailer), then release with a completion outcome that feeds the
     /// host's AIMD window. Never throws.
     private func generate(
         key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?
@@ -368,8 +350,8 @@ public actor MediaArtworkProvider {
 
     /// Runs under a held permit. Holds while a player owns the screen (the permit is kept), re-checks
     /// the disk + negative cache AFTER the hold (coalescing: a sibling's write or poisoning during a
-    /// long session is seen on resume), assembles credentials once, then tries sidecar → cover-art
-    /// (MKV) → frame-grab. Returns the artwork plus the completion outcome for the LAST tier
+    /// long session is seen on resume), assembles credentials once, then tries sidecar → thumbnailer.
+    /// Returns the artwork plus the completion outcome for the LAST tier
     /// that actually ran (exactly one `signal` per `wait`). Never throws.
     ///
     /// Exits that never touched the network report `.inconclusive`: they release the permit without
@@ -404,49 +386,30 @@ public actor MediaArtworkProvider {
 
         // Sidecar tier first: a strict sibling image is a truer poster than a mid-file frame, and
         // reading + downscaling a small image is far cheaper than a demux. ANY sidecar failure falls
-        // through WITHOUT poisoning the key; later tiers' outcomes are what reach `gate.signal`
-        // (one signal per held permit). Transport-fault evidence from sidecar and cover-art OR
-        // together so either earlier tier can still shrink the AIMD window when frame-grab is quiet.
-        var earlierTierTransportFault = false
+        // through WITHOUT poisoning the key; the thumbnailer's outcome is what reaches `gate.signal`
+        // (one signal per held permit), with the sidecar's transport fault folded in so a sidecar
+        // that lost to the link can still shrink the AIMD window when the thumbnailer is quiet.
+        var sidecarTransportFault = false
         if let sidecar {
             switch await trySidecar(sidecar: sidecar, ctx: ctx, ref: ref, key: key,
                                     fileName: fileName, link: link) {
             case .resolved(let art):
                 return (art, .success)
             case .fellThrough(let transportFault):
-                earlierTierTransportFault = transportFault
+                sidecarTransportFault = transportFault
             }
         }
         guard !Task.isCancelled else { return (.none, .inconclusive) }
 
-        // ONE ceiling shared by cover-art + frame-grab — see `GenerationDeadline`.
-        let deadline = GenerationDeadline(elapsed: elapsed, budget: Self.generationTimeout)
-        // MKV only: WebM's element subset excludes Attachments entirely, so the walk would be
-        // pure waste (a guaranteed-nil probe) on every .webm file.
-        let ext = (ctx.path as NSString).pathExtension.lowercased()
-        if ext == "mkv" {
-            switch await tryCoverArt(
-                ctx: ctx, ref: ref, key: key, fileName: fileName, link: link, deadline: deadline
-            ) {
-            case .resolved(let art):
-                return (art, .success)
-            case .fellThrough(let transportFault):
-                earlierTierTransportFault = earlierTierTransportFault || transportFault
-            }
-            guard !Task.isCancelled else { return (.none, .inconclusive) }
-        }
-
-        let grab = await frameGrab(
-            ctx: ctx, ref: ref, key: key, fileName: fileName, link: link, deadline: deadline,
-            earlierTierTransportFault: earlierTierTransportFault)
-        guard earlierTierTransportFault else { return (grab.artwork, grab.outcome) }
-        // Earlier-tier reads are link evidence too, and used to be invisible to the window: a host
-        // that timed out every sidecar/cover-art and then fell through looked perfectly healthy. A
-        // frame-grab that actually PRODUCED a frame overrides it — the link demonstrably carried a
-        // whole demux, so the earlier blip is stale news. Anything else and the earlier fault is
-        // the best evidence this generation has. "Produced" means DECODED, not stored: a failed
-        // disk write says nothing about the link that just carried the whole file.
-        return (grab.artwork, grab.decodedAFrame ? .success : .transportFailure)
+        let grab = await thumbnail(
+            ctx: ctx, ref: ref, key: key, fileName: fileName, link: link,
+            sidecarTransportFault: sidecarTransportFault)
+        guard sidecarTransportFault else { return (grab.artwork, grab.outcome) }
+        // The sidecar's read is link evidence too. A thumbnail that came back overrides it: the
+        // link demonstrably carried the file, so the earlier blip is stale news. Anything else and
+        // the sidecar's fault is the best evidence this generation has. "Came back" is not
+        // "stored": a failed disk write says nothing about the link that just carried the file.
+        return (grab.artwork, grab.madeAThumbnail ? .success : .transportFailure)
     }
 
     /// `withHardTimeout` with its ceiling waited out on the app's clock.
@@ -462,8 +425,8 @@ public actor MediaArtworkProvider {
     /// The sidecar tier: read the whole sibling image over a pooled reader (bounded by
     /// `withHardTimeout`), downscale to tile resolution, HEIC-encode, and store with no duration of
     /// its own (a poster has none; any length already cached for the key survives).
-    /// Returns the resolved artwork on success, or a fall-through to the frame-grab. A fall-through
-    /// is NEVER a poison — a missing/broken sidecar just means "use a frame-grab", not "this file is
+    /// Returns the resolved artwork on success, or a fall-through to the thumbnailer. A fall-through
+    /// is NEVER a poison — a missing/broken sidecar just means "ask the thumbnailer", not "this file is
     /// bad" — but it does carry whether the tier's own failure was LINK evidence, which the caller
     /// folds into the admission outcome.
     private func trySidecar(
@@ -491,16 +454,16 @@ public actor MediaArtworkProvider {
             // Clean lifecycle → the pooled connection checks back in reusable.
             await reader.disconnect()
             let elapsed = elapsed() - start
-            guard let cached = await cache.store(heic, duration: nil, for: key, origin: .artwork) else {
+            guard let cached = await cache.store(heic, duration: nil, for: key) else {
                 // A write failure — not a decode failure, and the read itself worked. Fall through
                 // without poisoning and without blaming the link.
-                Self.log.info("thumbnail sidecar store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — frame-grab fallback")
+                Self.log.info("thumbnail sidecar store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — thumbnailer fallback")
                 return .fellThrough(transportFault: false)
             }
             failures[key] = nil  // disk marker already cleared by store()
             Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=sidecar \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public) (\(size.mibLabel, privacy: .public) read)")
             // A poster carries no video length, but the cache may already hold one for this exact
-            // key (same size + mtime) from an earlier frame-grab — report what `store` actually
+            // key (same size + mtime) from an earlier thumbnail — report what `store` actually
             // kept, so this tile doesn't lose a runtime label that a scroll-off/back would restore.
             return .resolved(MediaArtwork(source: .local(cached.url), duration: cached.duration))
         } catch {
@@ -511,193 +474,87 @@ public actor MediaArtworkProvider {
             let transportFault = await reader.hadTransportFault || error is HardTimeoutError
             await reader.disconnect()
             let elapsed = elapsed() - start
-            Self.log.info("thumbnail sidecar FELL THROUGH: \(fileName, privacy: .public) [tier=sidecar \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — frame-grab fallback")
+            Self.log.info("thumbnail sidecar FELL THROUGH: \(fileName, privacy: .public) [tier=sidecar \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — thumbnailer fallback")
             return .fellThrough(transportFault: transportFault)
         }
     }
 
-    /// The MKV embedded cover-art tier: SeekHead (or pre-cluster linear scan) → Attachments
-    /// → HEIC tile, sharing the generation deadline with the frame-grab that follows on fall-through.
-    /// Poster-class downscale (`sidecarMaxPixel`) — cover art is not a frame grab.
-    private func tryCoverArt(
+    /// The thumbnailer's tier: it reads the file over one pooled reader, so credentials stay in
+    /// the pool, and gives up at the generation's ceiling. A content-level failure poisons the
+    /// key; a cancellation, a link fault, or a sidecar that lost to the link never does.
+    private func thumbnail(
         ctx: SMBSourceContext, ref: SMBServerRef, key: SMBThumbnailKey,
-        fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline
-    ) async -> CoverArtAttempt {
+        fileName: String, link: SMBLinkClass?, sidecarTransportFault: Bool
+    ) async -> ThumbnailAttempt {
         let reader = connections.reader(ctx.target(ref), ctx.path)
         let start = elapsed()
         do {
-            // Same race primitive the sidecar tier uses (`withHardTimeout`, below) rather than a
-            // bespoke continuation: it cancels its own losing timer on a normal finish, so a fast
-            // extract never leaves a sleeper parked for the rest of `coverArtTimeout`.
-            let data = try await hardTimeout(
-                seconds: deadline.capped(at: Self.coverArtTimeout).fractionalSeconds
-            ) {
-                try await MatroskaCoverArt.extract(reader)
-            }
-            guard let data else {
-                let elapsed = elapsed() - start
-                await reader.disconnect()
-                Self.log.info("thumbnail coverart fell through: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (no embedded cover art)")
-                return .fellThrough(transportFault: false)
-            }
-            guard let image = ImageTranscode.downscaledImage(from: data, maxPixelSize: Self.sidecarMaxPixel) else {
-                // Undecodable bytes — not a poison, not link evidence (mirrors sidecar).
-                let elapsed = elapsed() - start
-                await reader.disconnect()
-                Self.log.info("thumbnail coverart FELL THROUGH: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (undecodable) — frame-grab fallback")
-                return .fellThrough(transportFault: false)
-            }
-            let heic = try ImageTranscode.encodeHEIC(image)
+            let frame = try await boundedThumbnail(of: reader)
+            // Awaited: the caller releases the gate permit right after this returns, and the
+            // pooled connection checks back in first.
             await reader.disconnect()
             let elapsed = elapsed() - start
-            guard let cached = await cache.store(heic, duration: nil, for: key, origin: .artwork) else {
-                Self.log.info("thumbnail coverart store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — frame-grab fallback")
-                return .fellThrough(transportFault: false)
-            }
-            failures[key] = nil
-            Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public)")
-            return .resolved(MediaArtwork(source: .local(cached.url), duration: cached.duration))
-        } catch {
-            let transportFault = await reader.hadTransportFault || error is HardTimeoutError
-            if error is HardTimeoutError {
-                // Wedged reader may still be parked in libsmb2 — fire-and-forget disconnect, same
-                // idiom as frameGrab's nil-probe path. Don't await; don't build a replacement.
-                Task { await reader.disconnect() }
-            } else {
-                await reader.disconnect()
-            }
-            let elapsed = elapsed() - start
-            Self.log.info("thumbnail coverart FELL THROUGH: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — frame-grab fallback")
-            return .fellThrough(transportFault: transportFault)
-        }
-    }
-
-    /// The frame-grab tier: the thumbnailer reads the file through a per-fetch local server over
-    /// one pooled reader, so credentials stay in the pool and stopping the server on any exit
-    /// starves a decode nobody is waiting for. Only a file AVPlayer plays directly gets a frame.
-    ///
-    /// `deadline` is the shared generation ceiling (cover-art already spent some of it when that
-    /// tier ran); do not construct a fresh budget here.
-    private func frameGrab(
-        ctx: SMBSourceContext, ref: SMBServerRef, key: SMBThumbnailKey,
-        fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline,
-        earlierTierTransportFault: Bool
-    ) async -> FrameGrabAttempt {
-        let support = await deviceProfileBuilder.build().avPlayer
-        let skipped = { (outcome: ThumbnailFetchOutcome) in
-            FrameGrabAttempt(artwork: .none, outcome: outcome, decodedAFrame: false)
-        }
-        let delivery: SMBDelivery
-        do {
-            // Loopback, not LAN: the thumbnailer is strictly on-device, and a VPN's policy layer
-            // resets self-connections to LAN and link-local addresses. No bridging: the
-            // thumbnailer reads a file, not a playlist.
-            delivery = try await SMBDelivery.start(
-                reader: connections.reader(ctx.target(ref), ctx.path), fileName: fileName,
-                support: support, bridging: false, scope: .loopback,
-                probeDeadline: deadline.capped(at: MediaDelivery.defaultProbeDeadline), clock: clock)
-        } catch SMBDelivery.ProbeFailure.timedOut(let transportFault) {
-            return skipped(Self.earlyExitOutcome(probeTransportFault: transportFault))
-        } catch SMBDelivery.ProbeFailure.unreadable(let underlying, let transportFault) {
-            if Self.shouldRecordFailure(error: underlying, hadTransportFault: transportFault),
-               !earlierTierTransportFault, !Task.isCancelled {
-                await recordFailure(key)
-            }
-            Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] (probe: \(String(describing: underlying), privacy: .public))")
-            // A server that answered "no" carried the request: a link success.
-            return skipped(transportFault ? .transportFailure : .success)
-        } catch let reason as Unplayable {
-            // The failure marker gates the sidecar and cover-art tiers too. A poster tier that
-            // lost to the link, or a generation nobody waited for, must get its retry, so
-            // only a file whose every tier answered is remembered as having no artwork.
-            if !earlierTierTransportFault, !Task.isCancelled { await recordFailure(key) }
-            Self.log.info("thumbnail SKIPPED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] (\(String(describing: reason), privacy: .public))")
-            // The probe's bytes arrived: a content-level miss, which is a link success.
-            return skipped(.success)
-        } catch {
-            // A local bind failure says nothing about the file or the remote link, so the key
-            // is not poisoned over it.
-            return skipped(.inconclusive)
-        }
-
-        let result = await decodeAndStore(
-            via: delivery, key: key, fileName: fileName, link: link, deadline: deadline)
-        // Awaited, not fire-and-forget: the caller releases the gate permit right after this
-        // returns, and the stop checks the pooled reader back in or discards a tainted borrow.
-        await delivery.stop()
-        return result
-    }
-
-    /// The decode + cache-store + outcome-logging half of a frame-grab. Never throws; the caller
-    /// stops the delivery. A content-level failure poisons the key (records the failure); a
-    /// cancellation never does.
-    private func decodeAndStore(
-        via delivery: SMBDelivery, key: SMBThumbnailKey, fileName: String,
-        link: SMBLinkClass?, deadline: GenerationDeadline
-    ) async -> FrameGrabAttempt {
-        let start = elapsed()
-        do {
-            // 5% in, not the thumbnailer's default 30%: past a black leader, and shallow enough
-            // that the bytes are already streamed for the header.
-            var frame = try await thumbnailer.frame(
-                from: delivery.url, at: 0.05, timeout: deadline.remaining)
-            var retryPositions = Self.greyRetryPositions[...]
-            var usable = FrameQuality.isUsable(frame.data)
-            while !usable, deadline.remaining > .zero, let position = retryPositions.popFirst() {
-                Self.log.info("thumbnail grey frame: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] — retrying at \(position, privacy: .public)")
-                frame = try await thumbnailer.frame(
-                    from: delivery.url, at: position, timeout: deadline.remaining)
-                usable = FrameQuality.isUsable(frame.data)
-            }
-            guard usable else {
-                // Never cached. The backoff bounds the retries; each one walks the ladder again.
-                await recordFailure(key)
-                Self.log.info("thumbnail REJECTED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] (grey frame at every position)")
-                // Frames crossed the link up to three times: a content-level miss, which is a link success.
-                return FrameGrabAttempt(artwork: .none, outcome: .inconclusive, decodedAFrame: true)
-            }
-            let elapsed = elapsed() - start
-            let stats = await delivery.stats
             failures[key] = nil  // a decodable file: clear the in-memory stamp (store clears the disk marker)
-            Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public) (\(stats.formatted, privacy: .public))")
+            Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=thumbnailer \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public)")
             // A nil from store() is a WRITE failure, not a decode failure — return .none but do NOT
-            // poison the key, so the next scroll retries instead of hiding a decodable file. The
-            // frame still DECODED, which is what the link evidence is about: `decodedAFrame` stays
-            // true so a sidecar or cover-art blip earlier in the same generation is overridden.
+            // poison the key, so the next scroll retries instead of hiding a decodable file.
             guard let cached = await cache.store(frame.data, duration: frame.duration, for: key) else {
-                return FrameGrabAttempt(artwork: .none, outcome: .success, decodedAFrame: true)
+                return ThumbnailAttempt(artwork: .none, outcome: .success, madeAThumbnail: true)
             }
-            return FrameGrabAttempt(
+            return ThumbnailAttempt(
                 artwork: MediaArtwork(source: .local(cached.url), duration: cached.duration),
                 outcome: .success,
-                decodedAFrame: true
+                madeAThumbnail: true
             )
         } catch {
-            let elapsed = elapsed() - start
-            let transportFault = await delivery.hadTransportFault
-            if Self.shouldRecordFailure(error: error, hadTransportFault: transportFault) {
+            let transportFault = await reader.hadTransportFault
+            // Not held up by a read still parked in libsmb2: a borrow with a call in flight is
+            // condemned, not drained.
+            await reader.disconnect()
+            // The failure marker gates the sidecar too, so a sidecar that lost to the link must
+            // get its retry: only a file whose every tier answered is remembered as failed.
+            if Self.shouldRecordFailure(error: error, hadTransportFault: transportFault),
+               !sidecarTransportFault, !Task.isCancelled {
                 await recordFailure(key)
             }
-            let stats = await delivery.stats
-            Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=framegrab \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public), \(stats.formatted, privacy: .public))")
-            // AIMD: shrink only when the LINK didn't keep up. Thumbnailer hard timeouts count too
-            // (they fire on a struggling link even when no SMB read/attribute fault was recorded).
-            // A cancelled generation is `.inconclusive` — nobody ever found out how the link was
-            // doing, and reporting success there GREW the window on zero evidence. A content-level
-            // miss is a real `.success`: the bytes arrived, the file just wouldn't decode.
+            let elapsed = elapsed() - start
+            Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=thumbnailer \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public))")
+            // AIMD: shrink only when the LINK didn't keep up. The ceiling counts too, even on a
+            // cancelled tile, which waits for its read: a read stuck for the whole ceiling is the
+            // link not keeping up, fault recorded or not. A generation cancelled before that is
+            // `.inconclusive` — nobody found out how the link was doing.
+            // A content-level miss is a real `.success`: the bytes arrived, the file just had no
+            // picture to give.
             let outcome: ThumbnailFetchOutcome
             if error is CancellationError {
                 outcome = .inconclusive
-            } else if transportFault || Self.isThumbnailerTimeout(error) {
+            } else if transportFault || error is HardTimeoutError {
                 outcome = .transportFailure
             } else {
                 outcome = .success
             }
-            return FrameGrabAttempt(artwork: .none, outcome: outcome, decodedAFrame: false)
+            return ThumbnailAttempt(artwork: .none, outcome: outcome, madeAThumbnail: false)
         }
     }
 
-    /// Whether a failed frame-grab should POISON the key (record a persistent failure marker).
+    /// The thumbnailer, given up at the generation's ceiling. A cancelled caller cancels it and
+    /// still waits for it to stop, at its next packet or at the ceiling when a read is stuck, so
+    /// its last read never overlaps the next generation's on the link and its connection is free
+    /// to check back in.
+    private func boundedThumbnail(of reader: any SMBShareReading) async throws -> ThumbnailFrame {
+        let thumbnailer = thumbnailer
+        let work = Task { try await thumbnailer.thumbnail(of: reader) }
+        defer { work.cancel() }
+        return try await withTaskCancellationHandler {
+            // In a task of its own, so the caller's cancellation reaches the thumbnailer and not
+            // the ceiling's race, which would let go at once.
+            try await Task { try await hardTimeout(seconds: Self.generationTimeout) { try await work.value } }.value
+        } onCancel: {
+            work.cancel()
+        }
+    }
+
+    /// Whether a failed thumbnail should POISON the key (record a persistent failure marker).
     ///
     /// Only a content-level failure earns one. A transport-class SMB fault means the FILE may be
     /// perfectly fine — the network blipped — and a cancellation means nobody ever found out, so
@@ -710,19 +567,6 @@ public actor MediaArtworkProvider {
         if error is CancellationError { return false }
         if hadTransportFault { return false }
         return true
-    }
-
-    /// The outcome when the probe never answered: a link fault the abandoned reader recorded is
-    /// positive evidence against the host, anything else says nothing.
-    nonisolated static func earlyExitOutcome(probeTransportFault: Bool) -> ThumbnailFetchOutcome {
-        probeTransportFault ? .transportFailure : .inconclusive
-    }
-
-    /// Whether `error` is a thumbnailer's own "gave up waiting" shape — distinct from content-side
-    /// cases like `encodingFailed`. Used only for AIMD admission feedback; the poison guard does
-    /// not consult this (it already has `hadTransportFault` + cancellation).
-    private static func isThumbnailerTimeout(_ error: any Error) -> Bool {
-        (error as? any ThumbnailError)?.isTimeout == true
     }
 
     // MARK: - Cache management
@@ -775,7 +619,7 @@ public actor MediaArtworkProvider {
     // MARK: - Negative cache
 
     /// Whether `key` is still within its failure backoff. Consults the in-memory stamp first (fast
-    /// path), then the persistent `.fail` marker on the miss path (survives a relaunch). Backoff is
+    /// path), then the persistent failure marker on the miss path (survives a relaunch). Backoff is
     /// `180s × 2^(attempts−1)` capped at 24h — never permanent (see `maxBackoff`); Clear Cache or a
     /// file change (new key) resets early.
     private func isNegativelyCached(_ key: SMBThumbnailKey) async -> Bool {
@@ -830,12 +674,12 @@ public actor MediaArtworkProvider {
 }
 
 /// A sidecar tier failure that isn't a thrown SMB error (e.g. the bytes weren't a decodable image).
-/// Routed through the same catch as a read throw so both fall through to the frame-grab.
+/// Routed through the same catch as a read throw so both fall through to the thumbnailer.
 private enum SidecarFailure: Error {
     case undecodable
 }
 
-/// What the sidecar tier produced: a poster, or a fall-through to the frame-grab that also reports
+/// What the sidecar tier produced: a poster, or a fall-through to the thumbnailer that also reports
 /// whether the tier's own failure was LINK evidence (a transport-class read fault or the tier's hard
 /// timeout) rather than a missing/broken image.
 ///
@@ -846,60 +690,19 @@ nonisolated private enum SidecarAttempt {
     case fellThrough(transportFault: Bool)
 }
 
-/// What the MKV cover-art tier produced: a poster from an embedded attachment, or a fall-through
-/// to the frame-grab that also reports whether the tier's own failure was LINK evidence (a
-/// transport-class read fault or the tier's hard timeout) rather than absent/undecodable cover art.
+/// What the thumbnailer's tier produced: the artwork, the admission outcome, and — separately —
+/// whether the thumbnailer gave a thumbnail.
+///
+/// "Made" and "stored" are different facts. A thumbnail whose disk write failed returns `.none`
+/// artwork, and reading that as "no thumbnail" would make a failed write look like link trouble to
+/// the sidecar-fault override above. The write is local; only the thumbnail says the link carried
+/// the file.
 ///
 /// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
-nonisolated private enum CoverArtAttempt {
-    case resolved(MediaArtwork)
-    case fellThrough(transportFault: Bool)
-}
-
-/// What the frame-grab tier produced: the artwork, the admission outcome, and — separately —
-/// whether a frame actually came back from the DECODER.
-///
-/// "Decoded" and "stored" are different facts. A decode that succeeded but whose disk write failed
-/// returns `.none` artwork, and reading that as "no frame" made a failed write look like link
-/// trouble to the earlier-tier-fault override above. The write is local; only the decode says the
-/// link carried the file.
-///
-/// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
-nonisolated private struct FrameGrabAttempt {
+nonisolated private struct ThumbnailAttempt {
     let artwork: MediaArtwork
     let outcome: ThumbnailFetchOutcome
-    let decodedAFrame: Bool
-}
-
-/// The ONE ceiling cover-art + frame-grab draw from, anchored in `generateHoldingPermit` before
-/// either tier runs.
-///
-/// The cover-art extract, the probe and the frame decode used to (or would) arm
-/// INDEPENDENT ceilings and run in series under a single held permit — well past the 30s budget,
-/// with the whole host's admission slot blocked for all of it. They now draw from this shared
-/// budget: each phase asks for its own cap or whatever is left, whichever is smaller, so the total
-/// can never exceed the budget however the phases fall out.
-///
-/// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
-nonisolated private struct GenerationDeadline {
-    private let elapsed: @Sendable () -> Duration
-    private let expiry: Duration
-
-    init(elapsed: @escaping @Sendable () -> Duration, budget: Duration) {
-        self.elapsed = elapsed
-        self.expiry = elapsed() + budget
-    }
-
-    /// Budget left, never negative. An exhausted budget hands the next phase `.zero`, which its own
-    /// timeout treats as an immediate expiry — the honest answer when there is nothing left to spend.
-    var remaining: Duration {
-        max(.zero, expiry - elapsed())
-    }
-
-    /// `cap`, or the remaining budget when that is smaller.
-    func capped(at cap: Duration) -> Duration {
-        min(cap, remaining)
-    }
+    let madeAThumbnail: Bool
 }
 
 nonisolated private extension Duration {
@@ -914,13 +717,6 @@ nonisolated private extension Int64 {
     /// (grep-able diagnostics, not UI — locale-aware `.byteCount` would vary separators/units).
     var mibLabel: String {
         String(format: "%.1f MiB", Double(self) / 1_048_576)
-    }
-}
-
-nonisolated private extension LocalMediaServer.Stats {
-    /// "4.2 MiB over 12 connections" — what a frame-grab cost the share, for the outcome logs.
-    var formatted: String {
-        "\(Int64(bytesRead).mibLabel) over \(connections) connections"
     }
 }
 

@@ -21,8 +21,7 @@ public struct MediaDelivery: Sendable {
     /// Reads what it must of `reader` under `probeDeadline`, picks the route, and starts the
     /// server for it. A file AVPlayer opens is served as it is. A file in one of
     /// `bridgedContainers`, or an MP4 or MOV AVPlayer would not play as stored, goes through
-    /// the bridge when `bridging` is set, which costs its
-    /// keyframe list and its opening. A file with no index has its keyframes listed by reading
+    /// the bridge, which costs its keyframe list and its opening. A file with no index has its keyframes listed by reading
     /// it, and the deadline abandons that read only when it has passed with no packet read.
     /// `showsHDR` is whether AVPlayer shows HDR on this device now: the bridge refuses PQ video
     /// where it does not.
@@ -35,7 +34,6 @@ public struct MediaDelivery: Sendable {
         fileName: String,
         support: AVPlayerSupport,
         showsHDR: Bool = true,
-        bridging: Bool = true,
         scope: LocalMediaServer.AddressScope = .lan,
         probeDeadline: Duration = defaultProbeDeadline,
         clock: any Clock<Duration>
@@ -43,7 +41,7 @@ public struct MediaDelivery: Sendable {
         let progress = ListingProgress()
         let routed = await race(against: probeDeadline, on: clock, restartedBy: progress) {
             try await responder(
-                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR, bridging: bridging,
+                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR,
                 progress: progress, clock: clock)
         }
         guard let routed else { throw ProbeFailure.timedOut }
@@ -96,15 +94,15 @@ public struct MediaDelivery: Sendable {
     /// What serves the file. Throws an `Unplayable`, or the reader's own error.
     private static func responder(
         reading reader: any RandomAccessReading, fileName: String, support: AVPlayerSupport, showsHDR: Bool,
-        bridging: Bool, progress: ListingProgress, clock: some Clock<Duration>
+        progress: ListingProgress, clock: some Clock<Duration>
     ) async throws -> any MediaResponder {
         let probe = try await MediaProbe.probe(reader)
         let unmended = probe.avPlayerHazards.subtracting(mendedHazards)
         switch DirectPlay.verdict(for: probe, support: support) {
         // The bridge copies a stream as it is stored, so it would carry the hazard to AVPlayer.
-        case .unplayable where bridging && !unmended.isEmpty:
+        case .unplayable where !unmended.isEmpty:
             throw Unplayable.directHazards(unmended)
-        case .unplayable(let reason) where bridging && bridges(reason):
+        case .unplayable(let reason) where bridges(reason):
             do {
                 let opening = clock.now
                 let samplingEnd = opening.advanced(by: samplingTime)
@@ -138,11 +136,6 @@ public struct MediaDelivery: Sendable {
         _ = await Self.race(against: .seconds(2), on: clock) { await bridge.reads.allReturned() }
         let report = bridge.report(of: await server.records)
         BridgeReport.log.notice("\(report)")
-    }
-
-    /// What the session cost the source. Readable after `stop()` too.
-    public var stats: LocalMediaServer.Stats {
-        get async { await server.stats }
     }
 
     /// Races `work` against `deadline`, abandoning the work if the deadline wins. Nil on

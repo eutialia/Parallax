@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCore
 
 /// Pulls embedded cover-art image bytes from a Matroska/WebM (EBML) file via
 /// random-access reads — the Attachments element, reached through SeekHead when
@@ -7,7 +8,7 @@ import Foundation
 /// Never throws on malformed/absent structure — every parse failure degrades to
 /// `nil`, matching `MediaProbe`. Only real I/O failures from the reader propagate,
 /// so the caller can classify them as transport faults.
-public enum MatroskaCoverArt {
+enum MatroskaCoverArt {
     /// Shared across every metadata read the walk performs (headers, SeekHead,
     /// Attachments child headers/name/mime — NOT the chosen FileData payload).
     /// Sized to `maxStructuralReads` full scan-chunk refills: each attachment whose
@@ -57,9 +58,9 @@ public enum MatroskaCoverArt {
     private static let idFileMimeType: UInt64 = 0x4660
     private static let idFileData: UInt64 = 0x465C
 
-    // MARK: - Public entry
+    // MARK: - Entry
 
-    public static func extract(_ reader: any RandomAccessReading) async throws -> Data? {
+    static func extract(_ reader: any RandomAccessReading) async throws -> Data? {
         let fileSize = try await reader.fileSize
         guard fileSize >= 4 else { return nil }
 

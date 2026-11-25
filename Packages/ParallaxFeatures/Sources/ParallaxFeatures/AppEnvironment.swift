@@ -40,8 +40,8 @@ public struct AppEnvironment {
     /// One element each time the device's HDR playback eligibility may have moved: a display
     /// connected or disconnected, Low Power Mode, other system resource shifts.
     public let hdrEligibilityChanges: @Sendable () -> AsyncStream<Void>
-    /// Decodes one frame of a file AVFoundation opens, for an SMB tile.
-    public let thumbnailer: any FrameThumbnailing
+    /// A tile's picture of an SMB file: its cover art, or a frame of its video.
+    public let thumbnailer: any Thumbnailing
     public let makePlaybackEngine: @MainActor @Sendable () -> any PlaybackEngine
     /// The lock screen and the remote commands, one per player.
     public let makeNowPlaying: @MainActor @Sendable () -> any NowPlayingUpdating
@@ -68,7 +68,7 @@ public struct AppEnvironment {
         smbConnections: SMBConnections,
         browseSMBServices: @escaping @Sendable () -> AsyncStream<[String]>,
         hdrEligibilityChanges: @escaping @Sendable () -> AsyncStream<Void>,
-        thumbnailer: any FrameThumbnailing,
+        thumbnailer: any Thumbnailing,
         makePlaybackEngine: @escaping @MainActor @Sendable () -> any PlaybackEngine,
         makeNowPlaying: @escaping @MainActor @Sendable () -> any NowPlayingUpdating,
         clientName: String,

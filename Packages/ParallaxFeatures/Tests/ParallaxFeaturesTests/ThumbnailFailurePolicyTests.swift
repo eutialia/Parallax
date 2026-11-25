@@ -1,12 +1,13 @@
 import Foundation
 import Testing
 import ParallaxTestScaling
+import ParallaxFileBrowse
 import ParallaxPlayback
 @testable import ParallaxFeatures
 
-/// The frame-grab POISON rule, on its own. A recorded failure silences a file for hours (exponential
+/// The thumbnail POISON rule, on its own. A recorded failure silences a file for hours (exponential
 /// backoff, capped at 24h), so the cut between "this file is broken" and "the network blipped / we
-/// gave up" is worth pinning without a share, a bridge or a decode in the way — it was previously an
+/// gave up" is worth pinning without a share or a decode in the way — it was previously an
 /// inline condition inside a `catch` that only an end-to-end run could reach.
 @Suite("Thumbnail failure policy", .scaledTimeLimit())
 struct ThumbnailFailurePolicyTests {
@@ -28,15 +29,15 @@ struct ThumbnailFailurePolicyTests {
 
     static let poisonCases: [PoisonCase] = [
         .init("a transport fault never blames the file",
-              error: AVThumbnailError.timedOut, hadTransportFault: true, records: false),
+              error: HardTimeoutError(), hadTransportFault: true, records: false),
         .init("cancellation never blames the file",
               error: CancellationError(), hadTransportFault: false, records: false),
         .init("cancellation during a transport fault still doesn't",
               error: CancellationError(), hadTransportFault: true, records: false),
         // One content case is enough: the rule reads the error only for `CancellationError`, so
-        // every other type, timeout or encode, lands on the same branch.
+        // every other type, timeout or no picture, lands on the same branch.
         .init("a content-level failure on a healthy link is the file's fault",
-              error: AVThumbnailError.encodingFailed, hadTransportFault: false, records: true),
+              error: MediaThumbnailer.Failure.noPicture, hadTransportFault: false, records: true),
     ]
 
     @Test("only a content-level failure on a healthy link poisons the key", arguments: poisonCases)
@@ -46,20 +47,5 @@ struct ThumbnailFailurePolicyTests {
                 error: testCase.error, hadTransportFault: testCase.hadTransportFault
             ) == testCase.records
         )
-    }
-
-    /// The nil-probe exit owes `.transportFailure` when the abandoned probe reader already saw a
-    /// link fault, and nothing otherwise.
-    @Test("a nil probe's sticky transport fault decides its early exit",
-          arguments: [(probe: false, expectTransportFailure: false), (probe: true, expectTransportFailure: true)])
-    func earlyExitOutcomeThreadsProbeFault(_ testCase: (probe: Bool, expectTransportFailure: Bool)) {
-        switch MediaArtworkProvider.earlyExitOutcome(probeTransportFault: testCase.probe) {
-        case .transportFailure:
-            #expect(testCase.expectTransportFailure)
-        case .inconclusive:
-            #expect(!testCase.expectTransportFailure)
-        case .success:
-            Issue.record("early exit must never report .success — nothing decoded")
-        }
     }
 }

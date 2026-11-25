@@ -649,7 +649,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let tolerance = CMTime(seconds: 1, preferredTimescale: 600)
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
-        // The SAME 320pt tier the browse thumbnailer produces (`AVThumbnailer`):
+        // The SAME 320pt tier the browse thumbnailer produces (`MediaThumbnailer`):
         // a backfilled still lands in `SMBThumbnailCache`
         // beside theirs, under a budget sized at ~30–120 KB per HEIC, and a 1280
         // still is 5–10× that. Height-bounded with a 0 width, so AVFoundation
@@ -659,7 +659,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
         do {
             // Completion-handler API rather than `image(at:)` — the async form requires `sending`
-            // the generator, which a MainActor holder can't do (same wall AVThumbnailer hit).
+            // the generator, which a MainActor holder can't do.
             // Any error (no track, decode fail, cancelled generation) becomes nil — the backfill
             // is best-effort only. Cancellation of the awaiting task (stop/teardown) is forwarded
             // to AVFoundation explicitly: without it the generator's range reads keep streaming

@@ -40,7 +40,7 @@ extension AppEnvironment {
                     continuation.onTermination = { _ in relay.cancel() }
                 }
             },
-            thumbnailer: AVThumbnailer(),
+            thumbnailer: MediaThumbnailer(),
             makePlaybackEngine: {
                 #if os(tvOS)
                 AVKitEngine(tuning: startupTuningStore.selected.tuning, prepareDisplay: DisplayCriteriaMatcher.prepare(for:))
