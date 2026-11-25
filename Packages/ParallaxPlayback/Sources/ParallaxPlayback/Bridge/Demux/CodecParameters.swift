@@ -1,6 +1,7 @@
 import AetherLibavcodec
 import AetherLibavutil
 import Foundation
+import ParallaxCore
 
 /// A stream's codec configuration as libavformat read it or an encoder made it, kept whole so
 /// the MP4 muxer writes the sample entry from that record.
@@ -201,21 +202,28 @@ final class CodecParameters: @unchecked Sendable {
         return codecName + profile + dolbyVision
     }
 
+    /// The profile the stream's configuration names, for the codecs whose profile decides
+    /// whether a device decodes them.
+    var profile: StreamProfile? {
+        switch pointer.pointee.codec_id {
+        case AV_CODEC_ID_H264: h264ProfileLevelID.map { .h264($0[0]) }
+        case AV_CODEC_ID_AV1: av1Configuration.map { .av1($0[1] >> 5) }
+        default: nil
+        }
+    }
+
     /// The RFC 6381 string a playlist's `CODECS` carries, which starts with the MP4 sample entry
-    /// the codec is stored under. Nil for a codec or profile the bridge does not deliver, which
-    /// is what makes the plan refuse the file.
+    /// the codec is stored under. Nil for a codec an HLS playlist cannot carry, or one whose
+    /// profile cannot be read.
     var playlistCodec: String? {
         switch pointer.pointee.codec_id {
         case AV_CODEC_ID_H264:
-            // Baseline, Main and High are the profiles every Apple decoder takes, and High 10
-            // some.
-            guard let level = h264ProfileLevelID, [66, 77, 100, 110].contains(level[0]) else { return nil }
+            guard let level = h264ProfileLevelID else { return nil }
             return String(format: "avc1.%02x%02x%02x", level[0], level[1], level[2])
         case AV_CODEC_ID_HEVC:
             guard let level = hevcProfileTierLevel else { return nil }
             let space = level[0] >> 6, isHighTier = level[0] & 0x20 != 0, profile = level[0] & 0x1f
-            // Main and Main 10.
-            guard space == 0, profile == 1 || profile == 2, !isDolbyVisionWithoutBase else { return nil }
+            guard space == 0, !isDolbyVisionWithoutBase else { return nil }
             // The string carries the compatibility flags with their bits in reverse order, and
             // the constraint bytes up to the last that is not zero.
             let compatibility = level[1...4].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
@@ -225,8 +233,8 @@ final class CodecParameters: @unchecked Sendable {
             return "hvc1.\(profile).\(String(reversed, radix: 16, uppercase: true))"
                 + ".\(isHighTier ? "H" : "L")\(level[11])\(constraints)"
         case AV_CODEC_ID_AAC:
-            // libavcodec numbers AAC profiles one below the MPEG-4 audio object type: LC is 1,
-            // HE is 4 and HE v2 is 28.
+            // LC, HE and HE v2, the profiles HLS names. libavcodec numbers AAC profiles one below
+            // the MPEG-4 audio object type: LC is 1, HE is 4 and HE v2 is 28.
             return [1, 4, 28].contains(pointer.pointee.profile) ? "mp4a.40.\(pointer.pointee.profile + 1)" : nil
         case AV_CODEC_ID_AC3:
             return "ac-3"
@@ -239,12 +247,8 @@ final class CodecParameters: @unchecked Sendable {
         case AV_CODEC_ID_ALAC:
             return "alac"
         case AV_CODEC_ID_AV1:
-            // An `av1C` record: a marker and version byte, then the profile and level, then the
-            // tier and the bits that give the depth. Main is the profile Apple's decoders take.
-            let extradata = configuration
-            guard extradata.count >= 4, extradata[0] == 0x81 else { return nil }
+            guard let extradata = av1Configuration else { return nil }
             let profile = extradata[1] >> 5, level = extradata[1] & 0x1f
-            guard profile == 0 else { return nil }
             let isHighTier = extradata[2] & 0x80 != 0
             let depth = extradata[2] & 0x40 == 0 ? 8 : extradata[2] & 0x20 == 0 ? 10 : 12
             return String(format: "av01.%d.%02d%@.%02d", profile, level, isHighTier ? "H" : "M", depth)
@@ -258,6 +262,13 @@ final class CodecParameters: @unchecked Sendable {
     /// each behind a start code, as a transport stream carries them.
     private var configuration: [UInt8] {
         Array(UnsafeBufferPointer(start: pointer.pointee.extradata, count: Int(pointer.pointee.extradata_size)))
+    }
+
+    /// An `av1C` record: a marker and version byte, then the profile and level, then the tier
+    /// and the bits that give the depth.
+    private var av1Configuration: [UInt8]? {
+        let configuration = configuration
+        return configuration.count >= 4 && configuration[0] == 0x81 ? configuration : nil
     }
 
     /// H.264's profile, constraint and level bytes, which an `avcC` record and a sequence

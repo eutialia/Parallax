@@ -241,8 +241,8 @@ struct MatroskaCoverArtTests {
 
     @Test("non-EBML magic at offset 0 returns nil")
     func nonEBMLMagic() async throws {
-        // MP4 ftyp-shaped header — same spirit as MediaProbe's sniffs.
-        let ftyp = ISOBMFFFixtures.ftyp()
+        // An MP4's first box: size 20, `ftyp`, brand `isom`, then minor version and nothing else.
+        let ftyp = Data([0, 0, 0, 20]) + Data("ftypisom".utf8) + Data(count: 8)
         let result = try await extract(ftyp)
         #expect(result == nil)
 

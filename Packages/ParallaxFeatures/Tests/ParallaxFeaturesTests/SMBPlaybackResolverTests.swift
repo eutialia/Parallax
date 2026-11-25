@@ -120,8 +120,7 @@ struct SMBPlaybackResolverTests {
             (Data?.none, AppError.source(.connectionLost)),
             (ISOBMFFFixtures.ftyp() + ISOBMFFFixtures.box("mdat", Data(count: 64)), .playback(.incompleteFile)),
             (AppWorld.mkvBytes, .playback(.unsupportedFormat(reason: "unreadable: unreadableContainer(code: -1094995529)"))),
-            (ISOBMFFFixtures.mp4(traks: [ISOBMFFFixtures.trak(stsdEntries: ["vp09"], handler: "vide")]),
-             .playback(.unsupportedFormat(reason: "video: vp9"))),
+            (Data(repeating: 0x5A, count: 64), .playback(.unsupportedFormat(reason: "container: unknown"))),
           ])
     func unplayableFileFailsTheResolve(contents: Data?, expected: AppError) async throws {
         let resolver = try await makeResolver(listing: SiblingListing(entries: []), contents: contents)

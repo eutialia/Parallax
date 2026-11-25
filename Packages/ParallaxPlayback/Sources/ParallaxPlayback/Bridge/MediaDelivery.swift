@@ -20,7 +20,8 @@ public struct MediaDelivery: Sendable {
 
     /// Reads what it must of `reader` under `probeDeadline`, picks the route, and starts the
     /// server for it. A file AVPlayer opens is served as it is. A file in one of
-    /// `bridgedContainers` goes through the bridge when `bridging` is set, which costs its
+    /// `bridgedContainers`, or an MP4 or MOV AVPlayer would not play as stored, goes through
+    /// the bridge when `bridging` is set, which costs its
     /// keyframe list and its opening. A file with no index has its keyframes listed by reading
     /// it, and the deadline abandons that read only when it has passed with no packet read.
     /// `showsHDR` is whether AVPlayer shows HDR on this device now: the bridge refuses PQ video
@@ -74,13 +75,36 @@ public struct MediaDelivery: Sendable {
     /// streams, FLV, AVI, ASF and program streams in spans.
     static let bridgedContainers: Set<Container> = [.mkv, .ts, .flv, .avi, .asf, .mpegps]
 
+    /// Whether the bridge opens a file AVPlayer cannot play for `reason`: one in a container only
+    /// the bridge reads, or an MP4 or MOV with a stream AVPlayer would not decode or show as
+    /// stored. The probe reads codecs, profiles and hazards from MP4 and MOV only.
+    private static func bridges(_ reason: Unplayable) -> Bool {
+        switch reason {
+        case .container(let container?): bridgedContainers.contains(container)
+        case .videoCodec, .audioCodec, .undecodedProfile: true
+        case .directHazards: true
+        case .incompleteFile, .container(nil), .refused: false
+        }
+    }
+
+    /// The hazards the bridge plays through. It copies a stream's configuration record and its
+    /// times as they are stored: a record with no parameter sets plays no picture, and show
+    /// times that follow decode order show the pictures in it. Its one init segment holds one
+    /// sample description.
+    private static let mendedHazards: Set<AVPlayerHazard> = [.inBandParameterSets, .interlacedVideo]
+
     /// What serves the file. Throws an `Unplayable`, or the reader's own error.
     private static func responder(
         reading reader: any RandomAccessReading, fileName: String, support: AVPlayerSupport, showsHDR: Bool,
         bridging: Bool, progress: ListingProgress, clock: some Clock<Duration>
     ) async throws -> any MediaResponder {
-        switch DirectPlay.verdict(for: try await MediaProbe.probe(reader), support: support) {
-        case .unplayable(.container(let container?)) where bridging && bridgedContainers.contains(container):
+        let probe = try await MediaProbe.probe(reader)
+        let unmended = probe.avPlayerHazards.subtracting(mendedHazards)
+        switch DirectPlay.verdict(for: probe, support: support) {
+        // The bridge copies a stream as it is stored, so it would carry the hazard to AVPlayer.
+        case .unplayable where bridging && !unmended.isEmpty:
+            throw Unplayable.directHazards(unmended)
+        case .unplayable(let reason) where bridging && bridges(reason):
             do {
                 let opening = clock.now
                 let samplingEnd = opening.advanced(by: samplingTime)

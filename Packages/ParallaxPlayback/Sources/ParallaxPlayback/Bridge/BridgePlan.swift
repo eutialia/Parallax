@@ -372,7 +372,7 @@ enum VideoDecision {
         }
         // AVPlayer shows video stored as fields combed or black, whatever its codec.
         if stream.packetTimes == .presentation, !stream.parameters.isInterlaced,
-           let codec = stream.parameters.playlistCodec, Self.decodes(codec, on: support) {
+           let codec = stream.parameters.playlistCodec, stream.parameters.profile.map(support.decodes) != false {
             self = .copy(codec: codec)
         } else if VideoDecoder.decodes(stream.parameters) {
             // A decoder that holds back one picture times the pictures of a stream that
@@ -382,14 +382,6 @@ enum VideoDecision {
         } else {
             self = .refuse(.videoCodec(name: stream.parameters.displayName))
         }
-    }
-
-    /// Whether the device decodes a video codec string the bridge delivers. AV1 and 10-bit
-    /// H.264 (profile 110, `6e`) have a decoder on some devices only.
-    private static func decodes(_ codec: String, on support: AVPlayerSupport) -> Bool {
-        if codec.hasPrefix("av01") { return support.videoCodecs.contains(.av1) }
-        if codec.hasPrefix("avc1.6e") { return support.decodesH264High10 }
-        return true
     }
 }
 

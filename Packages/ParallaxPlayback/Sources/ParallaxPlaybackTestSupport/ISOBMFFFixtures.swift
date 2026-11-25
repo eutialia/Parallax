@@ -1,5 +1,6 @@
 import Foundation
 import ParallaxCore
+import ParallaxPlayback
 
 /// Byte-level ISO BMFF (MP4/MOV) fixture builders for container-probe suites.
 ///

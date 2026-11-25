@@ -1,7 +1,8 @@
 import Foundation
-import ParallaxCoreTestSupport
+import ParallaxCore
+import ParallaxPlaybackTestSupport
 import Testing
-@testable import ParallaxCore
+@testable import ParallaxPlayback
 
 /// One decode-order-timestamp hazard row: a ctts shape plus whether a B slice sits in the
 /// sample window the probe reads, and the hazard verdict that combination should produce.
@@ -134,6 +135,30 @@ struct MediaProbeTests {
             Fixture.trak(stsdEntries: [fourcc], handler: "soun"),
         ]))
         #expect(result.audioCodecs == .known([expected]))
+    }
+
+    @Test("an mp4a entry is named by its esds object type, and is unknown when the esds does not parse", arguments: [
+        (mp4aEntry(objectType: 0x40), ProbedCodec<[AudioCodec]>.known([.aac])),
+        (mp4aEntry(objectType: 0x67), .known([.aac])),
+        (mp4aEntry(objectType: 0x40, url: "rtsp"), .known([.aac])),
+        (mp4aEntry(objectType: 0x6B), .known([.mp3])),
+        (mp4aEntry(objectType: 0xA9), .known([.dts])),
+        (mp4aEntry(objectType: 0xA5), .unknown),
+        (mp4aEntry(objectType: 0x40, descriptorTag: 0x05), .unknown),
+    ])
+    func mp4aNamedByObjectType(entry: Data, expected: ProbedCodec<[AudioCodec]>) async throws {
+        let result = try await probe(Fixture.mp4(traks: [Fixture.trakRaw(stsdEntries: [entry], handler: "soun")]))
+        #expect(result.audioCodecs == expected)
+    }
+
+    /// An `mp4a` sample entry of version 0 whose `esds` holds an ES descriptor, which may carry
+    /// a URL, and its decoder configuration.
+    private static func mp4aEntry(objectType: UInt8, url: String? = nil, descriptorTag: UInt8 = 0x03) -> Data {
+        let urlField = url.map { Data([UInt8($0.utf8.count)] + $0.utf8) } ?? Data()
+        let decoderConfiguration = Data([0x04, 13, objectType, 0x15] + Array(repeating: 0, count: 11))
+        let descriptor = Data([0, 1, url == nil ? 0 : 0x40]) + urlField + decoderConfiguration
+        let esds = Fixture.box("esds", Data([0, 0, 0, 0, descriptorTag, UInt8(descriptor.count)]) + descriptor)
+        return Fixture.box("mp4a", Data(count: 28) + esds)
     }
 
     /// An unmapped fourcc must read as `.unknown`, not `.none`: direct play refuses unknown,

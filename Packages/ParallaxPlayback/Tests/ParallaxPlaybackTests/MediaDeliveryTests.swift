@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 import ParallaxTestScaling
@@ -26,10 +27,14 @@ struct MediaDeliveryTests {
         ])
     }
 
-    @Test("a file AVPlayer plays is served whole at the delivery's URL, typed by its container",
-          arguments: [("isom", "video/mp4"), ("qt  ", "video/quicktime")])
-    func directFileIsServed(brand: String, contentType: String) async throws {
-        let bytes = Self.mp4(brand: brand)
+    @Test("a file AVPlayer plays is served whole at the delivery's URL, typed by its container", arguments: [
+        (Self.mp4(brand: "isom"), "video/mp4"), (Self.mp4(brand: "qt  "), "video/quicktime"),
+        // As an encoder writes one: High profile H.264 with B-pictures, and AAC.
+        (try BridgeFixture.data("mp4-h264.mp4"), "video/mp4"),
+        // HEVC 4:2:2 10-bit, as a camera records it: AVPlayer is handed it whatever its profile.
+        (try BridgeFixture.data("numbered-hevc-422.mp4"), "video/mp4"),
+    ])
+    func directFileIsServed(bytes: Data, contentType: String) async throws {
         let delivery = try await MediaDelivery.start(
             reading: InMemoryRandomAccessReader(data: bytes), fileName: "clip.mp4",
             support: .baseline, scope: .loopback, clock: TestClock())
@@ -91,6 +96,19 @@ struct MediaDeliveryTests {
         #expect(master.contains(#"CODECS="\#(codecs)",RESOLUTION=160x90"#))
     }
 
+    @Test("an MP4 the bridge cannot mend fails with what AVPlayer would do wrong", arguments: [
+        ([ISOBMFFFixtures.avcVideoSampleEntry(spsNALs: [])], AVPlayerHazard.missingParameterSets),
+        ([ISOBMFFFixtures.avcVideoSampleEntry(), ISOBMFFFixtures.avcVideoSampleEntry()], .multipleSampleDescriptions),
+    ])
+    func unmendedMP4ThrowsItsHazard(entries: [Data], hazard: AVPlayerHazard) async throws {
+        let bytes = ISOBMFFFixtures.mp4(traks: [ISOBMFFFixtures.trakRaw(stsdEntries: entries, handler: "vide")])
+        await #expect(throws: Unplayable.directHazards([hazard])) {
+            _ = try await MediaDelivery.start(
+                reading: InMemoryRandomAccessReader(data: bytes), fileName: "clip.mp4",
+                support: .baseline, scope: .loopback, clock: TestClock())
+        }
+    }
+
     @Test("a Matroska file the bridge cannot deliver fails with the bridge's reason", arguments: [
         ("refused-tta-audio", BridgeRefusal.noDeliverableAudio(names: ["tta"])),
         ("refused-dolby-vision-5", .videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
@@ -121,6 +139,10 @@ struct MediaDeliveryTests {
         ("refused-tta-audio", "audio: tta"),
         ("refused-one-keyframe", "no keyframe index"),
         ("refused-avi-b-frames.avi", "video: no presentation times"),
+        // B-pictures whose show times were written as their decode times, and as a constant
+        // offset from them in an MP4 whose audio alone the bridge would convert.
+        ("numbered-h264-no-show-times.mp4", "hazards: decodeOrderTimestamps"),
+        ("numbered-h264-dts-flat-show-times.mp4", "hazards: decodeOrderTimestamps"),
     ])
     func refusalReadsAsOneLine(name: String, line: String) async throws {
         let reader = try Self.fixture(name)
@@ -336,19 +358,85 @@ struct MediaDeliveryTests {
         }
     }
 
+    /// A delivery of `file` to a device that decodes H.264 and HEVC, AAC, AC-3 and E-AC-3, its
+    /// master playlist, and a player that is ready to play it.
+    @MainActor
+    private static func played(_ file: String) async throws -> (delivery: MediaDelivery, master: String, ready: ReadyPlayer) {
+        let delivery = try await MediaDelivery.start(
+            reading: try fixture(file), fileName: file, support: .baseline, scope: .loopback, clock: ContinuousClock())
+        do {
+            let master = try await text(at: delivery.url)
+            return (delivery, master, try await ReadyPlayer(playing: delivery.url) { master })
+        } catch {
+            await delivery.stop()
+            throw error
+        }
+    }
+
+    @MainActor
     @Test("an MP4 whose audio AVPlayer cannot play is bridged, and plays with that audio converted to FLAC",
-          .disabled("Pending: MP4 through the bridge"))
-    func mp4WithUnplayableAudioIsBridged() async throws {}
+          arguments: ["numbered-h264-dts.mp4", "numbered-h264-dts-no-b.mp4"])
+    func mp4WithUnplayableAudioIsBridged(file: String) async throws {
+        let (delivery, master, ready) = try await Self.played(file)
+        let shown = await ready.framesShown(for: .seconds(3))
+        await delivery.stop()
 
-    @Test("an MP4 whose video the device cannot decode is bridged, and plays converted to HEVC",
-          .disabled("Pending: MP4 through the bridge"))
-    func mp4WithUndecodableVideoIsBridged() async throws {}
+        #expect(master.contains(#"CODECS="avc1.64000a,fLaC""#), "\(master)")
+        #expect(shown.count > 48, "\(shown)")
+        #expect(shown.first?.number == 0)
+        #expect(shown.filter { !$0.isTheSourceFrameForItsTime }.isEmpty, "\(shown)")
+        #expect(ready.player.currentItem?.error == nil)
+    }
 
-    @Test("an MP4 that AVPlayer would play wrong is bridged, not handed to AVPlayer",
-          .disabled("Pending: MP4 through the bridge"))
-    func mp4WithAVPlayerHazardIsBridged() async throws {}
+    @MainActor
+    @Test("an MP4 whose video the device cannot decode is bridged, and plays converted to HEVC", arguments: [
+        // AV1 where there is no AV1 decoder, 10-bit H.264 where the H.264 decoder takes 8 bits
+        // only, and H.264 4:2:2 as a camera records it. 10 bits become Main 10.
+        ("numbered-av1.mp4", "hvc1.2.4.L30.B0"), ("numbered-h264-high10.mp4", "hvc1.2.4.L30.B0"),
+        ("numbered-h264-422.mp4", "hvc1.1.6.L30.B0"),
+    ])
+    func mp4WithUndecodableVideoIsBridged(file: String, converted: String) async throws {
+        let (delivery, master, ready) = try await Self.played(file)
+        let shown = await ready.framesShown(for: .seconds(3))
+        await delivery.stop()
 
-    @Test("an interlaced MP4 is bridged, and plays as a picture for each field",
-          .disabled("Pending: MP4 through the bridge"))
-    func interlacedMP4IsBridged() async throws {}
+        #expect(master.contains(#"CODECS="\#(converted),mp4a.40.2""#), "\(master)")
+        #expect(shown.count > 48, "\(shown)")
+        #expect(shown.first?.number == 0)
+        #expect(shown.filter { !$0.isTheSourceFrameForItsTime }.isEmpty, "\(shown)")
+        #expect(ready.player.currentItem?.error == nil)
+    }
+
+    /// HEVC under `hev1`, whose parameter sets AVPlayer takes only from the samples.
+    @MainActor
+    @Test("an MP4 that AVPlayer would play wrong is bridged, not handed to AVPlayer")
+    func mp4WithAVPlayerHazardIsBridged() async throws {
+        let (delivery, master, ready) = try await Self.played("numbered-hevc-hev1.mp4")
+        let shown = await ready.framesShown(for: .seconds(3))
+        await delivery.stop()
+
+        #expect(master.hasPrefix("#EXTM3U"))
+        #expect(master.contains(#"CODECS="hvc1.1.6.L30.90,mp4a.40.2""#), "\(master)")
+        #expect(shown.count > 48, "\(shown)")
+        #expect(shown.filter { !$0.isTheSourceFrameForItsTime }.isEmpty, "\(shown)")
+    }
+
+    /// Fifty numbered pictures a second, woven into 25 frames, the even picture on the top
+    /// field, which holds the middle row.
+    @MainActor
+    @Test("an interlaced MP4 is bridged, and plays as a picture for each field")
+    func interlacedMP4IsBridged() async throws {
+        let (delivery, master, ready) = try await Self.played("numbered-interlaced-h264.mp4")
+        let shown = await ready.framesShown(for: .seconds(3))
+        await delivery.stop()
+
+        #expect(master.contains(#"CODECS="hvc1.1.6.L60.B0,mp4a.40.2""#), "\(master)")
+        #expect(master.contains("FRAME-RATE=50.000"))
+        #expect(shown.count > 100, "\(shown)")
+        let misplaced = shown.filter {
+            let picture = Int(($0.seconds * 50).rounded())
+            return (picture.isMultiple(of: 2) ? $0.number : $0.numberAbove) != picture
+        }
+        #expect(misplaced.isEmpty, "\(misplaced)")
+    }
 }

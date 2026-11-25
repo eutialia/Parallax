@@ -15,6 +15,8 @@ public enum Unplayable: Error, Sendable, Equatable {
     /// Nil when the sample entry is one the probe does not recognize.
     case videoCodec(VideoCodec?)
     case audioCodec(AudioCodec?)
+    /// Video in a profile the device does not decode.
+    case undecodedProfile(StreamProfile)
     /// An MP4 AVPlayer opens and then misplays.
     case directHazards(Set<AVPlayerHazard>)
     /// A file the bridge opened and cannot deliver.
@@ -29,6 +31,8 @@ extension Unplayable: CustomStringConvertible {
         case .container(let container): "container: \(container?.rawValue ?? "unknown")"
         case .videoCodec(let codec): "video: \(codec?.rawValue ?? "unknown")"
         case .audioCodec(let codec): "audio: \(codec?.rawValue ?? "unknown")"
+        case .undecodedProfile(.h264(let profile)): "video: h264 profile \(profile)"
+        case .undecodedProfile(.av1(let profile)): "video: av1 profile \(profile)"
         case .directHazards(let hazards): "hazards: \(hazards.map { "\($0)" }.sorted().joined(separator: ", "))"
         case .refused(let refusal): refusal.description
         }
@@ -54,7 +58,23 @@ public enum DirectPlay {
             }
         case .none: break
         }
+        if let profile = probe.videoProfile, !support.decodes(profile) {
+            return .unplayable(.undecodedProfile(profile))
+        }
         guard probe.avPlayerHazards.isEmpty else { return .unplayable(.directHazards(probe.avPlayerHazards)) }
         return .direct(container)
+    }
+}
+
+extension AVPlayerSupport {
+    /// Whether this device decodes a stream of `profile`. The bridge copies a stream only when
+    /// it does, and an MP4 with a stream it does not goes to the bridge.
+    func decodes(_ profile: StreamProfile) -> Bool {
+        switch profile {
+        // Baseline, Main and High are the profiles every Apple decoder takes, and High 10 some.
+        case .h264(let profile): [66, 77, 100].contains(profile) || profile == 110 && decodesH264High10
+        // Main, where the device has an AV1 decoder at all.
+        case .av1(let profile): profile == 0 && videoCodecs.contains(.av1)
+        }
     }
 }

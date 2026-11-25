@@ -519,10 +519,17 @@ packet_list avi-h264 avi
 # ASF: no index libavformat lists, times in milliseconds, and decode times only for H.264.
 ffmpeg -v error -y "${noisy_pair[@]}" -bf 0 -c:a ac3 -b:a 64k -ac 2 "$OUT/asf-h264.asf"
 packet_list asf-h264 asf
+# MP4: an index of every sample that gives each its decode time, show times stored as offsets
+# from those, and an edit list that starts the picture at zero, as ffmpeg writes them.
+ffmpeg -v error -y "${noisy_pair[@]}" -bf 2 -c:a aac -b:a 32k -ac 2 "$OUT/mp4-h264.mp4"
+packet_list mp4-h264 mp4
 # Files the bridge opens to say what stops them. With B-frames an AVI's pictures have no
 # times to show at.
 short=(-f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 2 -map 0:v -map 1:a)
 ffmpeg -v error -y "${short[@]}" "${x264[@]}" -bf 2 -c:a ac3 -b:a 64k -bitexact -fflags +bitexact "$OUT/refused-avi-b-frames.avi"
+# Ogg, a container the bridge has no rules for, with video it could otherwise convert.
+ffmpeg -v error -y "${short[@]}" -c:v libvpx -b:v 100k -deadline realtime -c:a vorbis -strict experimental -ac 2 \
+    -bitexact -fflags +bitexact "$OUT/ogg-vp8.ogg"
 # Clips for converted video: the numbered picture in codecs no Apple decoder takes, or takes on
 # some devices only. Twelve seconds with a keyframe every two make six segments.
 numbered() {
@@ -596,6 +603,23 @@ numbered numbered-mpeg4-b.avi 60 -c:v mpeg4 -bf 2 -flags +cgop -g 480 -force_key
 # an AVI that is converted.
 numbered numbered-h264-silent.mkv 60 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -an
 numbered numbered-mpeg4-silent.avi 60 -c:v mpeg4 -bf 2 -flags +cgop -g 480 -force_key_frames 'expr:eq(mod(n,48),0)' -sc_threshold 1000000000 -b:v 100k -an
+# MP4s AVPlayer cannot play as they are: DTS audio, AV1 and 10-bit H.264 for a device with no
+# decoder for them, and HEVC under `hev1`, whose parameter sets AVPlayer looks for in the samples.
+numbered numbered-h264-dts.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -c:a dca -strict experimental -b:a 768k -ac 2
+# The same with no B-pictures, so its packets show at the times they are decoded.
+numbered numbered-h264-dts-no-b.mp4 12 -c:v libx264 -preset veryfast -bf 0 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -c:a dca -strict experimental -b:a 768k -ac 2
+numbered numbered-av1.mp4 12 -c:v libsvtav1 -preset 10 -g 48 -svtav1-params "lp=1:keyint=48:scd=0" -pix_fmt yuv420p10le 2>/dev/null
+numbered numbered-h264-high10.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p10le
+# 4:2:2, as cameras record it. No device decodes it in H.264, and AVPlayer is handed it in HEVC.
+numbered numbered-h264-422.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv422p
+numbered numbered-hevc-422.mp4 12 -c:v libx265 -preset veryfast -x265-params "keyint=48:min-keyint=48:scenecut=0:log-level=error" -pix_fmt yuv422p10le -tag:v hvc1
+numbered numbered-hevc-hev1.mp4 12 -c:v libx265 -preset veryfast -x265-params "keyint=48:min-keyint=48:scenecut=0:log-level=error" -pix_fmt yuv420p -tag:v hev1
+# B-frames whose show times were written as their decode times, so they show in the order
+# they decode, as a real file's do.
+numbered numbered-h264-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=ts=DTS-STARTDTS"
+# Show times a constant two pictures after decode times, in decode order, with audio the bridge
+# would convert.
+numbered numbered-h264-dts-flat-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=pts=DTS+2*DURATION" -c:a dca -strict experimental -b:a 768k -ac 2
 numbered numbered-mpeg4-b.asf 12 -c:v mpeg4 -bf 2 -flags +cgop -g 48 -sc_threshold 1000000000 -b:v 200k -c:a wmav2 -b:a 32k -ac 2
 # WMV with WMA is what an ASF holds.
 numbered numbered-wmv2.asf 12 -c:v wmv2 -g 48 -sc_threshold 0 -b:v 100k -c:a wmav2 -b:a 32k -ac 2
@@ -608,8 +632,9 @@ fields() {
         -f lavfi -i "color=black:size=160x96:rate=50,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
         -f lavfi -i "sine=frequency=440:sample_rate=48000" \
         -t 12 -map 0:v -map 1:a -vf "tinterlace=interleave_top,fieldorder=tff" -flags +ilme+ildct -bf 2 -g 24 -sc_threshold 0 \
-        -pix_fmt yuv420p "$@" -c:a aac -b:a 24k -ac 1 -bitexact -fflags +bitexact -f mpegts "$OUT/$file"
+        -pix_fmt yuv420p "$@" -c:a aac -b:a 24k -ac 1 -bitexact -fflags +bitexact "$OUT/$file"
 }
 fields numbered-interlaced-mpeg2.ts -c:v mpeg2video -b:v 150k -muxrate 0
 fields numbered-interlaced-h264.ts -c:v libx264 -preset veryfast -x264-params tff=1:open-gop=1 -keyint_min 24
+fields numbered-interlaced-h264.mp4 -c:v libx264 -preset veryfast -x264-params tff=1:open-gop=1 -keyint_min 24
 ls -l "$OUT"
