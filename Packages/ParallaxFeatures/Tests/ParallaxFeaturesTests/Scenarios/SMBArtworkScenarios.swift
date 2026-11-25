@@ -5,6 +5,7 @@ import ParallaxCoreTestSupport
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
 import ParallaxJellyfin
+import ParallaxPlaybackTestSupport
 import Testing
 import ParallaxTestScaling
 

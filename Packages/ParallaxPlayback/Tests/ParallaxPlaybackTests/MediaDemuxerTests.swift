@@ -20,7 +20,9 @@ struct MediaDemuxerTests {
         var description: String { "\(milliseconds)ms \(size)B\(isKeyframe ? " key" : "")" }
 
         init(_ packet: MediaPacket) {
-            milliseconds = packet.presentationTime.map { $0 / 1_000_000 } ?? .min
+            // As the oracle rounds: to the microsecond, then down to the millisecond.
+            milliseconds = packet.presentationTime.map { Int64((Double($0) / 1000).rounded()) }
+                .map { ($0 - ($0 < 0 ? 999 : 0)) / 1000 } ?? .min
             size = packet.data.count
             isKeyframe = packet.isKeyframe
             md5 = Insecure.MD5.hash(data: packet.data).map { String(format: "%02x", $0) }.joined()
@@ -67,7 +69,10 @@ struct MediaDemuxerTests {
 
     @Test(
         "spans fetched out of order add up to exactly the file's packets",
-        arguments: ["h264-ffmpeg", "h264-mkvmerge", "long-span", "ts-h264.ts", "m2ts-h264.m2ts", "flv-h264.flv", "avi-h264.avi"],
+        arguments: [
+            "h264-ffmpeg", "h264-mkvmerge", "long-span", "ts-h264.ts", "m2ts-h264.m2ts", "flv-h264.flv", "avi-h264.avi",
+            "mp4-h264.mp4",
+        ],
         Order.allCases)
     func spansFetchedOutOfOrderAddUpToTheFile(name: String, order: Order) async throws {
         let demuxer = try await BridgeFixture.demuxer(name)
@@ -95,6 +100,15 @@ struct MediaDemuxerTests {
             let first = try #require(try await demuxer.packets(0, from: index, to: index + 1).first)
             #expect(Sample(first) == flagged[index])
         }
+    }
+
+    @Test("a file with an index is given each keyframe at the time its picture shows",
+          arguments: ["h264-ffmpeg", "h264-mkvmerge", "avi-h264.avi", "mp4-h264.mp4"])
+    func indexedFileListsKeyframesAtTheirShowTimes(name: String) async throws {
+        let listed = try await BridgeFixture.demuxer(name).keyframes()
+        let flagged = try #require(try Self.expectedSamples(name)[0]).filter(\.isKeyframe)
+
+        #expect(listed.map { $0.time / 1_000_000 } == flagged.map(\.milliseconds))
     }
 
     /// The spans are read by a demuxer that was handed the keyframe list, as a session's
@@ -493,11 +507,8 @@ struct MediaDemuxerTests {
 
     @Test("a container the bridge has no rules for is refused at open by its name")
     func unbridgedContainerIsRefused() async throws {
-        let mp4 = try Data(contentsOf: try #require(
-            Bundle.module.url(forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures")))
-
-        await #expect(throws: MediaDemuxer.OpenFailure.unbridgedContainer(name: "mov,mp4,m4a,3gp,3g2,mj2")) {
-            _ = try await MediaDemuxer.open(InMemoryRandomAccessReader(data: mp4))
+        await #expect(throws: MediaDemuxer.OpenFailure.unbridgedContainer(name: "ogg")) {
+            _ = try await BridgeFixture.demuxer("ogg-vp8.ogg")
         }
     }
 

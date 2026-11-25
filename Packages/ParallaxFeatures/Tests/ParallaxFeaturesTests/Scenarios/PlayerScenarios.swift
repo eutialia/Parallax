@@ -7,6 +7,7 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 import Testing
 import ParallaxTestScaling
 
@@ -828,7 +829,7 @@ struct PlayerScenarios {
         #expect(player.selectedSubtitleTrack == nil)
     }
 
-    @Test("an AV1 MP4 on the share plays where AVPlayer plays AV1, and is refused as unsupported where it does not",
+    @Test("an AV1 MP4 on the share plays direct where AVPlayer plays AV1, and goes to the bridge where it does not",
           arguments: [true, false])
     func smbAV1FilmFollowsTheDevicesAV1Support(deviceDecodesAV1: Bool) async throws {
         let avPlayer = AVPlayerSupport(
@@ -846,8 +847,13 @@ struct PlayerScenarios {
             try await world.openPlayer()
             #expect(world.engine.loadedAssets.last?.url.lastPathComponent == "Dune.mp4")
         } else {
+            // The file's boxes name AV1 and hold no samples, so the bridge opens it and refuses it.
             let player = try await world.openPlayerToItsError()
-            #expect(player.phase == .failed(.playback(.unsupportedFormat(reason: "video: av1"))))
+            guard case .failed(.playback(.unsupportedFormat(let reason?))) = player.phase else {
+                Issue.record("phase \(player.phase)")
+                return
+            }
+            #expect(reason.hasPrefix("unreadable:"))
             #expect(world.engines.count == 0)
         }
     }

@@ -74,9 +74,12 @@ struct BridgeSessionTests {
     /// FLV holds H.264 and AAC as an MP4 does, so both come back as the file's own packets. An
     /// AVI holds H.264 behind start codes, which is counted and timed, and its AC-3 comes back
     /// as stored. The AVI's packets carry no presentation time. An ASF holds the same as the
-    /// AVI, timed in whole milliseconds.
-    @Test("an FLV's, an AVI's and an ASF's segments, asked for out of order, hold every source sample once, evenly spaced",
-          arguments: [("flv-h264.flv", true, Int64(1024)), ("avi-h264.avi", false, 1536), ("asf-h264.asf", false, 1536)])
+    /// AVI, timed in whole milliseconds. An MP4 holds H.264 and AAC as they are delivered.
+    @Test("an FLV's, an AVI's, an ASF's and an MP4's segments, asked for out of order, hold every source sample once, evenly spaced",
+          arguments: [
+            ("flv-h264.flv", true, Int64(1024)), ("avi-h264.avi", false, 1536), ("asf-h264.asf", false, 1536),
+            ("mp4-h264.mp4", true, 1024),
+          ])
     func segmentsHoldEverySourceSample(name: String, videoIsInMP4Form: Bool, audioFrameLength: Int64) async throws {
         let session = try await Self.session(name)
         func file(_ rendition: String) async throws -> Data {
@@ -303,35 +306,6 @@ struct BridgeSessionTests {
         }
     }
 
-    private struct ShownFrame: CustomStringConvertible {
-        /// The item time AVPlayer displays the frame at.
-        let seconds: Double
-        /// The number the picture itself carries.
-        let number: Int
-
-        var description: String { String(format: "#%d at %.4f s", number, seconds) }
-        /// The fixture runs at 24 frames per second from item time zero.
-        var isTheSourceFrameForItsTime: Bool { number == Int((seconds * 24).rounded()) }
-    }
-
-    /// Every new frame AVPlayer displays during `duration` of wall-clock time.
-    @MainActor
-    private static func framesShown(by output: AVPlayerItemVideoOutput, for duration: Duration) async -> [ShownFrame] {
-        var shown: [ShownFrame] = []
-        let clock = ContinuousClock()
-        let end = clock.now + duration
-        while clock.now < end {
-            let time = output.itemTime(forHostTime: CACurrentMediaTime())
-            var displayed = CMTime.invalid
-            if output.hasNewPixelBuffer(forItemTime: time),
-               let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &displayed) {
-                shown.append(ShownFrame(seconds: displayed.seconds, number: BridgeFixture.frameNumber(in: buffer)))
-            }
-            try? await Task.sleep(for: .milliseconds(4))
-        }
-        return shown
-    }
-
     @Test("serving every segment of every track reads no part of the file twice, and in few requests")
     func eachPartOfTheFileIsReadOnce() async throws {
         let reader = CountingReader(data: try BridgeFixture.data("four-audio-tracks"))
@@ -531,48 +505,28 @@ struct BridgeSessionTests {
     private struct LoadedFixture {
         let responder: RecordingResponder
         let server: LocalMediaServer
-        let output: AVPlayerItemVideoOutput
-        let player: AVPlayer
+        let ready: ReadyPlayer
+        var player: AVPlayer { ready.player }
 
         init(
             _ name: String, fragmentLimits: FragmentLimits = .standard,
             support: AVPlayerSupport = BridgeFixture.everyDecoder
         ) async throws {
-            responder = RecordingResponder(
+            let responder = RecordingResponder(
                 try await BridgeSessionTests.session(name, fragmentLimits: fragmentLimits, support: support))
-            server = LocalMediaServer(responder: responder)
-            let item = AVPlayerItem(url: try await server.start(scope: .loopback))
-            // Three seconds keeps AVPlayer from fetching all of a minute-long file.
-            item.preferredForwardBufferDuration = 3
-            output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            ])
-            item.add(output)
-            player = AVPlayer(playerItem: item)
-            player.isMuted = true
-
-            let clock = ContinuousClock()
-            let deadline = clock.now + CITimeScale.seconds(15)
-            while item.status == .unknown, clock.now < deadline {
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            if item.status != .readyToPlay {
+            let server = LocalMediaServer(responder: responder)
+            self.responder = responder
+            self.server = server
+            do {
+                ready = try await ReadyPlayer(playing: try await server.start(scope: .loopback)) { "\(responder.paths)" }
+            } catch {
                 await server.stop()
-                Issue.record("the item never became ready: \(String(describing: item.error)), after \(responder.paths)")
+                throw error
             }
-            try #require(item.status == .readyToPlay)
         }
 
-        /// Seeks to exactly `seconds`, plays, and returns the frames shown in the next `duration`.
         func framesShown(from seconds: Double? = nil, for duration: Duration) async -> [ShownFrame] {
-            if let seconds {
-                await player.seek(
-                    to: CMTime(seconds: seconds, preferredTimescale: 24_000), toleranceBefore: .zero, toleranceAfter: .zero)
-            }
-            player.play()
-            let shown = await BridgeSessionTests.framesShown(by: output, for: duration)
-            player.pause()
-            return shown
+            await ready.framesShown(from: seconds, for: duration)
         }
     }
 
@@ -728,9 +682,9 @@ struct BridgeSessionTests {
         // A transport stream copied from a Matroska file: its times are still rounded to the
         // millisecond, under a tick ninety times finer.
         "ts-copied-from-mkv.ts",
-        // H.264 as an FLV holds it, and behind start codes with no presentation times in an AVI
-        // and an ASF.
-        "flv-h264.flv", "avi-h264.avi", "asf-h264.asf",
+        // H.264 as an FLV and an MP4 hold it, and behind start codes with no presentation times
+        // in an AVI and an ASF.
+        "flv-h264.flv", "mp4-h264.mp4", "avi-h264.avi", "asf-h264.asf",
     ])
     func avPlayerPlaysEachDeliveredCodec(name: String) async throws {
         let fixture = try await LoadedFixture(name)

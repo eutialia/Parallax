@@ -160,6 +160,9 @@ actor MediaDemuxer {
     private let packet: UnsafeMutablePointer<AVPacket>
     /// Nanoseconds: the first timestamp of the file, as libavformat reports it.
     private nonisolated let start: Int64
+    /// In the video's ticks: how long after the time the index gives a keyframe its picture
+    /// shows.
+    private let keyframeShowDelay: Int64
     private let listing: KeyframeListing
     private var listed: [IndexedKeyframe]?
     /// Where the last packet read from each stream ends, in the stream's ticks, since the last
@@ -206,6 +209,7 @@ actor MediaDemuxer {
         duration = opened.duration
         fileSize = opened.fileSize
         start = opened.start
+        keyframeShowDelay = opened.keyframeShowDelay
         self.listing = listing
         listed = keyframes
     }
@@ -250,7 +254,9 @@ actor MediaDemuxer {
         return (0..<avformat_index_get_entries_count(stream)).compactMap { index in
             avformat_index_get_entry(stream, index).flatMap {
                 $0.pointee.flags & AVINDEX_KEYFRAME == 0 ? nil : IndexedKeyframe(
-                    time: nanoseconds($0.pointee.timestamp, of: videoStream), position: $0.pointee.pos)
+                    time: nanoseconds(
+                        $0.pointee.timestamp.addingReportingOverflow(keyframeShowDelay).partialValue, of: videoStream),
+                    position: $0.pointee.pos)
             }
         }
     }
@@ -790,6 +796,7 @@ private struct Opened {
     let duration: Int64?
     let start: Int64
     let fileSize: Int64
+    let keyframeShowDelay: Int64
 
     init(cache: SessionBlockCache) throws {
         let source = DemuxerSource(cache: cache)
@@ -816,6 +823,11 @@ private struct Opened {
             status = avformat_find_stream_info(context, nil)
         }
         let video = status >= 0 ? av_find_best_stream(context, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0) : -1
+        let showDelay = if status >= 0, video >= 0, let bridged, bridged.indexesKeyframesByDecodeTime, let context {
+            Self.firstShowDelay(of: video, in: context, into: packet)
+        } else {
+            Int64(0)
+        }
 
         // libavformat takes a failed read while it describes the streams for the end of the
         // file and reports success.
@@ -837,6 +849,7 @@ private struct Opened {
         self.packet = packet
         videoStream = Int(video)
         fileSize = cache.size
+        keyframeShowDelay = showDelay
         // `AV_TIME_BASE` units, which are microseconds. A duration libavformat worked out from
         // the bitrate is a guess, and a file's end cannot be placed by one.
         duration = context.pointee.duration > 0 && context.pointee.duration_estimation_method != AVFMT_DURATION_FROM_BITRATE
@@ -885,5 +898,21 @@ private struct Opened {
             DemuxerSource.free(io)
             throw MediaDemuxer.OpenFailure.outOfMemory
         }
+    }
+
+    /// In the video's ticks: how long after it is decoded the video's first picture shows,
+    /// from its first packet, read before any seek.
+    private static func firstShowDelay(
+        of video: Int32, in context: UnsafeMutablePointer<AVFormatContext>, into packet: UnsafeMutablePointer<AVPacket>
+    ) -> Int64 {
+        while av_read_frame(context, packet) >= 0 {
+            defer { av_packet_unref(packet) }
+            guard packet.pointee.stream_index == video else { continue }
+            let (shows, decodes) = (packet.pointee.pts, packet.pointee.dts)
+            guard shows != MediaDemuxer.noTime, decodes != MediaDemuxer.noTime else { return 0 }
+            let (delay, overflow) = shows.subtractingReportingOverflow(decodes)
+            return overflow ? 0 : delay
+        }
+        return 0
     }
 }

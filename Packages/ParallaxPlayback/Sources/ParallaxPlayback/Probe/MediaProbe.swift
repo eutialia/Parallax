@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCore
 
 /// Result of a codec/container lookup where "the container simply doesn't carry
 /// this stream" (`.none`) must be distinguishable from "carries it, but the
@@ -24,6 +25,15 @@ public enum AVPlayerHazard: Sendable, Hashable {
     case missingParameterSets
 }
 
+/// The profile a video sample entry's configuration record names, for the codecs whose
+/// profile decides whether a device decodes them.
+public enum StreamProfile: Sendable, Hashable {
+    /// `avcC`'s AVCProfileIndication: 100 for High, 110 for High 10, 122 for High 4:2:2.
+    case h264(UInt8)
+    /// `av1C`'s seq_profile: 0 for Main.
+    case av1(UInt8)
+}
+
 public struct MediaProbeResult: Sendable, Equatable {
     public let container: Container?
     public let videoCodec: ProbedCodec<VideoCodec>
@@ -40,19 +50,23 @@ public struct MediaProbeResult: Sendable, Equatable {
     /// Structural defects proven by walking the sample tables — empty on every container
     /// but MP4/MOV, and on an MP4/MOV whose first video trak doesn't exhibit one.
     public let avPlayerHazards: Set<AVPlayerHazard>
+    /// The first video track's, when its first sample entry names one.
+    public let videoProfile: StreamProfile?
 
     public init(
         container: Container?,
         videoCodec: ProbedCodec<VideoCodec>,
         audioCodecs: ProbedCodec<[AudioCodec]>,
         isComplete: Bool,
-        avPlayerHazards: Set<AVPlayerHazard> = []
+        avPlayerHazards: Set<AVPlayerHazard> = [],
+        videoProfile: StreamProfile? = nil
     ) {
         self.container = container
         self.videoCodec = videoCodec
         self.audioCodecs = audioCodecs
         self.isComplete = isComplete
         self.avPlayerHazards = avPlayerHazards
+        self.videoProfile = videoProfile
     }
 }
 
@@ -143,10 +157,10 @@ public enum MediaProbe {
         }
 
         let moovData = try await reader.read(offset: moovRange.offset, length: Int(moovRange.size))
-        let (video, audio, hazards) = await parseMoov(moovData, reader: reader)
+        let (video, audio, hazards, profile) = await parseMoov(moovData, reader: reader)
         return MediaProbeResult(
             container: container, videoCodec: video, audioCodecs: audio,
-            isComplete: !incomplete, avPlayerHazards: hazards
+            isComplete: !incomplete, avPlayerHazards: hazards, videoProfile: profile
         )
     }
 
@@ -207,7 +221,7 @@ public enum MediaProbe {
         case audio
     }
 
-    private struct BoxHeader {
+    struct BoxHeader {
         let type: String
         let contentStart: Int
         let boxEnd: Int
@@ -216,9 +230,11 @@ public enum MediaProbe {
     private static func parseMoov(
         _ moovData: Data,
         reader: any RandomAccessReading
-    ) async -> (video: ProbedCodec<VideoCodec>, audio: ProbedCodec<[AudioCodec]>, hazards: Set<AVPlayerHazard>) {
+    ) async -> (
+        video: ProbedCodec<VideoCodec>, audio: ProbedCodec<[AudioCodec]>, hazards: Set<AVPlayerHazard>, profile: StreamProfile?
+    ) {
         guard let moovHeader = readBoxHeader(moovData, at: 0, limit: moovData.count) else {
-            return (.unknown, .unknown, [])
+            return (.unknown, .unknown, [], nil)
         }
 
         let traks = allChildBoxes(moovData, type: "trak", in: moovHeader.contentStart..<moovHeader.boxEnd)
@@ -226,8 +242,9 @@ public enum MediaProbe {
         var videoCodec: ProbedCodec<VideoCodec> = .none
         var sawVideoTrak = false
         var sawAudioTrak = false
-        var audioFourccsInOrder: [String] = []
+        var audioCodecsInOrder: [AudioCodec?] = []
         var hazards: Set<AVPlayerHazard> = []
+        var profile: StreamProfile?
 
         for trak in traks {
             let info = extractTrakInfo(moovData, contentRange: trak.contentStart..<trak.boxEnd)
@@ -235,6 +252,7 @@ public enum MediaProbe {
             case .video:
                 guard !sawVideoTrak else { continue }
                 sawVideoTrak = true
+                profile = info.firstStsdEntry.flatMap { videoProfile(moovData, entry: $0) }
                 if let firstFourcc = info.fourccs.first {
                     let mappedCodec = mapVideoFourcc(firstFourcc)
                     videoCodec = mappedCodec.map(ProbedCodec.known) ?? .unknown
@@ -252,7 +270,10 @@ public enum MediaProbe {
                 }
             case .audio:
                 sawAudioTrak = true
-                audioFourccsInOrder.append(contentsOf: info.fourccs)
+                audioCodecsInOrder.append(contentsOf: info.fourccs.enumerated().map { index, fourcc in
+                    if fourcc == "mp4a", index == 0, let entry = info.firstStsdEntry { mp4aCodec(moovData, entry: entry) }
+                    else { mapAudioFourcc(fourcc) }
+                })
             case nil:
                 continue
             }
@@ -260,7 +281,7 @@ public enum MediaProbe {
 
         var audioCodecs: ProbedCodec<[AudioCodec]> = .none
         if sawAudioTrak {
-            let mappedInOrder = audioFourccsInOrder.map(mapAudioFourcc)
+            let mappedInOrder = audioCodecsInOrder
             // Any unrecognized audio fourcc must surface as `.unknown` per
             // `ProbedCodec`'s contract — silently dropping it would hide a track
             // `DirectPlay.verdict` can't reason about.
@@ -271,7 +292,7 @@ public enum MediaProbe {
             }
         }
 
-        return (videoCodec, audioCodecs, hazards)
+        return (videoCodec, audioCodecs, hazards, profile)
     }
 
     private struct TrakInfo {
@@ -340,7 +361,7 @@ public enum MediaProbe {
         return TrakInfo(kind: kind, fourccs: fourccs, stblRange: stblRange, firstStsdEntry: firstStsdEntry)
     }
 
-    private static func firstChildBox(_ data: Data, type target: String, in range: Range<Int>) -> BoxHeader? {
+    static func firstChildBox(_ data: Data, type target: String, in range: Range<Int>) -> BoxHeader? {
         var offset = range.lowerBound
         while offset < range.upperBound {
             guard let header = readBoxHeader(data, at: offset, limit: range.upperBound) else { return nil }

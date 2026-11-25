@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCore
 
 /// H.264 (Annex B / avcC-style length-prefixed) bitstream primitives shared by `MediaProbe`'s
 /// structural hazard checks: exp-Golomb bit reading, emulation-prevention removal, and
