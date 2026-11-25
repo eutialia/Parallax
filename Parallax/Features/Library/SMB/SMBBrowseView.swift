@@ -461,7 +461,7 @@ private struct SMBBrowseGridPreview: View {
                     share: "Media",
                     parentPath: "Anime",
                     artworkProvider: MediaArtworkProvider(
-                        thumbnailer: AVThumbnailer(),
+                        thumbnailer: MediaThumbnailer(),
                         serverStore: ServerStore(
                             settings: SettingsStore(defaults: .standard),
                             keychain: Keychain(service: "preview"),
@@ -470,8 +470,7 @@ private struct SMBBrowseGridPreview: View {
                         connections: .live(clock: ContinuousClock()),
                         cacheDirectory: .temporaryDirectory,
                         clock: ContinuousClock(),
-                        now: { Date() },
-                        deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe())
+                        now: { Date() }
                     ),
                     onPlay: { _ in }
                 )

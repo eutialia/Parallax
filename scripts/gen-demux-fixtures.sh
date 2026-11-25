@@ -637,4 +637,42 @@ fields() {
 fields numbered-interlaced-mpeg2.ts -c:v mpeg2video -b:v 150k -muxrate 0
 fields numbered-interlaced-h264.ts -c:v libx264 -preset veryfast -x264-params tff=1:open-gop=1 -keyint_min 24
 fields numbered-interlaced-h264.mp4 -c:v libx264 -preset veryfast -x264-params tff=1:open-gop=1 -keyint_min 24
+# The numbered picture in HDR, its squares at the level SDR white is shown at: 203 nits in PQ,
+# code 576 of 1023, and three quarters of the signal in HLG, code 721. A minute long, so the
+# picture 5% in has squares lit.
+hdr_numbered() {
+    local file=$1 transfer=$2 white=$3
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=yuv420p10le,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,$white\,64)':cb=512:cr=512" \
+        -t 60 -c:v libx265 -preset veryfast -pix_fmt yuv420p10le \
+        -x265-params "keyint=48:min-keyint=48:scenecut=0:log-level=error:colorprim=bt2020:transfer=$transfer:colormatrix=bt2020nc" \
+        -color_primaries bt2020 -color_trc "$transfer" -colorspace bt2020nc \
+        -bitexact -fflags +bitexact "$OUT/$file"
+}
+hdr_numbered numbered-hdr-pq.mkv smpte2084 576
+hdr_numbered numbered-hdr-hlg.mkv arib-std-b67 721
+# Cover art in a single flat colour, 300 by 450 as a poster is: an MP4's `covr`, and a Matroska
+# attachment named as the Matroska spec names a cover.
+covers=$(mktemp -d)
+ffmpeg -v error -y -f lavfi -i "color=c=0xC03020:size=300x450" -frames:v 1 "$covers/cover.png"
+numbered numbered-h264-cover-base.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p
+ffmpeg -v error -y -i "$OUT/numbered-h264-cover-base.mp4" -i "$covers/cover.png" -map 0 -map 1 -c copy \
+    -disposition:v:1 attached_pic -bitexact -fflags +bitexact "$OUT/numbered-h264-cover.mp4"
+mkvmerge --quiet --deterministic 0 -o "$OUT/numbered-h264-cover.mkv" \
+    --attachment-mime-type image/png --attachment-name cover.png --attach-file "$covers/cover.png" \
+    "$OUT/numbered-h264-silent.mkv"
+rm -r "$covers" "$OUT/numbered-h264-cover-base.mp4"
+# Sixteen fonts, 2.8 MB, ahead of the clusters as mkvmerge stores them and as a subtitled anime
+# release carries them.
+font_args=()
+for font in "$OUT"/../../../../../ParallaxSubtitles/Sources/ParallaxSubtitles/Fonts/Noto{Sans,Serif}{Bengali,Gujarati,Kannada,Khmer,Malayalam,Myanmar,Oriya,Sinhala}-Regular.ttf; do
+    [ -f "$font" ] && font_args+=(--attachment-mime-type font/ttf --attach-file "$font")
+done
+mkvmerge --quiet --deterministic 0 -o "$OUT/numbered-h264-fonts.mkv" "${font_args[@]}" "$OUT/numbered-h264-silent.mkv"
+# A phone's video held each way: stored as the sensor saw it, with a display matrix that turns it
+# upright, counterclockwise.
+for turn in 90 180 270; do
+    ffmpeg -v error -y -display_rotation "$turn" -i "$OUT/numbered-h264-silent.mkv" -map 0:v -c copy \
+        -movflags +faststart -bitexact -fflags +bitexact "$OUT/numbered-h264-rotated-$turn.mp4"
+done
 ls -l "$OUT"

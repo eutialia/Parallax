@@ -29,7 +29,7 @@ struct SMBArtworkScenarios {
         try await world.until { await provider.isPausedForPlayback }
         let tile = Task { await provider.artwork(for: heat, ref: AppWorld.smbRef, sidecar: nil) }
         try await world.until { await provider.generationsPausedForPlayback == 1 }
-        #expect(world.thumbnailer.requests == [])
+        #expect(world.thumbnailer.grabs == 0)
 
         world.app.playback.dismiss()
         try await world.clock.waitForSleep(dueIn: .milliseconds(600))
@@ -37,7 +37,7 @@ struct SMBArtworkScenarios {
         let artwork = await tile.value
 
         #expect(artwork.duration == .seconds(42))
-        #expect(world.thumbnailer.requests.map(\.lastPathComponent) == ["Heat.mp4"])
+        #expect(world.thumbnailer.grabs == 1)
         #expect(await provider.isPausedForPlayback == false)
     }
 
@@ -67,36 +67,104 @@ struct SMBArtworkScenarios {
         let artwork = await loading.value
 
         #expect(artwork.duration == .seconds(42))
-        #expect(world.thumbnailer.requests.map(\.lastPathComponent) == ["Heat.mp4"])
+        #expect(world.thumbnailer.grabs == 1)
     }
 
-    @Test("a grey mosaic frame is not cached; the grab retries deeper in the file and caches that frame")
-    func mosaicFrameRetriesDeeper() async throws {
+    @Test("a file the thumbnailer cannot read shows no artwork, and its failure is remembered")
+    func unreadableByTheThumbnailerIsRemembered() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
-        world.thumbnailer.script = [TestFrames.mosaic]
-
-        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
-        let revisit = await provider.artwork(for: heat, ref: ref, sidecar: nil)
-
-        #expect(Self.frame(of: artwork) == "scene")
-        #expect(Self.frame(of: revisit) == "scene")
-        #expect(world.thumbnailer.positions == [0.05, 0.15])
-    }
-
-    @Test("a file AVPlayer can't play directly is never handed to the frame grab, and its failure is remembered",
-          arguments: [
-            AppWorld.mkvBytes,
-            Data(repeating: 0, count: 4096),
-            ISOBMFFFixtures.mp4(traks: [ISOBMFFFixtures.trak(stsdEntries: ["vp09"], handler: "vide")]),
-          ])
-    func undirectPlayableFileIsNotGrabbed(contents: Data) async throws {
-        let (world, provider, heat, ref) = try await Self.openHeat(contents: contents)
+        world.thumbnailer.failingDecodes = 1
 
         let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
         #expect(Self.frame(of: artwork) == "none")
-        #expect(world.thumbnailer.positions == [])
+        #expect(world.thumbnailer.grabs == 1)
         #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) != nil)
+    }
+
+    @Test("a grab whose reads stall gives up at its deadline, and its file is remembered as failed")
+    func stalledGrabGivesUpAtItsDeadline() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let listed = await world.nas.operationGate.arrivalCount
+        await world.nas.operationGate.close()
+
+        let tile = Task { await provider.artwork(for: heat, ref: ref, sidecar: nil) }
+        await world.nas.operationGate.awaitArrivals(listed + 1)
+        try await world.clock.waitForSleep(dueIn: .seconds(30))
+        world.clock.advance(by: .seconds(30))
+        let artwork = await tile.value
+        await world.nas.operationGate.open()
+
+        #expect(Self.frame(of: artwork) == "none")
+        #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) != nil)
+    }
+
+    /// The ceiling's sleep is still waiting after the cancellation: the tile waits for its read.
+    @Test("a tile cancelled while its read is stuck finishes at the deadline, and its file is not remembered as failed")
+    func cancelledStuckGrabWaitsForItsDeadline() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let listed = await world.nas.operationGate.arrivalCount
+        await world.nas.operationGate.close()
+
+        let tile = Task { await provider.artwork(for: heat, ref: ref, sidecar: nil) }
+        await world.nas.operationGate.awaitArrivals(listed + 1)
+        tile.cancel()
+        try await world.clock.waitForSleep(dueIn: .seconds(30))
+        world.clock.advance(by: .seconds(30))
+        let artwork = await tile.value
+        await world.nas.operationGate.open()
+
+        #expect(Self.frame(of: artwork) == "none")
+        #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) == nil)
+    }
+
+    @Test("a grab whose tile is cancelled stops, and its file is not remembered as failed")
+    func cancelledGrabIsNotRemembered() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let hold = AsyncGate(open: false)
+        world.thumbnailer.hold = hold
+
+        let tile = Task { await provider.artwork(for: heat, ref: ref, sidecar: nil) }
+        await hold.awaitArrivals(1)
+        tile.cancel()
+        await hold.open()
+        let artwork = await tile.value
+
+        #expect(Self.frame(of: artwork) == "none")
+        #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) == nil)
+    }
+
+    @Test("a thumbnail that finishes or is cancelled hands its connection back, so the next file's thumbnail opens no new one",
+          arguments: [false, true])
+    func thumbnailReturnsItsConnection(cancelled: Bool) async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let ran = try await Self.addFile("Ran.mp4", to: world, ref: ref)
+        let hold = AsyncGate(open: !cancelled)
+        world.thumbnailer.hold = hold
+        let first = Task { await provider.artwork(for: heat, ref: ref, sidecar: nil) }
+        if cancelled {
+            await hold.awaitArrivals(1)
+            first.cancel()
+            await hold.open()
+        }
+        _ = await first.value
+        let connects = world.nas.connectAttempts
+
+        let artwork = await provider.artwork(for: ran, ref: ref, sidecar: nil)
+
+        #expect(Self.frame(of: artwork) == "scene")
+        #expect(world.nas.connectAttempts == connects)
+    }
+
+    @Test("after the update, a file whose thumbnail failed under the old route gets one the next time it is on screen")
+    func oldRouteFailureIsRetried() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let marker = try world.leaveOldRouteFailureMarker(for: try Self.key(of: heat, ref: ref))
+
+        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+
+        #expect(Self.frame(of: artwork) == "scene")
+        #expect(!FileManager.default.fileExists(atPath: marker.path(percentEncoded: false)))
     }
 
     @Test("a file the share refuses to open is remembered as failed, so its tile is not probed again on every scroll")
@@ -105,31 +173,33 @@ struct SMBArtworkScenarios {
         world.nas.setFileSizeOutcome(.fails(POSIXError(.EACCES)))
 
         let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+        let nextScroll = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
         #expect(Self.frame(of: artwork) == "none")
-        #expect(world.thumbnailer.positions == [])
+        #expect(Self.frame(of: nextScroll) == "none")
+        #expect(world.nas.readPaths == ["Heat.mp4"])
         #expect(await world.thumbnailCache().failureState(for: try Self.key(of: heat, ref: ref)) != nil)
     }
 
-    @Test("a file that only decodes to grey shows no artwork and is not grabbed again within its backoff")
-    func mosaicOnlyFileBacksOff() async throws {
+    @Test("a file whose frame fails to decode shows no artwork and is not grabbed again within its backoff")
+    func undecodableFileBacksOff() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
-        world.thumbnailer.script = [TestFrames.mosaic, TestFrames.mosaic, TestFrames.mosaic]
+        world.thumbnailer.failingDecodes = 1
 
         let first = await provider.artwork(for: heat, ref: ref, sidecar: nil)
         let withinBackoff = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
         #expect(Self.frame(of: first) == "none")
         #expect(Self.frame(of: withinBackoff) == "none")
-        #expect(world.thumbnailer.positions == [0.05, 0.15, 0.25])
+        #expect(world.thumbnailer.grabs == 1)
     }
 
-    /// The backoff outlives the process on the `.fail` marker, so a relaunched provider reads it
+    /// The backoff outlives the process on the failure marker, so a relaunched provider reads it
     /// from disk; the scenario's clock has to drive that read like the in-memory one.
-    @Test("a file that only decoded to grey is grabbed again once its backoff runs out, across a relaunch, and the good frame is cached")
+    @Test("a file whose frame failed to decode is grabbed again once its backoff runs out, across a relaunch, and the good frame is cached")
     func backoffRunsOutAcrossARelaunch() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
-        world.thumbnailer.script = [TestFrames.mosaic, TestFrames.mosaic, TestFrames.mosaic]
+        world.thumbnailer.failingDecodes = 1
         let failed = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
         await world.relaunch()
@@ -143,106 +213,38 @@ struct SMBArtworkScenarios {
         #expect(Self.frame(of: withinBackoff) == "none")
         #expect(Self.frame(of: afterBackoff) == "scene")
         #expect(Self.frame(of: revisit) == "scene")
-        #expect(world.thumbnailer.positions == [0.05, 0.15, 0.25, 0.05])
+        #expect(world.thumbnailer.grabs == 2)
     }
 
-    @Test("a frame captured during playback is cached unless it is grey, which leaves the tile to a real grab",
-          arguments: [(TestFrames.mosaic, [Float(0.05)]), (TestFrames.scene, [])])
-    func playbackCaptureIsCachedUnlessGrey(captured: Data, grabs: [Float]) async throws {
+    @Test("a frame captured during playback becomes the tile's thumbnail, with no frame grab")
+    func playbackCaptureIsCached() async throws {
         let (world, provider, heat, ref) = try await Self.openHeat()
 
-        await provider.backfillThumbnail(item: heat, ref: ref, duration: .seconds(42)) { captured }
+        await provider.backfillThumbnail(item: heat, ref: ref, duration: .seconds(42)) { TestFrames.scene }
         let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
 
         #expect(Self.frame(of: artwork) == "scene")
-        #expect(world.thumbnailer.positions == grabs)
+        #expect(world.thumbnailer.grabs == 0)
     }
 
-    @Test("a file that decodes only to grey after a sidecar timeout leaves the host's window open for two concurrent generations")
-    func greyFileAfterSidecarBlipDoesNotShrinkTheWindow() async throws {
+    @Test("a poster cached by the sidecar tier is served across a relaunch without a re-download")
+    func posterSurvivesRelaunch() async throws {
         let ref = AppWorld.smbRef
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setFolder([
             SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: 512, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Ran.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Alien.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: Int64(TestFrames.scene.count), modifiedAt: nil),
         ], share: "Media")
-        world.nas.setContents(AppWorld.mp4Bytes)
-        let root = await world.openSMBFolder(ref, share: "Media")
-        try await world.until { root.media.count == 3 }
-        let provider = world.app.services.mediaArtworkProvider
-        let heat = try #require(root.media.first { "\($0.id)".contains("Heat.mp4") })
-        let others = root.media.filter { $0.id != heat.id }
-        let poster = try #require(root.artwork[heat.id])
-        world.thumbnailer.script = [TestFrames.mosaic, TestFrames.mosaic, TestFrames.mosaic]
-
-        let listed = await world.nas.operationGate.arrivalCount
-        await world.nas.operationGate.close()
-        let grey = Task { await provider.artwork(for: heat, ref: ref, sidecar: poster) }
-        await world.nas.operationGate.awaitArrivals(listed + 1)
-        try await world.clock.waitForSleep(dueIn: .seconds(10))
-        world.clock.advance(by: .seconds(10))
-        try await world.until { await world.nas.operationGate.arrivalCount >= listed + 2 }
-        await world.nas.operationGate.open()
-        _ = await grey.value
-        #expect(world.thumbnailer.positions == [0.05, 0.15, 0.25])
-
-        let hold = AsyncGate(open: false)
-        world.thumbnailer.hold = hold
-        let tiles = others.map { item in Task { await provider.artwork(for: item, ref: ref, sidecar: nil) } }
-        try await world.until { await hold.arrivalCount == 2 }
-        await hold.open()
-        for tile in tiles { _ = await tile.value }
-    }
-
-    @Test("a grey thumbnail cached by an older build is evicted and regenerated on first read; a good one is served as is")
-    func cachedGreyThumbnailIsRegenerated() async throws {
-        let (world, provider, heat, ref) = try await Self.openHeat()
-        let ran = try await Self.addFile("Ran.mp4", to: world, ref: ref)
-        let seeding = world.thumbnailCache()
-        _ = await seeding.store(TestFrames.mosaic, duration: .seconds(42), for: try Self.key(of: heat, ref: ref))
-        _ = await seeding.store(TestFrames.scene, duration: .seconds(42), for: try Self.key(of: ran, ref: ref))
-
-        let good = await provider.artwork(for: ran, ref: ref, sidecar: nil)
-        #expect(Self.frame(of: good) == "scene")
-        #expect(world.thumbnailer.positions == [])
-
-        let regenerated = await provider.artwork(for: heat, ref: ref, sidecar: nil)
-        #expect(Self.frame(of: regenerated) == "scene")
-        #expect(world.thumbnailer.positions == [0.05])
-    }
-
-    @Test("a grey poster cached by the sidecar tier is served across a relaunch without a re-download")
-    func greyPosterSurvivesRelaunch() async throws {
-        let ref = AppWorld.smbRef
-        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
-        world.nas.setFolder([
-            SMBDirectoryEntry(name: "Heat.mp4", isDirectory: false, size: 4096, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: Int64(TestFrames.mosaic.count), modifiedAt: nil),
-        ], share: "Media")
-        world.nas.setContents(TestFrames.mosaic)
+        world.nas.setContents(TestFrames.scene)
         let root = await world.openSMBFolder(ref, share: "Media")
         try await world.until { root.media.count == 1 }
         let heat = root.media[0]
         let poster = try #require(root.artwork[heat.id])
         _ = await world.app.services.mediaArtworkProvider.artwork(for: heat, ref: ref, sidecar: poster)
-        #expect(world.thumbnailer.positions == [])
+        #expect(world.thumbnailer.grabs == 0)
 
         let relaunched = world.thumbnailCache()
         #expect(await relaunched.existing(for: try Self.key(of: heat, ref: ref)) != nil)
-    }
-
-    @Test("a seeded grey poster is served on first read without a frame grab")
-    func seededGreyPosterIsServed() async throws {
-        let (world, provider, heat, ref) = try await Self.openHeat()
-        let seeding = world.thumbnailCache()
-        _ = await seeding.store(TestFrames.mosaic, duration: nil, for: try Self.key(of: heat, ref: ref), origin: .artwork)
-
-        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
-
-        #expect(Self.frame(of: artwork) == "mosaic")
-        #expect(world.thumbnailer.positions == [])
     }
 
     @Test("leaving a folder withdraws its queued thumbnails; only the folder on screen is fetched")
@@ -326,7 +328,7 @@ struct SMBArtworkScenarios {
 
     /// A share whose root holds a Films folder plus Alpha and Omega, with Film 1 to Film 8 listed in
     /// that order inside Films. The NAS answers slowly enough to class as WAN, so one thumbnail
-    /// generates at a time; the returned gate parks each decode once the thumbnailer has recorded it.
+    /// generates at a time; the returned gate parks each grab once the thumbnailer has counted it.
     private static func launchOverWAN() async throws -> (AppWorld, AsyncGate) {
         let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
         world.nas.setLatency(.milliseconds(400), host: AppWorld.smbServer.host)
@@ -378,12 +380,11 @@ struct SMBArtworkScenarios {
         return (world, world.app.services.mediaArtworkProvider, root.media[0], ref)
     }
 
-    /// Which test frame the tile shows: "scene", "mosaic", or "none".
+    /// Which test frame the tile shows: "scene", or "none".
     private static func frame(of artwork: MediaArtwork) -> String {
         guard case .local(let url) = artwork.source else { return "none" }
         switch try? Data(contentsOf: url) {
         case TestFrames.scene: return "scene"
-        case TestFrames.mosaic: return "mosaic"
         default: return "unknown"
         }
     }
@@ -408,6 +409,7 @@ private extension AppWorld {
         level.isOnScreen = false
     }
 
-    /// The file names the frame thumbnailer was asked to decode, in order.
-    var requestedFiles: [String] { thumbnailer.requests.map(\.lastPathComponent) }
+    /// The files the thumbnailer was handed, in order: in these scenarios nothing else reads the
+    /// share.
+    var requestedFiles: [String] { nas.readPaths.map { ($0 as NSString).lastPathComponent } }
 }

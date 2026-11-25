@@ -159,7 +159,8 @@ actor MediaDemuxer {
     private let context: UnsafeMutablePointer<AVFormatContext>
     private let packet: UnsafeMutablePointer<AVPacket>
     /// Nanoseconds: the first timestamp of the file, as libavformat reports it.
-    private nonisolated let start: Int64
+    nonisolated let start: Int64
+    nonisolated var isMatroska: Bool { container == .matroska }
     /// In the video's ticks: how long after the time the index gives a keyframe its picture
     /// shows.
     private let keyframeShowDelay: Int64
@@ -183,14 +184,16 @@ actor MediaDemuxer {
     }
 
     /// A demuxer over blocks other demuxers of the file share. With `keyframes`, the list one
-    /// of them made, it makes none of its own.
+    /// of them made, it makes none of its own. With `skippingAttachments`, a Matroska file's
+    /// attachments are passed over unread, its cover art among them.
     static func open(
-        _ cache: SessionBlockCache, keyframes: [IndexedKeyframe]? = nil, listing: KeyframeListing = .init()
+        _ cache: SessionBlockCache, keyframes: [IndexedKeyframe]? = nil, listing: KeyframeListing = .init(),
+        skippingAttachments: Bool = false
     ) async throws -> MediaDemuxer {
         let queue = DispatchSerialQueue(label: "parallax.media-demuxer", qos: .userInitiated)
         let opened = try await withCheckedThrowingContinuation { continuation in
             queue.async {
-                continuation.resume(with: Result { try Opened(cache: cache) })
+                continuation.resume(with: Result { try Opened(cache: cache, skippingAttachments: skippingAttachments) })
             }
         }
         return MediaDemuxer(opened, keyframes: keyframes, listing: listing, queue: queue)
@@ -441,6 +444,41 @@ actor MediaDemuxer {
             if enough || bytes > byteLimit { break }
         }
         return collected
+    }
+
+    /// The picture a stream marked as attached carries: an MP4's `covr`.
+    func attachedPicture() -> Data? {
+        (0..<Int(context.pointee.nb_streams)).lazy.compactMap { [context] index -> Data? in
+            guard let stream = context.pointee.streams[index]?.pointee,
+                  stream.disposition & AV_DISPOSITION_ATTACHED_PIC != 0, stream.attached_pic.size > 0
+            else { return nil }
+            return Data(bytes: stream.attached_pic.data, count: Int(stream.attached_pic.size))
+        }.first
+    }
+
+    /// The video's packets from the keyframe a seek to `time`, in nanoseconds of the file's own
+    /// time, lands on, handed to `sink` until it is satisfied. That keyframe is at or before
+    /// `time` in a container with an index. In one without (TS, PS) the seek lands on a packet
+    /// before `time` and the keyframe is the first read from there, at most one past `time`.
+    /// A sink that is never satisfied is handed packets up to the first keyframe `videoRunOn`
+    /// after the one the read starts at.
+    func readVideo(fromKeyframeNear time: Int64, into sink: some PacketSink) throws {
+        try seek(toVideoTick: av_rescale_q(time, Self.nanoseconds, timeBase(of: videoStream)))
+        var started = false
+        var startTime: Int64?
+        while let packet = try nextPacket() {
+            defer { av_packet_unref(packet) }
+            if sink.isCancelled { throw CancellationError() }
+            guard Int(packet.pointee.stream_index) == videoStream else { continue }
+            if packet.pointee.flags & AV_PKT_FLAG_KEY != 0 {
+                let time = spanTime(of: packet)
+                if started, let startTime, let time, time - startTime >= Self.videoRunOn { return }
+                if !started { (started, startTime) = (true, time) }
+            }
+            guard started, let demuxed = demuxed(packet) else { continue }
+            try sink.accept(demuxed)
+            if sink.isSatisfied { return }
+        }
     }
 
     /// The read goes on past the upper keyframe while the sink is not satisfied, up to the
@@ -798,7 +836,7 @@ private struct Opened {
     let fileSize: Int64
     let keyframeShowDelay: Int64
 
-    init(cache: SessionBlockCache) throws {
+    init(cache: SessionBlockCache, skippingAttachments: Bool) throws {
         let source = DemuxerSource(cache: cache)
         guard let io = source.makeContext() else { throw MediaDemuxer.OpenFailure.outOfMemory }
         guard let packet = av_packet_alloc() else {
@@ -815,7 +853,12 @@ private struct Opened {
 
         // On failure avformat_open_input frees the context it was given, but not our I/O.
         var context: UnsafeMutablePointer<AVFormatContext>? = allocated
-        var status = avformat_open_input(&context, nil, nil, nil)
+        var options: OpaquePointer?
+        defer { av_dict_free(&options) }
+        // Matroska's reader otherwise reads every attachment whole at open: the fonts of a
+        // subtitled release, tens of megabytes.
+        if skippingAttachments { av_dict_set(&options, "skip_attachments", "1", 0) }
+        var status = avformat_open_input(&context, nil, nil, &options)
         let format = context?.pointee.iformat.map { String(cString: $0.pointee.name) } ?? ""
         let bridged = BridgedContainer(formatName: format)
         if status >= 0 {

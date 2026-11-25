@@ -76,19 +76,6 @@ struct SMBDeliveryTests {
         #expect(servedAtDrain.withLock { $0 } == false)
     }
 
-    @Test("a file AVPlayer cannot play releases the reader before the reason is thrown")
-    func unplayableFileReleasesTheReader() async {
-        let reader = FakeReader(data: AppWorld.mkvBytes)
-
-        await #expect(throws: Unplayable.container(.mkv)) {
-            _ = try await SMBDelivery.start(
-                reader: reader, fileName: "clip.mkv", support: .baseline, bridging: false,
-                scope: .loopback, clock: TestClock())
-        }
-
-        #expect(await reader.releases == ["drain"])
-    }
-
     @Test("a Matroska file the bridge refuses releases the reader before the reason is thrown")
     func refusedFileReleasesTheReader() async {
         let reader = FakeReader(data: AppWorld.mkvBytes)
@@ -109,11 +96,10 @@ struct SMBDeliveryTests {
         let clock = TestClock()
         let start = Task {
             try await SMBDelivery.start(
-                reader: reader, fileName: "clip.mp4", support: .baseline, scope: .loopback,
-                probeDeadline: .seconds(4), clock: clock)
+                reader: reader, fileName: "clip.mp4", support: .baseline, scope: .loopback, clock: clock)
         }
-        try await clock.waitForSleep(dueIn: .seconds(4))
-        clock.advance(by: .seconds(4))
+        try await clock.waitForSleep(dueIn: MediaDelivery.defaultProbeDeadline)
+        clock.advance(by: MediaDelivery.defaultProbeDeadline)
 
         await #expect { _ = try await start.value } throws: {
             if case SMBDelivery.ProbeFailure.timedOut = $0 { true } else { false }

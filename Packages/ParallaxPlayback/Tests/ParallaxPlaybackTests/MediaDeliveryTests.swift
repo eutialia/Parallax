@@ -222,16 +222,6 @@ struct MediaDeliveryTests {
         }
     }
 
-    @Test("without bridging, a Matroska file is a container AVPlayer cannot open")
-    func matroskaFileIsNotBridgedWhenToldNotTo() async throws {
-        let reader = try Self.fixture("h264-mkvmerge")
-        await #expect(throws: Unplayable.container(.mkv)) {
-            _ = try await MediaDelivery.start(
-                reading: reader, fileName: "clip.mkv", support: .baseline, bridging: false,
-                scope: .loopback, clock: TestClock())
-        }
-    }
-
     @Test("a wedged source is abandoned at the probe deadline")
     func wedgedSourceTimesOut() async throws {
         let clock = TestClock()

@@ -39,11 +39,10 @@ nonisolated struct CachedThumbnail: Sendable, Equatable {
 /// LRU eviction. A DELIBERATE exception to delete-over-deprecate — the cost of deletion falls on the
 /// user's bandwidth, not the codebase.
 ///
-/// Four data kinds ride each key's base name:
+/// Three data kinds ride each key's base name:
 ///  - `.heic`/`.png` — the image itself (the eviction unit).
-///  - `.art` — empty marker: the image is a poster or cover art, exempt from the grey check.
 ///  - `.dur` — the source duration in milliseconds (best-effort; absence just yields nil duration).
-///  - `.fail` — a PERSISTENT failure marker (attempt count + last-attempt epoch) so a file the
+///  - `.failures` — a PERSISTENT failure marker (attempt count + last-attempt epoch) so a file the
 ///    thumbnailer can't decode isn't re-attempted (and re-charged the full timeout) on every launch. The
 ///    size+mtime in the base name means a changed file self-invalidates its marker along with its
 ///    stale image. `MediaArtworkProvider` reads it to compute an exponential backoff.
@@ -67,10 +66,6 @@ actor SMBThumbnailCache {
     /// file), so between sweeps the only unbounded growth is orphaned old-version entries.
     private let sweepInterval: Int
     private var writesSinceSweep: Int
-    /// Base names whose image has passed `FrameQuality` in this process: written by `store` (every
-    /// writer gates or transcodes first) or checked on first read. Frame-grabs cached before the
-    /// grey gate were never checked, and a grey one would otherwise be served forever.
-    private var verified: Set<String> = []
 
     /// The image extensions the cache reads, newest-codec first. `existing` probes them in order, so
     /// a key that has both (a legacy PNG never overwritten by a later HEIC store) resolves to the
@@ -84,17 +79,10 @@ actor SMBThumbnailCache {
     /// The pre-HEIC extension `existing` still honours so an old cache isn't invalidated wholesale.
     static var legacyImageExtension: String { imageExtensions[1] }
 
-    /// Who produced an image. Only a frame-grab can be decoder filler, so only its entries are
-    /// checked on first read; a poster or cover art is the author's own image, grey or not.
-    enum Origin: Sendable {
-        case frameGrab
-        case artwork
-    }
-
     /// - Parameters:
     ///   - directory: where thumbnails live (`<Caches>/SMBThumbnails/` in the app).
     ///   - fileManager: injectable for tests.
-    ///   - now: wall time for the `.fail` marker's stamp and its expiry (`AppEnvironment.now`).
+    ///   - now: wall time for the failure marker's stamp and its expiry (`AppEnvironment.now`).
     ///   - sizeCapBytes / trimTargetBytes / sweepInterval: eviction tuning; small values in tests
     ///     exercise the sweep without writing thousands of files.
     init(
@@ -119,9 +107,6 @@ actor SMBThumbnailCache {
 
     /// The cached thumbnail for `key` if a file already exists, else nil. Never generates. The
     /// returned record carries the duration read from the base name's `.dur` sidecar (nil if absent).
-    /// The first read of a frame-grab entry in a process decodes it at 32 px; a grey or undecodable
-    /// image is deleted and reads as a miss, so it regenerates through the gated path. Artwork
-    /// entries carry a marker and are never checked.
     ///
     /// On a hit it stamps the file's access date to now so `sweep()` can evict by TRUE recency: iOS
     /// does not bump a file's access time on a plain `stat`/read, so the cache must set it explicitly
@@ -132,14 +117,6 @@ actor SMBThumbnailCache {
         for ext in Self.imageExtensions {
             let url = directory.appendingPathComponent("\(base).\(ext)")
             guard fileManager.fileExists(atPath: url.path) else { continue }
-            if !verified.contains(base), !fileManager.fileExists(atPath: artworkMarkerURL(base: base).path) {
-                guard let data = try? Data(contentsOf: url), FrameQuality.isUsable(data) else {
-                    try? fileManager.removeItem(at: url)
-                    removeDuration(base: base)
-                    continue
-                }
-            }
-            verified.insert(base)
             touchAccessDate(url)
             return CachedThumbnail(url: url, duration: readDuration(base: base))
         }
@@ -152,10 +129,8 @@ actor SMBThumbnailCache {
     /// atomic-write error). A nil here means a STORAGE failure, NOT a generation failure — the caller
     /// already produced valid bytes — so the caller must not treat it as a reason to negative-cache
     /// the key. No partial file is left behind on failure. A successful write CLEARS any persistent
-    /// `.fail` marker for the key (the file just proved decodable).
-    func store(
-        _ data: Data, duration: Duration?, for key: SMBThumbnailKey, origin: Origin = .frameGrab
-    ) -> CachedThumbnail? {
+    /// failure marker for the key (the file just proved decodable).
+    func store(_ data: Data, duration: Duration?, for key: SMBThumbnailKey) -> CachedThumbnail? {
         let base = baseName(for: key)
         let url = directory.appendingPathComponent("\(base).\(Self.currentImageExtension)")
         do {
@@ -163,11 +138,6 @@ actor SMBThumbnailCache {
             try data.write(to: url, options: .atomic)
         } catch {
             return nil
-        }
-        verified.insert(base)
-        switch origin {
-        case .frameGrab: removeArtworkMarker(base: base)
-        case .artwork: try? Data().write(to: artworkMarkerURL(base: base), options: .atomic)
         }
         // A decodable file: drop any stale failure marker so its backoff doesn't linger.
         removeFailure(base: base)
@@ -204,7 +174,7 @@ actor SMBThumbnailCache {
 
     // MARK: - Failure markers
 
-    /// The persistent failure state for `key`, or nil when no `.fail` marker exists (never failed,
+    /// The persistent failure state for `key`, or nil when no `.failures` marker exists (never failed,
     /// or a prior success cleared it, or the file changed so the new key reads a fresh base). The
     /// provider turns `attempts` into an exponential backoff (capped, never permanent).
     func failureState(for key: SMBThumbnailKey) -> (attempts: Int, lastAttempt: Date)? {
@@ -224,7 +194,7 @@ actor SMBThumbnailCache {
         return (attempts, Date(timeIntervalSince1970: epoch))
     }
 
-    /// The last-attempt stamp inside a `.fail` marker, or nil if unreadable (an unreadable marker
+    /// The last-attempt stamp inside a `.failures` marker, or nil if unreadable (an unreadable marker
     /// reads as fresh — never expire what can't be parsed, the write path will overwrite it).
     private func failMarkerStamp(at url: URL) -> Date? {
         failureState(at: url)?.lastAttempt
@@ -251,7 +221,7 @@ actor SMBThumbnailCache {
         return (attempts, stamp)
     }
 
-    /// Allocated size of every cached file (images + `.dur`/`.fail` sidecars), for a "Clear Cache"
+    /// Allocated size of every cached file (images + `.dur`/`.failures` sidecars), for a "Clear Cache"
     /// readout. 0 when the directory doesn't exist yet (SMB never browsed) or can't be listed.
     func totalSize() -> Int64 {
         guard let entries = try? fileManager.contentsOfDirectory(
@@ -263,12 +233,11 @@ actor SMBThumbnailCache {
         }
     }
 
-    /// Wipes the whole cache directory (images + `.dur`/`.fail` sidecars). `store` recreates it on the
+    /// Wipes the whole cache directory (images + `.dur`/`.failures` sidecars). `store` recreates it on the
     /// next write. Re-arms the first-write sweep so a freshly-refilled cache is bounded from the next
     /// launch, and drops every failure marker so previously-undecodable files get a fresh attempt.
     func clear() {
         try? fileManager.removeItem(at: directory)
-        verified = []
         writesSinceSweep = sweepInterval
     }
 
@@ -280,9 +249,9 @@ actor SMBThumbnailCache {
         directory.appendingPathComponent("\(base).dur")
     }
 
-    /// The `.fail` marker URL for a key's base name (`<base>.fail`).
+    /// The failure marker URL for a key's base name (`<base>.failures`).
     private func failURL(base: String) -> URL {
-        directory.appendingPathComponent("\(base).fail")
+        directory.appendingPathComponent("\(base).\(Self.failureExtension)")
     }
 
     /// Reads the duration from the base name's sidecar, or nil if it's missing/unparseable.
@@ -316,18 +285,7 @@ actor SMBThumbnailCache {
         try? fileManager.removeItem(at: durationSidecarURL(base: base))
     }
 
-    /// The `.art` marker URL: present when a poster or cover art wrote the image. Persisted because
-    /// the poster tiers store no duration, and neither do some frame-grabs, so no other on-disk
-    /// signal tells the two apart across a relaunch.
-    private func artworkMarkerURL(base: String) -> URL {
-        directory.appendingPathComponent("\(base).art")
-    }
-
-    private func removeArtworkMarker(base: String) {
-        try? fileManager.removeItem(at: artworkMarkerURL(base: base))
-    }
-
-    /// Removes a base name's `.fail` marker if present (best-effort).
+    /// Removes a base name's failure marker if present (best-effort).
     private func removeFailure(base: String) {
         try? fileManager.removeItem(at: failURL(base: base))
     }
@@ -340,16 +298,18 @@ actor SMBThumbnailCache {
         try? mutable.setResourceValues(values)
     }
 
-    /// A `.fail` marker whose last attempt is older than this is inert history (the provider's
+    /// A failure marker whose last attempt is older than this is inert history (the provider's
     /// backoff caps at 24h) and gets swept. Without this, a marker for a file that was deleted or
     /// changed server-side would live forever: a NEW size/mtime mints a NEW base name, so the old
     /// marker is orphaned by the change, not cleared by it.
     private static let failMarkerTTL: TimeInterval = 7 * 24 * 3600
 
-    /// Bounded-LRU eviction plus `.fail` hygiene. Lists the cache directory once for size + access
+    private static let failureExtension = "failures"
+
+    /// Bounded-LRU eviction plus failure-marker hygiene. Lists the cache directory once for size + access
     /// time; if the total exceeds `sizeCapBytes`, deletes least-recently-accessed IMAGE files until
     /// under `trimTargetBytes`. Access time is meaningful because `existing` stamps it on every hit.
-    /// Independently drops `.fail` markers past `failMarkerTTL` — a still-failing file re-records
+    /// Independently drops failure markers past `failMarkerTTL` — a still-failing file re-records
     /// (refreshing its stamp), so only abandoned markers age out. Best-effort: a transient
     /// list/remove failure just defers to the next sweep.
     private func sweep() {
@@ -362,11 +322,18 @@ actor SMBThumbnailCache {
         var total: Int64 = 0
         let sweptAt = now()
         for entry in entries {
-            // Images (heic + legacy png) are the eviction units; `.dur`/`.fail` sidecars are tiny and
-            // ride their image out (below), so they're neither counted toward the cap nor evicted on
-            // their own — except an EXPIRED `.fail`, dropped here so never-stored keys' markers
-            // can't accumulate forever.
-            if entry.pathExtension == "fail" {
+            // Images (heic + legacy png) are the eviction units; `.dur`/`.failures` sidecars are tiny
+            // and ride their image out (below), so they're neither counted toward the cap nor evicted
+            // on their own — except an EXPIRED failure marker, dropped here so never-stored keys'
+            // markers can't accumulate forever.
+            // Builds that checked frames for decoder filler marked posters with an empty `.art`, and
+            // builds that grabbed frames through AVFoundation marked the files it could not read
+            // with a `.fail`. Neither is read any more.
+            if entry.pathExtension == "art" || entry.pathExtension == "fail" {
+                try? fileManager.removeItem(at: entry)
+                continue
+            }
+            if entry.pathExtension == Self.failureExtension {
                 if let stamp = failMarkerStamp(at: entry), sweptAt.timeIntervalSince(stamp) > Self.failMarkerTTL {
                     try? fileManager.removeItem(at: entry)
                 }
@@ -390,13 +357,12 @@ actor SMBThumbnailCache {
                 let base = (file.url.lastPathComponent as NSString).deletingPathExtension
                 removeDuration(base: base)
                 removeFailure(base: base)
-                removeArtworkMarker(base: base)
             }
         }
     }
 
     /// `<sha256(serverID + share + path)>-<size>-<mtimeEpoch>` — the shared base name for a key's
-    /// image + `.dur` + `.fail` files. Hashing the server id, the share, and the path keeps two
+    /// image + `.dur` + `.failures` files. Hashing the server id, the share, and the path keeps two
     /// shares' (or two servers') identical relative paths in distinct cache files; the size +
     /// modification-date suffix means a changed file never collides with its own stale entry. The NUL
     /// separator can't appear in a host id, a share name, or a filename, so the digest input is

@@ -52,6 +52,17 @@ final class AppWorld {
     func thumbnailCache() -> SMBThumbnailCache {
         SMBThumbnailCache(directory: thumbnailCacheDirectory, now: environment.now)
     }
+    /// Leaves for `key` the failure marker builds that grabbed frames through AVFoundation wrote: a
+    /// `.fail` beside the thumbnails, named as the cache names the key's files, holding nine
+    /// attempts with the last one just now, which those builds backed off for a day.
+    func leaveOldRouteFailureMarker(for key: SMBThumbnailKey) throws -> URL {
+        let hash = Data("\(key.serverID)\u{0}\(key.share)\u{0}\(key.path)".utf8).sha256Hex
+        let mtime = key.modifiedAt.map { String(Int64($0.timeIntervalSince1970.rounded())) } ?? "na"
+        let marker = thumbnailCacheDirectory.appending(path: "\(hash)-\(key.size)-\(mtime).fail")
+        try FileManager.default.createDirectory(at: thumbnailCacheDirectory, withIntermediateDirectories: true)
+        try Data("9\n\(Int64(environment.now().timeIntervalSince1970))".utf8).write(to: marker)
+        return marker
+    }
     /// Where the world's wall time (`AppEnvironment.now`) starts; the test clock moves it on.
     nonisolated static let wallClockOrigin = Date(timeIntervalSince1970: 1_800_000_000)
     private var lifetime: Task<Void, Never>
@@ -499,28 +510,38 @@ final class AppWorld {
     }
 }
 
-/// A frame thumbnailer that records every URL and position it was asked to decode. It hands back
-/// the `script` frames in order, then `frame` once the script runs out.
+/// A thumbnailer that asks the share for each file's size, as the real one's first read does, so
+/// the share records the file and a refused file fails here as it would there. It counts the grabs
+/// that got that far, fails the first `failingDecodes` of them, and hands back `frame` after that.
 @MainActor
-final class RecordingThumbnailer: FrameThumbnailing {
+final class RecordingThumbnailer: Thumbnailing {
     static let frame = ThumbnailFrame(data: TestFrames.scene, duration: .seconds(42))
-    var script: [Data] = []
-    /// Set and close it to park every decode after it has been recorded. Left nil it adds no
-    /// suspension, which the timing-sensitive scenarios rely on. A decode cancelled while parked
+    var failingDecodes = 0
+    /// Set and close it to park every grab after it has been counted. Left nil it adds no
+    /// suspension, which the timing-sensitive scenarios rely on. A grab cancelled while parked
     /// throws `CancellationError` once released, as the real thumbnailer does.
     var hold: AsyncGate?
-    private(set) var requests: [URL] = []
-    private(set) var positions: [Float] = []
+    private(set) var grabs = 0
 
-    func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
-        requests.append(url)
-        positions.append(position)
+    nonisolated func thumbnail(of reader: any RandomAccessReading) async throws -> ThumbnailFrame {
+        _ = try await reader.fileSize
+        return try await grab()
+    }
+
+    private func grab() async throws -> ThumbnailFrame {
+        grabs += 1
         await hold?.pass()
         try Task.checkCancellation()
-        guard !script.isEmpty else { return Self.frame }
-        return ThumbnailFrame(data: script.removeFirst(), duration: Self.frame.duration)
+        if failingDecodes > 0 {
+            failingDecodes -= 1
+            throw UndecodableFrame()
+        }
+        return Self.frame
     }
 }
+
+/// A decode that failed on the file's content, not on the link.
+struct UndecodableFrame: Error {}
 
 /// Bonjour browsing the scenario drives: every browse starts from what is advertised, then follows
 /// `advertise`.
