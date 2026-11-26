@@ -144,7 +144,8 @@ extension MediaDemuxer {
             let ticks = (lower == 0 ? .min : rendition.clock.ticks(at: segment.start))
                 ..< (takingLaterAudio ? .max : rendition.clock.ticks(at: segment.end))
             let conversion = try AudioConversion(
-                audio, of: rendition, ticks: ticks, stopwatch: stopwatch, cancelled: { sink.isCancelled },
+                audio, of: rendition, ticks: ticks, firstPicture: lower == 0 ? rendition.clock.ticks(at: segment.start) : nil,
+                stopwatch: stopwatch, cancelled: { sink.isCancelled },
                 into: { try sink.accept($0, isKeyframe: true, at: $1, lasting: $2) })
             try read(
                 rendition.stream.index, from: lower, to: upper, takingLaterAudio: takingLaterAudio,

@@ -144,7 +144,9 @@ struct SampleRun {
 /// sample and drop none. The read starts before the segment and runs past its end: a decoder
 /// needs packets before the first sample it gets right, and may give a packet's samples only
 /// when handed a later one. Where the stream has no samples for a while, the segment has
-/// silence.
+/// silence, and so has a file's first segment from its first picture to a later first sample:
+/// AVPlayer starts an HLS presentation where its audio starts, and would not show the pictures
+/// before it.
 ///
 /// Lives on one thread: the demuxer's queue that reads the segment.
 final class AudioConversion: PacketSink {
@@ -171,15 +173,18 @@ final class AudioConversion: PacketSink {
     /// The tick after the last sample encoded. Nil for a file's first segment before its first
     /// sample, which is wherever the stream starts.
     private var encodedUntil: Int64?
+    /// The tick of a file's first picture, which a first segment's samples start no later than.
+    private let firstPicture: Int64?
     /// The tick of the next FLAC frame the encoder gives.
     private var frameStart: Int64?
     private var framesHanded: Int64 = 0
 
     /// `ticks` are the segment's on the rendition's clock: from `.min` for the file's first
-    /// segment, to `.max` for the stream's last. `take` is handed each FLAC frame with the
-    /// tick it starts at and the ticks it lasts.
+    /// segment, to `.max` for the stream's last. `firstPicture` is the tick of the file's first
+    /// picture, for its first segment. `take` is handed each FLAC frame with the tick it starts
+    /// at and the ticks it lasts.
     init(
-        _ audio: ConvertedAudio, of rendition: Rendition, ticks: Range<Int64>,
+        _ audio: ConvertedAudio, of rendition: Rendition, ticks: Range<Int64>, firstPicture: Int64?,
         stopwatch: @escaping () -> () -> Duration, cancelled: @escaping () -> Bool,
         into take: @escaping (Data, _ tick: Int64, _ length: Int64) throws -> Void
     ) throws {
@@ -195,6 +200,7 @@ final class AudioConversion: PacketSink {
         encoder = try FLACEncoder(sampleRate: audio.sampleRate, channelCount: audio.channelCount)
         run = SampleRun(sampleRate: audio.sampleRate, tick: audio.stream.tick)
         encodedUntil = ticks.lowerBound == .min ? nil : ticks.lowerBound
+        self.firstPicture = firstPicture
     }
 
     var isCancelled: Bool { cancelled() }
@@ -270,6 +276,7 @@ final class AudioConversion: PacketSink {
         decodedUntil += Int64(frame.frameCount)
         let from = max(start, encodedUntil ?? ticks.lowerBound), to = min(decodedUntil, ticks.upperBound)
         guard from < to else { return }
+        if encodedUntil == nil, let firstPicture, firstPicture < from { encodedUntil = firstPicture }
         if encodedUntil != nil { try encodeSilence(until: from) }
         frameStart = frameStart ?? from
         try encoder.encode(frame.samples[Int(from - start) * channelCount..<Int(to - start) * channelCount], into: hand)

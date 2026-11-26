@@ -84,10 +84,12 @@ struct MediaDeliveryConvertedAudioTests {
             start: try #require(try readBackSamples(of: file, pathExtension: "mp4").first).presentation)
     }
 
+    /// Each fixture's audio starts 7 ms (PCM) or 7.5 ms (TrueHD) after its first picture, and
+    /// the delivery starts it there with silence (`lead` sample frames).
     @Test(
         "a lossless track's segments, asked for in any order, hold the samples ffmpeg decodes from the file, each segment starting where the one before ends",
-        arguments: [("truehd-51", 6, 48_000), ("truehd-96k", 6, 96_000), ("pcm-71", 8, 48_000)])
-    func losslessTrackKeepsEverySample(name: String, channelCount: Int, sampleRate: Int) async throws {
+        arguments: [("truehd-51", 6, 48_000, 360), ("truehd-96k", 6, 96_000, 720), ("pcm-71", 8, 48_000, 336)])
+    func losslessTrackKeepsEverySample(name: String, channelCount: Int, sampleRate: Int, lead: Int) async throws {
         var order: [Int] = []
         let (segments, master) = try await Self.segments(of: "a0", from: name) { indices in
             order = indices.shuffled()
@@ -97,7 +99,9 @@ struct MediaDeliveryConvertedAudioTests {
         #expect(master.contains(#",fLaC""#), "\(master)")
         #expect(master.contains(#"CHANNELS="\#(channelCount)""#), "\(master)")
         #expect(segments.map(\.channelCount) == segments.map { _ in channelCount })
-        let hash = SHA256.hash(data: segments.flatMap(\.samples).withUnsafeBytes { Data($0) })
+        let samples = segments.flatMap(\.samples)
+        #expect(samples.prefix(lead * channelCount).allSatisfy { $0 == 0 }, "\(samples.prefix(lead * channelCount))")
+        let hash = SHA256.hash(data: samples.dropFirst(lead * channelCount).withUnsafeBytes { Data($0) })
         let expected = String(decoding: try BridgeFixture.data("\(name).samples", "sha256"), as: UTF8.self)
         #expect(
             hash.map { String(format: "%02x", $0) }.joined() == expected,
@@ -150,25 +154,29 @@ struct MediaDeliveryConvertedAudioTests {
     ///
     /// The whole decode drops what the file marks as the codec's: its priming at the start and
     /// its padding at the end. The delivery drops the priming, keeps the padding (`padding`
-    /// sample frames past the stream's end), and leaves WMA's first frame out (`opening`).
+    /// sample frames past the stream's end), and leaves WMA's first frame out (`opening`). Where
+    /// the audio then starts after the first picture, the delivery starts it there with silence
+    /// (`lead` sample frames): a sample after it for MP3 and MP2, and WMA's first frame.
     ///
     /// `vorbis-bursts` is libvorbis's encode of a tone with bursts of noise, where its frames
     /// change length, and the frame after a change is timed 9 ms from where its samples are.
     /// `mp3-44k` has frames of 26.122 ms timed to the millisecond, after a first one of 47
     /// samples: a segment that places its frames by their times alone is two samples off.
     @Test("a lossy track's segments hold what one decode of the whole stream gives, to within two steps of the depth its decoder gives, each segment starting where the one before ends", arguments: [
-        ("mp3", "a0", 1, 24, 0, 431), ("mp2", "a0", 1, 16, 0, 0), ("vorbis", "a0", 1, 24, 0, 512),
-        ("vorbis-bursts", "a0", 1, 24, 0, 0), ("wma", "a0", 1, 24, 2048, 0), ("ac3-dts-51", "a1", 2, 24, 0, 256),
-        ("mp3-44k", "a0", 1, 24, 0, 407), ("ts-mp2.ts", "a0", 1, 16, 0, 0),
+        ("mp3", "a0", 1, 24, 0, 431, 1), ("mp2", "a0", 1, 16, 0, 0, 1), ("vorbis", "a0", 1, 24, 0, 512, 0),
+        ("vorbis-bursts", "a0", 1, 24, 0, 0, 0), ("wma", "a0", 1, 24, 2048, 0, 2048), ("ac3-dts-51", "a1", 2, 24, 0, 256, 0),
+        ("mp3-44k", "a0", 1, 24, 0, 407, 0), ("ts-mp2.ts", "a0", 1, 16, 0, 0, 0),
     ])
     func lossyTrackMatchesOneDecodeOfTheStream(
-        name: String, rendition: String, stream: Int, bits: Int, opening: Int, padding: Int
+        name: String, rendition: String, stream: Int, bits: Int, opening: Int, padding: Int, lead: Int
     ) async throws {
         let segments = try await Self.segments(of: rendition, from: name).segments
         let channels = try #require(segments.first?.channelCount)
         let whole = try Self.decodedWhole(name, stream: stream).dropFirst(opening * channels)
 
-        let converted = segments.flatMap(\.samples)
+        let delivered = segments.flatMap(\.samples)
+        #expect(delivered.prefix(lead * channels).allSatisfy { $0 == 0 }, "\(delivered.prefix(lead * channels))")
+        let converted = delivered.dropFirst(lead * channels)
         #expect(
             converted.count == whole.count + padding * channels,
             "\(segments.map(\.frameCount)) at \(segments.map(\.start)), whole \(whole.count / channels)")
@@ -195,9 +203,10 @@ struct MediaDeliveryConvertedAudioTests {
     func holeInTheStreamIsSilence() async throws {
         // A 440 Hz tone at 48 kHz with nothing from 1.502 s to 2.702 s, across the join at 2 s.
         // Its first packet is at -10 ms, and the first 10.02 ms it decodes to are the codec's
-        // priming, so its first sample is at 0.02 ms: a sample after 0 s.
+        // priming, so its first sample is at 0.02 ms, and the first segment starts with a
+        // sample of silence at the first picture, at 0 s.
         let segments = try await Self.segments(of: "a0", from: "mp2-hole").segments
-        func sample(atMilliseconds time: Int) -> Int { time * 48 - 1 }
+        func sample(atMilliseconds time: Int) -> Int { time * 48 }
 
         try #require(segments.count == 2)
         #expect(segments[1].start - segments[0].start == Int64(sample(atMilliseconds: 2000)))
