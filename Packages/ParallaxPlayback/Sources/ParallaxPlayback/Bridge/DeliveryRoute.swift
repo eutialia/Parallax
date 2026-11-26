@@ -1,7 +1,7 @@
 import ParallaxCore
 
 /// How a probed file's bytes reach AVPlayer.
-public enum DeliveryRoute: Sendable, Equatable {
+enum DeliveryRoute: Sendable, Equatable {
     /// AVPlayer reads the file's own bytes.
     case direct(Container)
     case unplayable(Unplayable)
@@ -39,8 +39,8 @@ extension Unplayable: CustomStringConvertible {
     }
 }
 
-public enum DirectPlay {
-    public static func verdict(for probe: MediaProbeResult, support: AVPlayerSupport) -> DeliveryRoute {
+enum DirectPlay {
+    static func verdict(for probe: MediaProbeResult, support: AVPlayerSupport) -> DeliveryRoute {
         guard probe.isComplete else { return .unplayable(.incompleteFile) }
         guard let container = probe.container, support.containers.contains(container) else {
             return .unplayable(.container(probe.container))

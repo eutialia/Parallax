@@ -617,6 +617,13 @@ numbered numbered-hevc-hev1.mp4 12 -c:v libx265 -preset veryfast -x265-params "k
 # B-frames whose show times were written as their decode times, so they show in the order
 # they decode, as a real file's do.
 numbered numbered-h264-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=ts=DTS-STARTDTS"
+# Fragmented, as a live recorder writes it: a moov with empty sample tables, then a fragment
+# for each keyframe's group of pictures, its samples' times in its own `trun`. Then the same with
+# the show times written as decode times, and again with each fragment's data counted from an
+# explicit base offset.
+numbered numbered-h264-fragmented.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -movflags +frag_keyframe+empty_moov+default_base_moof
+numbered numbered-h264-fragmented-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=ts=DTS-STARTDTS" -movflags +frag_keyframe+empty_moov+default_base_moof
+numbered numbered-h264-fragmented-base-offset-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=ts=DTS-STARTDTS" -movflags +frag_keyframe+empty_moov
 # Show times a constant two pictures after decode times, in decode order, with audio the bridge
 # would convert.
 numbered numbered-h264-dts-flat-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=pts=DTS+2*DURATION" -c:a dca -strict experimental -b:a 768k -ac 2
