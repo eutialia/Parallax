@@ -56,8 +56,8 @@ enum HLSPlaylist {
     static let mediaType = "application/vnd.apple.mpegurl"
 
     /// Every audio track is in one group, whatever its codec, so the viewer can switch between
-    /// all of them. `locale` is the language a track with no title is named in.
-    static func master(for plan: BridgePlan, locale: Locale = .current) -> String {
+    /// all of them. A track with no title is named in the device's language.
+    static func master(for plan: BridgePlan) -> String {
         let video = plan.video.rendition
         let size = video.parameters.pixelSize
         let codecs = ([video.codec] + plan.audio.map(\.rendition.codec))
@@ -66,7 +66,7 @@ enum HLSPlaylist {
             ",FRAME-RATE=" + String(format: "%.3f", Double($0.numerator) / Double($0.denominator))
         } ?? ""
         let dolbyVision = video.supplementalCodec.map { ",SUPPLEMENTAL-CODECS=\"\($0)\"" } ?? ""
-        let names = audioNames(for: plan, locale: locale)
+        let names = audioNames(for: plan)
         let audio = plan.audio.indices.map { place in
             let rendition = plan.audio[place].rendition
             let language = rendition.stream.language.map { ",LANGUAGE=\"\(quotable($0))\"" } ?? ""
@@ -87,11 +87,11 @@ enum HLSPlaylist {
 
     /// What the track menu shows for each audio track: the file's title for it, else its
     /// language, else its place.
-    private static func audioNames(for plan: BridgePlan, locale: Locale) -> [String] {
+    private static func audioNames(for plan: BridgePlan) -> [String] {
         distinct(plan.audio.indices.map { place in
             let stream = plan.audio[place].rendition.stream
             return quotable(
-                stream.title ?? TrackDisplay.languageName(stream.language, locale: locale) ?? "Audio \(place + 1)")
+                stream.title ?? TrackDisplay.languageName(stream.language) ?? "Audio \(place + 1)")
         })
     }
 

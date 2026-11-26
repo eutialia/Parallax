@@ -34,21 +34,6 @@ enum SegmentWriter {
         return try writer.headerWithFirstSample()
     }
 
-    /// The fragments of one segment holding `packets`, which are one span's packets of the
-    /// rendition in file order. `FragmentWriter` writes them as the packets arrive.
-    static func mediaSegment(
-        for rendition: Rendition, packets: [MediaPacket], lastingUntil end: Int64? = nil,
-        limits: FragmentLimits = .standard
-    ) throws(Failure) -> Data {
-        let writer = try FragmentWriter(rendition, lastingUntil: end, limits: limits)
-        var segment = Data()
-        for packet in packets {
-            if let fragment = try writer.append(packet) { segment.append(fragment) }
-        }
-        segment.append(try writer.finish())
-        return segment
-    }
-
     static let flags = "frag_custom+delay_moov+default_base_moof+frag_discont"
 
     /// The offset of the first box of `type` at the top level, or among the children of the box

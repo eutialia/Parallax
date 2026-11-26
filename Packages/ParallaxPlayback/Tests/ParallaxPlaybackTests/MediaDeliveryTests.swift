@@ -109,11 +109,13 @@ struct MediaDeliveryTests {
         }
     }
 
-    @Test("a Matroska file the bridge cannot deliver fails with the bridge's reason", arguments: [
+    @Test("a file the bridge cannot deliver fails with the bridge's reason", arguments: [
         ("refused-tta-audio", BridgeRefusal.noDeliverableAudio(names: ["tta"])),
         ("refused-dolby-vision-5", .videoCodec(name: "hevc Main 10, Dolby Vision profile 5")),
+        ("refused-one-keyframe", .noCues), ("refused-no-duration", .noDuration),
+        ("refused-avi-b-frames.avi", .untimedVideo),
     ])
-    func refusedMatroskaFileThrowsTheBridgesReason(name: String, reason: BridgeRefusal) async throws {
+    func refusedFileThrowsTheBridgesReason(name: String, reason: BridgeRefusal) async throws {
         let reader = try Self.fixture(name)
         await #expect(throws: Unplayable.refused(reason)) {
             _ = try await MediaDelivery.start(
@@ -429,4 +431,9 @@ struct MediaDeliveryTests {
         }
         #expect(misplaced.isEmpty, "\(misplaced)")
     }
+
+    // Pending: the behaviors docs/superpowers/plans/2026-11-25-playback-tests-at-the-ends.md adds at this end.
+
+    @Test("a fragmented MP4 whose timing would judder is bridged, not played directly", .disabled("pending"))
+    func judderingFragmentedMP4IsBridged() async throws {}
 }

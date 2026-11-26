@@ -39,9 +39,6 @@ public actor LocalMediaServer {
 
     private enum Lifecycle {
         case idle
-        /// `start()` is building the listener. It suspends there, so a second caller has to see
-        /// this rather than slip in before the listener exists.
-        case starting
         /// Built, and accepting connections; `start()` may still be waiting for it to be ready.
         case listening(NWListener)
         case stopped
@@ -56,33 +53,13 @@ public actor LocalMediaServer {
         if case .stopped = lifecycle { true } else { false }
     }
 
-    /// Session diagnostics: what this server actually cost the source. `bytesRead` counts
-    /// every byte pulled from a served resource's reader on behalf of a client — charged at READ time, so a
-    /// chunk the client reset before the send still counts (that's exactly the waste the
-    /// number exists to expose). A streamed body counts what its producer had fetched when the
-    /// response ended; a bridge's own opening reads are not a client's. `connections` counts accepted client connections (a
-    /// player's probe pattern can open many per session).
-    public struct Stats: Sendable {
-        public let bytesRead: UInt64
-        public let connections: Int
-    }
-    private var statsBytesRead: UInt64 = 0
-    private var statsConnections = 0
-
-    /// Running totals for the session; readable at any point (typically right before `stop()`).
-    public var stats: Stats {
-        Stats(bytesRead: statsBytesRead, connections: statsConnections)
-    }
-
     /// Every request answered so far, in the order each ended.
     private(set) var records: [RequestRecord] = []
     /// Starts timing a request on the server's clock.
     private let stopwatch: @Sendable () -> @Sendable () -> Duration
 
     /// Body chunk ceiling: read + send the file in slices so the whole file is never buffered.
-    /// Package-internal so the multi-chunk tests size their fixtures off the real ceiling instead
-    /// of a literal that a retune would silently stop exercising.
-    static let chunkSize = 2 * 1024 * 1024
+    private static let chunkSize = 2 * 1024 * 1024
     /// First-chunk size per response. Chunks DOUBLE per consumed chunk up to `chunkSize`
     /// (see `streamBody`): a seeky prober (one walking a container header to its index
     /// and then to the target sample opens, reads a little, and RESETS the connection per hop)
@@ -90,11 +67,11 @@ public actor LocalMediaServer {
     /// chunk per hop — over a VPN that waste dwarfed the useful reads. A well-behaved long
     /// stream (AVPlayer playback) reaches the 2 MiB ceiling within four sends, so steady
     /// throughput is unaffected.
-    static let initialChunkSize = 256 * 1024
+    private static let initialChunkSize = 256 * 1024
     /// Request-head cap: reject a head that doesn't terminate within 16 KiB (malformed / abusive).
-    static let maxHeadBytes = 16 * 1024
+    fileprivate static let maxHeadBytes = 16 * 1024
 
-    public init(responder: any MediaResponder, clock: any Clock<Duration> = ContinuousClock()) {
+    init(responder: any MediaResponder, clock: any Clock<Duration>) {
         self.responder = responder
         stopwatch = Self.stopwatch(on: clock)
         // 128-bit random token = two UInt64 draws from the system CSPRNG, lower-hex.
@@ -111,7 +88,7 @@ public actor LocalMediaServer {
         /// The primary LAN IPv4 (fallback loopback). Required when an AirPlay receiver must
         /// fetch the URL itself — a loopback URL black-screens the receiver.
         case lan
-        /// `127.0.0.1`. For strictly on-device clients (the thumbnailer): a VPN's policy
+        /// `127.0.0.1`. For strictly on-device clients: a VPN's policy
         /// layer (NECP) can RESET self-connections to LAN/link-local addresses ("connection
         /// reset by peer" on every transfer, observed on-device), but loopback is exempt
         /// from tunnel enforcement. Never AirPlay-able.
@@ -120,85 +97,67 @@ public actor LocalMediaServer {
 
     /// Binds an `NWListener` on an ephemeral TCP port and returns the URL the client should open.
     ///
-    /// The default `.lan` host is the primary LAN IPv4, falling back to `127.0.0.1`. **The LAN
+    /// The `.lan` host is the primary LAN IPv4, falling back to `127.0.0.1`. **The LAN
     /// address is deliberate for playback:** when AVPlayer hands off to AirPlay external
     /// playback, the receiver (Apple TV) fetches this URL *itself* — a loopback-only URL
     /// black-screens the receiver. On-device local playback works over the LAN address too, so
     /// one URL serves both. Pass `.loopback` for on-device-only clients (see `AddressScope`).
-    public func start(scope: AddressScope = .lan) async throws -> URL {
-        switch lifecycle {
-        case .stopped: throw ServerError.stopped
-        case .starting, .listening: throw ServerError.alreadyStarted
-        case .idle: lifecycle = .starting
+    ///
+    /// Called once, by the delivery that made the server, which calls `stop()` only after this
+    /// returns or throws. A throw leaves the listener for `stop()` to cancel.
+    func start(scope: AddressScope) async throws -> URL {
+        let queue = self.queue
+        let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
+            queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
         }
-        do {
-            let queue = self.queue
-            let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
-                queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
-            }
-            // A `stop()` that landed while the listener was being built found nothing to cancel.
-            guard case .starting = lifecycle else {
-                await offPool { listener.cancel() }
-                throw ServerError.stopped
-            }
-            lifecycle = .listening(listener)
+        lifecycle = .listening(listener)
 
-            listener.newConnectionHandler = { [weak self] connection in
-                // Already on `queue` — Network.framework delivers this callback there.
-                guard let self else { connection.cancel(); return }
-                Task { await self.accept(connection) }
-            }
+        listener.newConnectionHandler = { [weak self] connection in
+            // Already on `queue` — Network.framework delivers this callback there.
+            guard let self else { connection.cancel(); return }
+            Task { await self.accept(connection) }
+        }
 
-            // Wait for `.ready` (assigns the port) or surface the bind failure. `ReadyGuard` makes
-            // the continuation single-shot: state callbacks are serialised on `queue`, so a later
-            // `.failed`/`.cancelled` after `.ready` can't double-resume.
-            let readyGuard = ReadyGuard()
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                listener.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        readyGuard.once { continuation.resume() }
-                    case .failed(let error):
-                        readyGuard.once { continuation.resume(throwing: error) }
-                    case .cancelled:
-                        readyGuard.once { continuation.resume(throwing: ServerError.stopped) }
-                    default:
-                        break
-                    }
+        // Wait for `.ready` (assigns the port) or surface the bind failure. `ReadyGuard` makes
+        // the continuation single-shot: state callbacks are serialised on `queue`, so a later
+        // `.failed`/`.cancelled` after `.ready` can't double-resume.
+        let readyGuard = ReadyGuard()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    readyGuard.once { continuation.resume() }
+                case .failed(let error):
+                    readyGuard.once { continuation.resume(throwing: error) }
+                case .cancelled:
+                    readyGuard.once { continuation.resume(throwing: ServerError.stopped) }
+                default:
+                    break
                 }
-                queue.async { listener.start(queue: queue) }
             }
-
-            guard let port = listener.port else { throw ServerError.noPort }
-            let host: String = switch scope {
-            // `getifaddrs` is another syscall that stays off the cooperative pool.
-            case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
-            case .loopback: "127.0.0.1"
-            }
-            guard let url = URL(string: "http://\(host):\(port.rawValue)\(root)\(responder.entryPath)") else {
-                throw ServerError.noPort
-            }
-            return url
-        } catch {
-            // A failed start stays retryable — only a successful start (or `stop()`) spends the
-            // single shot. Tear down whatever the attempt built before rethrowing.
-            if case .listening(let built) = lifecycle {
-                lifecycle = .starting
-                await offPool { built.cancel() }
-            }
-            if case .starting = lifecycle { lifecycle = .idle }
-            throw error
+            queue.async { listener.start(queue: queue) }
         }
+
+        guard let port = listener.port else { throw ServerError.noPort }
+        let host: String = switch scope {
+        // `getifaddrs` is another syscall that stays off the cooperative pool.
+        case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
+        case .loopback: "127.0.0.1"
+        }
+        guard let url = URL(string: "http://\(host):\(port.rawValue)\(root)\(responder.entryPath)") else {
+            throw ServerError.noPort
+        }
+        return url
     }
 
     /// Idempotent. Cancels the listener and every open connection; in-flight sends unwind as
     /// their `receive`/`send` fail, releasing each serve loop's strong reference to `self`.
-    public func stop() async {
+    func stop() async {
         let listener: NWListener?
         switch lifecycle {
         case .stopped: return
         case .listening(let live): listener = live
-        case .idle, .starting: listener = nil
+        case .idle: listener = nil
         }
         lifecycle = .stopped
         let connections = Array(self.connections.values)
@@ -235,7 +194,6 @@ public actor LocalMediaServer {
             Task { await self.offPool { connection.cancel() } }
             return
         }
-        statsConnections += 1
         connections[ObjectIdentifier(connection)] = connection
         connection.stateUpdateHandler = { state in
             // A failed connection parks its pending completions until cancelled, and the serve
@@ -248,9 +206,6 @@ public actor LocalMediaServer {
             await self.serve(connection)
         }
     }
-
-    /// Package-internal: lets tests wait on connection teardown instead of sleeping.
-    var liveConnectionCount: Int { connections.count }
 
     private func remove(_ connection: NWConnection) {
         connections.removeValue(forKey: ObjectIdentifier(connection))
@@ -368,16 +323,7 @@ public actor LocalMediaServer {
             try await sendHead(connection, 405, "Method Not Allowed", keepAlive: keepAlive, &exchange)
             return keepAlive
         }
-        let resource: ServedResource?
-        do {
-            resource = try await responder.resource(at: String(request.path.dropFirst(root.count)))
-        } catch {
-            Self.logger.error("no response for a request: \(error)")
-            exchange.ending = .failed(afterBytes: 0, by: error)
-            try await sendHead(connection, 500, "Internal Server Error", keepAlive: keepAlive, &exchange)
-            return keepAlive
-        }
-        guard let resource else {
+        guard let resource = await responder.resource(at: String(request.path.dropFirst(root.count))) else {
             try await sendHead(connection, 404, "Not Found", keepAlive: keepAlive, &exchange)
             return keepAlive
         }
@@ -492,7 +438,6 @@ public actor LocalMediaServer {
         while remaining > 0 {
             let want = Int(min(UInt64(chunk), remaining))
             let data = try await reader.read(offset: offset, length: want)
-            statsBytesRead += UInt64(data.count)
             exchange.bytesFetched += data.count
             if data.isEmpty { break } // pread EOF — stop rather than spin
             try await sendBody(connection, data, counting: data.count, &exchange, elapsed)
@@ -524,7 +469,6 @@ public actor LocalMediaServer {
             input.doneStreaming()
             producer.cancel()
             exchange.bytesFetched = producer.bytesFetched
-            statsBytesRead += UInt64(producer.bytesFetched)
         }
         var piece: Data?
         do {
@@ -607,9 +551,8 @@ public actor LocalMediaServer {
         return Data(head.utf8)
     }
 
-    enum ServerError: Error, Sendable, Equatable {
+    enum ServerError: Error, Sendable {
         case stopped
-        case alreadyStarted
         case noPort
     }
 }

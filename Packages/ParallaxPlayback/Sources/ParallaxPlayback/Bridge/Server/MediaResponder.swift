@@ -7,9 +7,8 @@ public protocol MediaResponder: Sendable {
     /// The path, below the server's token, of what a player opens first.
     var entryPath: String { get }
 
-    /// Nil for a path that names nothing, which the server answers with 404. A throw is
-    /// answered with 500.
-    func resource(at path: String) async throws -> ServedResource?
+    /// Nil for a path that names nothing, which the server answers with 404.
+    func resource(at path: String) async -> ServedResource?
 
     /// What the request log calls the resource at `path`: never a file name. Nil for a path
     /// that names nothing.

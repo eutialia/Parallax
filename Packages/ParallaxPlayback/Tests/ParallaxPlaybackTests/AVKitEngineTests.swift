@@ -92,6 +92,10 @@ struct PlaybackEngineStreamContractTests {
     func teardownFinishesStream() async {
         await PlaybackEngineContract.teardownFinishesStream(AVKitEngine())
     }
+
+    @Test("a load goes through the same states, a seek lands the same way while playing, load throws the same errors, and subtitle options are numbered the same",
+          .disabled("pending"))
+    func matchesTheOtherEngine() async throws {}
 }
 
 /// `redactedTail` is the only thing that ever writes an HLS resource URI into a log,
@@ -1004,4 +1008,24 @@ struct AVKitDisplayPreparationTests {
         }
         #expect(engine.avPlayer.currentItem == nil)
     }
+}
+
+// Pending: the behaviors docs/superpowers/plans/2026-11-25-playback-tests-at-the-ends.md adds at the engine.
+@Suite("AVKitEngine — playing what the app plays", .serialized, .scaledTimeLimit())
+@MainActor
+struct AVKitEngineEndTests {
+    @Test("a file that never becomes ready fails at 30 s, and playback that stalls for 45 s fails as a stall",
+          .disabled("pending"))
+    func watchdogsFireOnARealStall() async throws {}
+
+    @Test("a frame captured while a file plays is the picture on screen, for a file played directly and for a bridged one",
+          .disabled("pending"))
+    func capturedFrameIsThePictureOnScreen() async throws {}
+
+    @Test("choosing a Jellyfin subtitle shows that subtitle, a forced-only track is offered only as forced, and the option index never shifts by one",
+          .disabled("pending"))
+    func jellyfinSubtitleChoice() async throws {}
+
+    @Test("a bridged file plays through the app's engine", .disabled("pending"))
+    func bridgedFilePlays() async throws {}
 }

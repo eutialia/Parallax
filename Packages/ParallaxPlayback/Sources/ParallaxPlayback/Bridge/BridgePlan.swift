@@ -191,7 +191,7 @@ struct BridgePlan: Sendable {
     static let targetSegmentLength: Int64 = 2_000_000_000
     /// Longer than any keyframe interval a real encode has: the longest in a 74-movie library
     /// was 282 s, and the file whose index stops ran 5,401 s past its last entry.
-    static let defaultIndexGapLimit: Duration = .seconds(600)
+    static let indexGapLimit: Duration = .seconds(600)
 
     /// How far into the first span the plan reads for an audio stream to show. Audio that starts
     /// with the video is in the first cluster; a stream that has shown nothing by here is left
@@ -222,7 +222,6 @@ struct BridgePlan: Sendable {
     /// is how the plan learns whether the device has one.
     init(
         reading demuxer: MediaDemuxer, support: AVPlayerSupport, showsHDR: Bool,
-        indexGapLimit: Duration = defaultIndexGapLimit,
         openEncoder: (HEVCFormat) throws -> HEVCEncoder = { try HEVCEncoder($0, timescale: videoTimescale) }
     ) async throws {
         let videoStream = demuxer.streams[demuxer.videoStream]
@@ -242,7 +241,7 @@ struct BridgePlan: Sendable {
         guard keyframes.count >= 2 else { throw BridgeRefusal.noCues }
         guard let duration = demuxer.duration else { throw BridgeRefusal.noDuration }
 
-        let cuts = try SegmentCuts(at: keyframes, fileSize: demuxer.fileSize, indexGapLimit: indexGapLimit) {
+        let cuts = try SegmentCuts(at: keyframes, fileSize: demuxer.fileSize) {
             lastSegmentStart in
             demuxer.end(of: duration, lastSegmentStart: lastSegmentStart, firstKeyframe: keyframes[0].time)
         }
@@ -334,7 +333,7 @@ struct BridgePlan: Sendable {
     /// The last index `holds` is true for, when it is true at zero and, once false, false to
     /// the end. It asks from the end backwards in doubling steps, because a track that stops
     /// early mostly stops near the end, and a track that does not costs one question.
-    private static func lastIndex(below count: Int, where holds: (Int) async throws -> Bool) async throws -> Int {
+    static func lastIndex(below count: Int, where holds: (Int) async throws -> Bool) async throws -> Int {
         var firstWithout = count
         var step = 1
         while firstWithout - step > 0, try await !holds(firstWithout - step) {
@@ -489,13 +488,9 @@ struct SegmentCuts {
     let bytes: [Int64]
 
     /// `end` gives the time the file ends, from the time its last segment starts. `keyframes`
-    /// holds two or more. Throws
-    /// `BridgeRefusal.indexGap` when more of the file follows the last keyframe than
-    /// `indexGapLimit`.
-    init(
-        at keyframes: [IndexedKeyframe], fileSize: Int64, indexGapLimit: Duration,
-        end: (_ lastSegmentStart: Int64) -> Int64
-    ) throws {
+    /// holds two or more. Throws `BridgeRefusal.indexGap` when more of the file follows the
+    /// last keyframe than `BridgePlan.indexGapLimit`.
+    init(at keyframes: [IndexedKeyframe], fileSize: Int64, end: (_ lastSegmentStart: Int64) -> Int64) throws {
         let starts = keyframes.indices.reduce(into: [Int]()) { starts, index in
             if let last = starts.last, keyframes[index].time - keyframes[last].time < BridgePlan.targetSegmentLength {
                 return
@@ -509,7 +504,7 @@ struct SegmentCuts {
         }
         let fileEnd = end(keyframes[spans[spans.count - 1].lowerBound].time)
         let lastEntry = keyframes[keyframes.count - 1].time
-        if Duration.nanoseconds(fileEnd - lastEntry) > indexGapLimit {
+        if Duration.nanoseconds(fileEnd - lastEntry) > BridgePlan.indexGapLimit {
             throw BridgeRefusal.indexGap(after: Int((lastEntry - keyframes[0].time) / 1_000_000_000))
         }
         boundaries = spans.map { keyframes[$0.lowerBound].time } + [fileEnd]
