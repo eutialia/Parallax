@@ -168,8 +168,9 @@ struct MediaDeliverySegmentTests {
         ("wma", "a0", 440, 2, 4), ("ld-aac", "a0", 440, 1, 2),
         // AAC as an FLV holds it, and AC-3 timed by an AVI's count of frames.
         ("flv-h264.flv", "a0", 440, 6, 12), ("avi-h264.avi", "a0", 440, 6, 12),
-        // WMA converted to FLAC, timed by an ASF's packets in whole milliseconds.
-        ("numbered-wmv2.asf", "a0", 440, 5, 12),
+        // WMA converted to FLAC, timed by an ASF's packets in whole milliseconds. Its first
+        // picture is at 43 ms, and its audio is delivered from there.
+        ("numbered-wmv2.asf", "a0", 440, 5, 12.04),
         // AC-3 copied out of a program stream, where some frames carry the time of the frame after them.
         ("numbered-mpeg2.mpg", "a0", 440, 6, 12),
     ])
