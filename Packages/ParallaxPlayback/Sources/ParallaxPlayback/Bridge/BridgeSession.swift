@@ -60,7 +60,7 @@ struct BridgeSession: MediaResponder {
             conversionSpeeds: conversions.all)
     }
 
-    func resource(at path: String) async throws -> ServedResource? {
+    func resource(at path: String) async -> ServedResource? {
         guard let resource = BridgeResource(path: path) else { return nil }
         switch resource {
         case .master:

@@ -1,9 +1,11 @@
 import Foundation
-import Synchronization
 import Testing
 import ParallaxTestScaling
 @testable import ParallaxPlayback
 
+/// No case at `MediaDelivery` reaches these. A put waits on a full channel only behind a client
+/// that stops reading a segment larger than the socket buffers, which no fixture has, and a
+/// failure lands before the server's next take only when it wins a race against the send.
 @Suite("FragmentChannel", .scaledTimeLimit())
 struct FragmentChannelTests {
 
@@ -14,31 +16,9 @@ struct FragmentChannelTests {
         }
     }
 
-    @Test("fragments come out in the order they were put, then the end, and a put waits while one is not yet taken")
-    func fragmentsComeOutInOrderAndAPutWaits() async throws {
-        let channel = FragmentChannel()
-        let secondPut = Atomic(false)
-        async let producing = Self.onThread {
-            try channel.put(Data("one".utf8))
-            try channel.put(Data("two".utf8))
-            secondPut.store(true, ordering: .sequentiallyConsistent)
-            channel.finish(.success(()))
-        }
-        // Time for the second put to return, were it not waiting.
-        try await Task.sleep(for: .milliseconds(50))
-        let returnedEarly = secondPut.load(ordering: .sequentiallyConsistent)
-        #expect(!returnedEarly)
-
-        var taken: [Data?] = []
-        for _ in 0..<3 { taken.append(try await channel.next()) }
-        try await producing.get()
-
-        #expect(taken == [Data("one".utf8), Data("two".utf8), nil])
-    }
-
     @Test("a cancel wakes a put waiting on a full channel, which then throws")
     func cancelWakesAWaitingPut() async throws {
-        let channel = FragmentChannel()
+        let channel = FragmentChannel(heldChanged: { _ in })
         let producing = Task {
             await Self.onThread {
                 try channel.put(Data("one".utf8))
@@ -55,7 +35,7 @@ struct FragmentChannelTests {
     @Test("a segment that fails after its fragments hands them over, then the failure")
     func failureComesAfterTheFragments() async throws {
         struct Broken: Error {}
-        let channel = FragmentChannel()
+        let channel = FragmentChannel(heldChanged: { _ in })
         async let producing = Self.onThread {
             try channel.put(Data("one".utf8))
             channel.finish(.failure(Broken()))

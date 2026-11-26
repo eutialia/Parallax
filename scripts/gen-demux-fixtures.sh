@@ -623,6 +623,19 @@ numbered numbered-h264-dts-flat-show-times.mp4 12 -c:v libx264 -preset veryfast 
 numbered numbered-mpeg4-b.asf 12 -c:v mpeg4 -bf 2 -flags +cgop -g 48 -sc_threshold 1000000000 -b:v 200k -c:a wmav2 -b:a 32k -ac 2
 # WMV with WMA is what an ASF holds.
 numbered numbered-wmv2.asf 12 -c:v wmv2 -g 48 -sc_threshold 0 -b:v 100k -c:a wmav2 -b:a 32k -ac 2
+# The numbered picture over silence, with a 10 ms burst of 1 kHz centred on pictures 60 and
+# 204, in audio the bridge converts: where the bursts land against the pictures shows whether
+# converted audio kept its place.
+clicks() {
+    local file=$1; shift
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -f lavfi -i "aevalsrc=exprs='0.5*sin(2*PI*1000*t)*(between(t\,2.495\,2.505)+between(t\,8.495\,8.505))':s=48000:c=mono" \
+        -t 12 -map 0:v -map 1:a "$@" -ac 2 -bitexact -fflags +bitexact "$OUT/$file"
+}
+clicks numbered-clicks-wmv2.asf -c:v wmv2 -g 48 -sc_threshold 0 -b:v 100k -c:a wmav2 -b:a 32k
+clicks numbered-clicks-wma.mkv -c:v libx264 -preset veryfast -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -c:a wmav2 -b:a 64k
+clicks numbered-clicks-mp3.mkv -c:v libx264 -preset veryfast -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -c:a libmp3lame -b:a 64k
 # Video stored as fields: fifty numbered pictures a second woven into 25 frames, the even
 # picture on the top field. Each field keeps its own number on its own rows. Both encoders code
 # fields only at a height that divides by 32 (MPEG-2) or four (x264).

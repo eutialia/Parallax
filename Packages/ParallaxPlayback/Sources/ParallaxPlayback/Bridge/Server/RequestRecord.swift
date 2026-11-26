@@ -1,7 +1,7 @@
 import Foundation
 
 /// One request a `LocalMediaServer` answered, as the request log keeps it.
-public struct RequestRecord: Sendable, Equatable, CustomStringConvertible {
+public struct RequestRecord: Sendable, CustomStringConvertible {
     public enum Ending: Sendable, Equatable {
         case complete
         /// The client left before the body ended.

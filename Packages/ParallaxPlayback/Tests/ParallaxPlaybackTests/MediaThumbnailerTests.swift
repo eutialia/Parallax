@@ -260,23 +260,6 @@ private struct TilePixels {
     }
 }
 
-/// A fixture's bytes, counting what is read of them.
-private final class CountingReader: RandomAccessReading {
-    private let data: InMemoryRandomAccessReader
-    private let read = Atomic(0)
-
-    init(_ data: Data) { self.data = InMemoryRandomAccessReader(data: data) }
-
-    var bytesRead: Int { read.load(ordering: .relaxed) }
-    var fileSize: UInt64 { get async throws { try await data.fileSize } }
-
-    func read(offset: UInt64, length: Int) async throws -> Data {
-        let bytes = try await data.read(offset: offset, length: length)
-        read.add(bytes.count, ordering: .relaxed)
-        return bytes
-    }
-}
-
 /// A fixture's bytes on a share whose first read answers only when told to.
 private final class ParkedReader: RandomAccessReading {
     private let data: InMemoryRandomAccessReader

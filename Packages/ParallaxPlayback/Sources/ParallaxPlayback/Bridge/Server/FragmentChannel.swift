@@ -17,7 +17,7 @@ final class FragmentChannel: BodyProducer, @unchecked Sendable {
     private var end: Result<Void, any Error>?
     private var taker: CheckedContinuation<Data?, any Error>?
 
-    init(heldChanged: @escaping @Sendable (Int) -> Void = { _ in }) {
+    init(heldChanged: @escaping @Sendable (Int) -> Void) {
         self.heldChanged = heldChanged
     }
 
