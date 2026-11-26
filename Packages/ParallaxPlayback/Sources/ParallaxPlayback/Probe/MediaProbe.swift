@@ -5,7 +5,7 @@ import ParallaxCore
 /// this stream" (`.none`) must be distinguishable from "carries it, but the
 /// fourcc/codec id isn't one we recognize" (`.unknown`). `DirectPlay.verdict` treats
 /// the latter as unplayable rather than assuming AVPlayer compatibility.
-public enum ProbedCodec<C: Sendable & Hashable>: Sendable, Hashable {
+enum ProbedCodec<C: Sendable & Hashable>: Sendable, Hashable {
     case known(C)
     case unknown
     case none
@@ -34,11 +34,11 @@ public enum StreamProfile: Sendable, Hashable {
     case av1(UInt8)
 }
 
-public struct MediaProbeResult: Sendable, Equatable {
-    public let container: Container?
-    public let videoCodec: ProbedCodec<VideoCodec>
+struct MediaProbeResult: Sendable, Equatable {
+    let container: Container?
+    let videoCodec: ProbedCodec<VideoCodec>
     /// Every audio sample entry, in track order.
-    public let audioCodecs: ProbedCodec<[AudioCodec]>
+    let audioCodecs: ProbedCodec<[AudioCodec]>
     /// False when the MP4 box walk proves the file is truncated / still downloading
     /// (a box's declared extent overruns `fileSize`, or EOF arrives before any
     /// `moov` box). A malformed top-level header (declared size shorter than the
@@ -46,14 +46,14 @@ public struct MediaProbeResult: Sendable, Equatable {
     /// the conservative read is "not yet fully written" rather than "corrupt."
     /// Non-MP4 containers always report true: truncation there isn't this
     /// probe's signal to detect.
-    public let isComplete: Bool
+    let isComplete: Bool
     /// Structural defects proven by walking the sample tables — empty on every container
     /// but MP4/MOV, and on an MP4/MOV whose first video trak doesn't exhibit one.
-    public let avPlayerHazards: Set<AVPlayerHazard>
+    let avPlayerHazards: Set<AVPlayerHazard>
     /// The first video track's, when its first sample entry names one.
-    public let videoProfile: StreamProfile?
+    let videoProfile: StreamProfile?
 
-    public init(
+    init(
         container: Container?,
         videoCodec: ProbedCodec<VideoCodec>,
         audioCodecs: ProbedCodec<[AudioCodec]>,
@@ -76,11 +76,15 @@ public struct MediaProbeResult: Sendable, Equatable {
 /// Never throws on malformed input — every parse failure degrades to `.unknown`
 /// (codec) or `nil` (container) rather than propagating, since a still-downloading
 /// or corrupt file over SMB is an expected input, not a bug.
-public enum MediaProbe {
+enum MediaProbe {
     /// Byte budget for pulling `moov` into memory. A remux-worthy movie's moov is
     /// single-digit MiB; past this cap codecs degrade to `.unknown` (unplayable) instead
     /// of an unbounded LAN read.
     private static let moovByteCap = 64 * 1024 * 1024
+
+    /// Byte budget for a fragmented file's first `moof`, read for its samples' show times. A
+    /// fragment of a few seconds lists its samples in kilobytes; past this the times go unread.
+    private static let fragmentByteCap = 1024 * 1024
 
     /// ASF Header Object GUID {75B22630-668E-11CF-A6D9-00AA0062CE6C}, in file byte order.
     private static let asfHeaderObjectGUID: [UInt8] = [
@@ -94,7 +98,7 @@ public enum MediaProbe {
     /// Enough of the file to see three M2TS sync bytes; every other magic fits in it.
     private static let headLength = 4 + 2 * 192 + 1
 
-    public static func probe(_ reader: any RandomAccessReading) async throws -> MediaProbeResult {
+    static func probe(_ reader: any RandomAccessReading) async throws -> MediaProbeResult {
         let size = try await reader.fileSize
         let head = try await reader.read(offset: 0, length: Int(min(size, UInt64(headLength))))
 
@@ -146,7 +150,7 @@ public enum MediaProbe {
         fileSize: UInt64,
         container: Container
     ) async throws -> MediaProbeResult {
-        let (moovRange, incomplete) = try await walkTopLevel(reader: reader, fileSize: fileSize)
+        let (moovRange, firstFragment, incomplete) = try await walkTopLevel(reader: reader, fileSize: fileSize)
 
         guard let moovRange else {
             return MediaProbeResult(container: container, videoCodec: .none, audioCodecs: .none, isComplete: false)
@@ -157,14 +161,14 @@ public enum MediaProbe {
         }
 
         let moovData = try await reader.read(offset: moovRange.offset, length: Int(moovRange.size))
-        let (video, audio, hazards, profile) = await parseMoov(moovData, reader: reader)
+        let (video, audio, hazards, profile) = await parseMoov(moovData, firstFragment: firstFragment, reader: reader)
         return MediaProbeResult(
             container: container, videoCodec: video, audioCodecs: audio,
             isComplete: !incomplete, avPlayerHazards: hazards, videoProfile: profile
         )
     }
 
-    /// Walks top-level boxes from offset 0. Records the first `moov` box's range
+    /// Walks top-level boxes from offset 0. Records the first `moov` and `moof` boxes' ranges
     /// (does not stop there — a later box can still overrun EOF and the whole
     /// file must be walked to know that). `incomplete` is true when any box's
     /// declared extent overruns `fileSize`, or the walk reaches EOF without ever
@@ -172,9 +176,10 @@ public enum MediaProbe {
     private static func walkTopLevel(
         reader: any RandomAccessReading,
         fileSize: UInt64
-    ) async throws -> (moovRange: (offset: UInt64, size: UInt64)?, incomplete: Bool) {
+    ) async throws -> (moovRange: FileRange?, firstFragment: FileRange?, incomplete: Bool) {
         var offset: UInt64 = 0
-        var moovRange: (offset: UInt64, size: UInt64)?
+        var moovRange: FileRange?
+        var firstFragment: FileRange?
         var incomplete = false
 
         while offset < fileSize {
@@ -206,13 +211,18 @@ public enum MediaProbe {
             if type == "moov", moovRange == nil {
                 moovRange = (offset, boxSize)
             }
+            if type == "moof", firstFragment == nil {
+                firstFragment = (offset, boxSize)
+            }
 
             offset = extent
         }
 
         if moovRange == nil { incomplete = true }
-        return (moovRange, incomplete)
+        return (moovRange, firstFragment, incomplete)
     }
+
+    private typealias FileRange = (offset: UInt64, size: UInt64)
 
     // MARK: - moov content walk (in-memory, already size-capped)
 
@@ -229,6 +239,7 @@ public enum MediaProbe {
 
     private static func parseMoov(
         _ moovData: Data,
+        firstFragment: FileRange?,
         reader: any RandomAccessReading
     ) async -> (
         video: ProbedCodec<VideoCodec>, audio: ProbedCodec<[AudioCodec]>, hazards: Set<AVPlayerHazard>, profile: StreamProfile?
@@ -253,6 +264,9 @@ public enum MediaProbe {
                 guard !sawVideoTrak else { continue }
                 sawVideoTrak = true
                 profile = info.firstStsdEntry.flatMap { videoProfile(moovData, entry: $0) }
+                let fragment = firstFragment.flatMap { range in
+                    info.trackID.map { TrackFragment(offset: range.offset, size: range.size, trackID: $0) }
+                }
                 if let firstFourcc = info.fourccs.first {
                     let mappedCodec = mapVideoFourcc(firstFourcc)
                     videoCodec = mappedCodec.map(ProbedCodec.known) ?? .unknown
@@ -263,6 +277,7 @@ public enum MediaProbe {
                         sampleEntryCount: info.fourccs.count,
                         stblRange: info.stblRange,
                         firstStsdEntry: info.firstStsdEntry,
+                        fragment: fragment,
                         reader: reader
                     ))
                 } else {
@@ -297,6 +312,8 @@ public enum MediaProbe {
 
     private struct TrakInfo {
         let kind: TrakKind?
+        /// `tkhd`'s track_ID, which a fragment's `tfhd` names its track by.
+        let trackID: UInt32?
         let fourccs: [String]
         /// `stbl`'s content range, in `moovData` coordinates — where `stts`/`ctts`/`stsz`/
         /// `stsc`/`stco`/`co64` live. Populated only when the trak resolved a full
@@ -317,7 +334,7 @@ public enum MediaProbe {
         contentRange: Range<Int>
     ) -> TrakInfo {
         guard let mdia = firstChildBox(data, type: "mdia", in: contentRange) else {
-            return TrakInfo(kind: nil, fourccs: [], stblRange: nil, firstStsdEntry: nil)
+            return TrakInfo(kind: nil, trackID: nil, fourccs: [], stblRange: nil, firstStsdEntry: nil)
         }
         let mdiaRange = mdia.contentStart..<mdia.boxEnd
 
@@ -358,7 +375,18 @@ public enum MediaProbe {
             }
         }
 
-        return TrakInfo(kind: kind, fourccs: fourccs, stblRange: stblRange, firstStsdEntry: firstStsdEntry)
+        return TrakInfo(
+            kind: kind, trackID: trackID(data, trak: contentRange), fourccs: fourccs, stblRange: stblRange,
+            firstStsdEntry: firstStsdEntry)
+    }
+
+    /// `tkhd`: version and flags, then creation and modification times of 32 bits in
+    /// version 0 or 64 in version 1, then the track_ID.
+    private static func trackID(_ data: Data, trak: Range<Int>) -> UInt32? {
+        guard let tkhd = firstChildBox(data, type: "tkhd", in: trak), tkhd.contentStart < tkhd.boxEnd else { return nil }
+        let at = tkhd.contentStart + (data[data.startIndex + tkhd.contentStart] == 1 ? 20 : 12)
+        guard at + 4 <= tkhd.boxEnd else { return nil }
+        return readUInt32BE(data, at: at)
     }
 
     static func firstChildBox(_ data: Data, type target: String, in range: Range<Int>) -> BoxHeader? {
@@ -371,7 +399,7 @@ public enum MediaProbe {
         return nil
     }
 
-    private static func allChildBoxes(_ data: Data, type target: String, in range: Range<Int>) -> [BoxHeader] {
+    static func allChildBoxes(_ data: Data, type target: String, in range: Range<Int>) -> [BoxHeader] {
         var offset = range.lowerBound
         var results: [BoxHeader] = []
         while offset < range.upperBound {
@@ -386,7 +414,7 @@ public enum MediaProbe {
     /// box's content end) instead of the whole file. Returns `nil` on any
     /// malformed/overrunning header — callers stop walking that branch rather
     /// than crash or misread.
-    private static func readBoxHeader(_ data: Data, at offset: Int, limit: Int) -> BoxHeader? {
+    static func readBoxHeader(_ data: Data, at offset: Int, limit: Int) -> BoxHeader? {
         guard offset >= 0, offset + 8 <= limit, offset + 8 <= data.count else { return nil }
         let size32 = readUInt32BE(data, at: offset)
         let type = fourCharString(data, at: offset + 4)
@@ -448,9 +476,19 @@ public enum MediaProbe {
         let offset: Int32
     }
 
-    private struct StscEntry {
-        let firstChunk: UInt32
-        let samplesPerChunk: UInt32
+    /// A video trak's first fragment, where its moov lists no samples.
+    private struct TrackFragment {
+        let offset: UInt64
+        let size: UInt64
+        let trackID: UInt32
+    }
+
+    /// A track's sample durations and show-time offsets in decode order, and where the
+    /// samples from a given one lie.
+    private struct SampleTimes {
+        let durations: [SttsEntry]
+        let offsets: CttsOutcome
+        let ranges: (_ first: Int) -> [SampleRange]?
     }
 
     private enum CttsOutcome {
@@ -473,6 +511,7 @@ public enum MediaProbe {
         data: Data,
         stblRange: Range<Int>,
         firstStsdEntry: BoxHeader,
+        fragment: TrackFragment?,
         reader: any RandomAccessReading
     ) async -> Bool {
         guard let avcC = findAvcC(data, stsdEntry: firstStsdEntry) else { return false }
@@ -487,12 +526,12 @@ public enum MediaProbe {
 
         guard let nalLengthSize = avcCNalLengthSize(data, avcC: avcC) else { return false }
 
-        guard let sttsBox = firstChildBox(data, type: "stts", in: stblRange) else { return false }
-        let sttsEntries = parseStts(data, box: sttsBox)
+        guard let times = await sampleTimes(data: data, stblRange: stblRange, fragment: fragment, reader: reader)
+        else { return false }
         // Weighted argmax across runs (the same delta can span many runs), and no verdict on
         // genuine VFR — with no dominant cadence there is no meaningful spread threshold.
         var durationWeights: [UInt32: UInt64] = [:]
-        for entry in sttsEntries {
+        for entry in times.durations {
             durationWeights[entry.sampleDelta, default: 0] += UInt64(entry.sampleCount)
         }
         let totalSttsSamples = durationWeights.values.reduce(0, +)
@@ -503,7 +542,7 @@ public enum MediaProbe {
         let dominantDuration = dominant.key
 
         let analysis: DegeneracyAnalysis
-        switch loadCtts(data, stblRange: stblRange) {
+        switch times.offsets {
         case .absent:
             analysis = DegeneracyAnalysis(isCandidate: true, firstSampleIndex: 0)
         case .malformed:
@@ -516,24 +555,38 @@ public enum MediaProbe {
         guard analysis.isCandidate else { return false }
         guard !Task.isCancelled else { return false }
 
-        guard let stszBox = firstChildBox(data, type: "stsz", in: stblRange),
-              let sampleSizes = parseStsz(data, box: stszBox), sampleSizes.count > 0,
-              analysis.firstSampleIndex < sampleSizes.count,
-              let stscBox = firstChildBox(data, type: "stsc", in: stblRange),
-              let stscEntries = parseStsc(data, box: stscBox),
-              let chunkOffsets = parseChunkOffsets(data, stblRange: stblRange)
-        else { return false }
-
         // Evidence must come from the window that was judged degenerate, not spill into a
         // possibly-healthy neighbor.
-        let sampleCount = min(32, sampleSizes.count - analysis.firstSampleIndex)
-        let ranges = sampleByteRanges(
-            startIndex: analysis.firstSampleIndex, count: sampleCount,
-            sampleSizes: sampleSizes, stscEntries: stscEntries, chunkOffsets: chunkOffsets
-        )
-        guard !ranges.isEmpty else { return false }
+        guard let ranges = times.ranges(analysis.firstSampleIndex), !ranges.isEmpty else { return false }
 
         return await confirmBSlices(reader: reader, nalLengthSize: nalLengthSize, ranges: ranges)
+    }
+
+    /// The moov's sample table, or the first fragment's where the table lists no samples.
+    private static func sampleTimes(
+        data: Data, stblRange: Range<Int>, fragment: TrackFragment?, reader: any RandomAccessReading
+    ) async -> SampleTimes? {
+        guard let sttsBox = firstChildBox(data, type: "stts", in: stblRange) else { return nil }
+        let durations = parseStts(data, box: sttsBox)
+        if durations.contains(where: { $0.sampleCount > 0 }) {
+            return SampleTimes(
+                durations: durations, offsets: loadCtts(data, stblRange: stblRange),
+                ranges: { sampleRanges(from: $0, count: 32, in: data, stbl: stblRange) })
+        }
+
+        guard let fragment, fragment.size <= UInt64(fragmentByteCap),
+              let moof = try? await reader.read(offset: fragment.offset, length: Int(fragment.size)),
+              let samples = fragmentSamples(moof, at: fragment.offset, trackID: fragment.trackID),
+              !samples.isEmpty
+        else { return nil }
+        // A run without composition offsets shows each sample at its decode time, as a
+        // missing ctts does.
+        let offsets: CttsOutcome = samples.allSatisfy { $0.compositionOffset == nil }
+            ? .absent : .parsed(samples.map { CttsRun(count: 1, offset: $0.compositionOffset ?? 0) })
+        return SampleTimes(
+            durations: samples.map { SttsEntry(sampleCount: 1, sampleDelta: $0.duration) },
+            offsets: offsets,
+            ranges: { first in samples.dropFirst(first).prefix(32).map { SampleRange(offset: $0.offset, size: $0.size) } })
     }
 
     /// The `stbl`'s `stts` box: run-length (sample_count, sample_delta) pairs.
@@ -636,141 +689,6 @@ public enum MediaProbe {
         return DegeneracyAnalysis(isCandidate: isCandidate, firstSampleIndex: firstDegenerateStart ?? 0)
     }
 
-    /// The `stbl`'s `stsz` box contents: either one fixed size shared by every sample, or a
-    /// per-sample table. Kept out of a materialized `[UInt32]` for the fixed case — a hostile
-    /// box can declare millions of samples at a fixed size in 20 bytes, and that shouldn't drive
-    /// a multi-megabyte allocation just to answer "what size is sample N".
-    private enum SampleSizes {
-        case fixed(size: UInt32, count: Int)
-        case table([UInt32])
-
-        var count: Int {
-            switch self {
-            case .fixed(_, let count): return count
-            case .table(let sizes): return sizes.count
-            }
-        }
-
-        subscript(_ index: Int) -> UInt32 {
-            switch self {
-            case .fixed(let size, _): return size
-            case .table(let sizes): return sizes[index]
-            }
-        }
-    }
-
-    /// The `stbl`'s `stsz` box: either one fixed size for every sample, or a per-sample table.
-    /// `nil` on a truncated table — the caller fails the hazard check open rather than guess.
-    private static func parseStsz(_ data: Data, box: BoxHeader) -> SampleSizes? {
-        let start = box.contentStart + 4
-        guard start + 8 <= box.boxEnd, start + 8 <= data.count else { return nil }
-        let sampleSize = readUInt32BE(data, at: start)
-        let sampleCount = Int(readUInt32BE(data, at: start + 4))
-        // Sanity ceiling so a garbage count can't drive a giant allocation (the fixed-size
-        // branch has no table bytes to bound it; ~74h of 30fps video stays well under this).
-        guard sampleCount <= 8_000_000 else { return nil }
-        if sampleSize != 0 { return .fixed(size: sampleSize, count: sampleCount) }
-
-        var offset = start + 8
-        var sizes: [UInt32] = []
-        sizes.reserveCapacity(min(sampleCount, max(0, box.boxEnd - offset) / 4))
-        for _ in 0..<sampleCount {
-            guard offset + 4 <= box.boxEnd, offset + 4 <= data.count else { return nil }
-            sizes.append(readUInt32BE(data, at: offset))
-            offset += 4
-        }
-        return .table(sizes)
-    }
-
-    /// The `stbl`'s `stsc` box: (first_chunk, samples_per_chunk) run entries, 1-based chunk
-    /// numbering. `nil` on a truncated table.
-    private static func parseStsc(_ data: Data, box: BoxHeader) -> [StscEntry]? {
-        let start = box.contentStart + 4
-        guard start + 4 <= box.boxEnd, start + 4 <= data.count else { return nil }
-        let count = Int(readUInt32BE(data, at: start))
-        var offset = start + 4
-        var entries: [StscEntry] = []
-        entries.reserveCapacity(min(count, max(0, box.boxEnd - offset) / 12))
-        for _ in 0..<count {
-            guard offset + 12 <= box.boxEnd, offset + 12 <= data.count else { return nil }
-            entries.append(StscEntry(firstChunk: readUInt32BE(data, at: offset), samplesPerChunk: readUInt32BE(data, at: offset + 4)))
-            offset += 12
-        }
-        guard !entries.isEmpty else { return nil }
-        return entries
-    }
-
-    /// The `stbl`'s chunk offset table — `stco` (32-bit) or `co64` (64-bit), whichever is
-    /// present. `nil` if neither parses cleanly.
-    private static func parseChunkOffsets(_ data: Data, stblRange: Range<Int>) -> [UInt64]? {
-        if let stco = firstChildBox(data, type: "stco", in: stblRange) {
-            let start = stco.contentStart + 4
-            guard start + 4 <= stco.boxEnd, start + 4 <= data.count else { return nil }
-            let count = Int(readUInt32BE(data, at: start))
-            var offset = start + 4
-            var offsets: [UInt64] = []
-            offsets.reserveCapacity(min(count, max(0, stco.boxEnd - offset) / 4))
-            for _ in 0..<count {
-                guard offset + 4 <= stco.boxEnd, offset + 4 <= data.count else { return nil }
-                offsets.append(UInt64(readUInt32BE(data, at: offset)))
-                offset += 4
-            }
-            return offsets
-        }
-        if let co64 = firstChildBox(data, type: "co64", in: stblRange) {
-            let start = co64.contentStart + 4
-            guard start + 4 <= co64.boxEnd, start + 4 <= data.count else { return nil }
-            let count = Int(readUInt32BE(data, at: start))
-            var offset = start + 4
-            var offsets: [UInt64] = []
-            offsets.reserveCapacity(min(count, max(0, co64.boxEnd - offset) / 8))
-            for _ in 0..<count {
-                guard offset + 8 <= co64.boxEnd, offset + 8 <= data.count else { return nil }
-                offsets.append(readUInt64BE(data, at: offset))
-                offset += 8
-            }
-            return offsets
-        }
-        return nil
-    }
-
-    /// Locates the byte range of up to `count` consecutive decode-order samples starting at
-    /// `startIndex`, by walking chunks in order and summing sample sizes within each chunk.
-    private static func sampleByteRanges(
-        startIndex: Int, count: Int,
-        sampleSizes: SampleSizes, stscEntries: [StscEntry], chunkOffsets: [UInt64]
-    ) -> [(offset: UInt64, size: UInt32)] {
-        guard startIndex >= 0, startIndex < sampleSizes.count, count > 0, !chunkOffsets.isEmpty else { return [] }
-
-        var results: [(offset: UInt64, size: UInt32)] = []
-        results.reserveCapacity(count)
-
-        var sampleIndex = 0
-        var stscPos = 0
-        for chunkNumber in 1...chunkOffsets.count {
-            while stscPos + 1 < stscEntries.count, UInt32(chunkNumber) >= stscEntries[stscPos + 1].firstChunk {
-                stscPos += 1
-            }
-            let samplesInChunk = Int(stscEntries[stscPos].samplesPerChunk)
-            guard samplesInChunk > 0 else { continue }
-
-            var runningOffset = chunkOffsets[chunkNumber - 1]
-            for _ in 0..<samplesInChunk {
-                guard sampleIndex < sampleSizes.count else { break }
-                let size = sampleSizes[sampleIndex]
-                if sampleIndex >= startIndex, results.count < count {
-                    results.append((runningOffset, size))
-                }
-                let (next, overflow) = runningOffset.addingReportingOverflow(UInt64(size))
-                guard !overflow else { return results } // garbage chunk offset table
-                runningOffset = next
-                sampleIndex += 1
-                if results.count >= count { return results }
-            }
-        }
-        return results
-    }
-
     /// The NAL length-prefix size from an already-located `avcC` box: the lower 2 bits of
     /// configuration byte 4, plus one. `nil` if `avcC` is too short to read.
     private static func avcCNalLengthSize(_ data: Data, avcC: BoxHeader) -> Int? {
@@ -797,6 +715,7 @@ public enum MediaProbe {
         sampleEntryCount: Int,
         stblRange: Range<Int>?,
         firstStsdEntry: BoxHeader?,
+        fragment: TrackFragment?,
         reader: any RandomAccessReading
     ) async -> Set<AVPlayerHazard> {
         var hazards: Set<AVPlayerHazard> = []
@@ -826,7 +745,7 @@ public enum MediaProbe {
         // Only h264 carries the decode-order hazard; HEVC is out of scope.
         if mappedCodec == .h264 {
             let hasDecodeOrderHazard = await detectDecodeOrderTimestampHazard(
-                data: data, stblRange: stblRange, firstStsdEntry: firstStsdEntry, reader: reader
+                data: data, stblRange: stblRange, firstStsdEntry: firstStsdEntry, fragment: fragment, reader: reader
             )
             if hasDecodeOrderHazard { hazards.insert(.decodeOrderTimestamps) }
         }
@@ -918,7 +837,7 @@ public enum MediaProbe {
     /// would exhaust the budget and every later sample in the span would go unexamined. Stops at
     /// the first B; any read failure just moves on.
     private static func confirmBSlices(
-        reader: any RandomAccessReading, nalLengthSize: Int, ranges: [(offset: UInt64, size: UInt32)]
+        reader: any RandomAccessReading, nalLengthSize: Int, ranges: [SampleRange]
     ) async -> Bool {
         var byteBudget = 262_144
 
@@ -969,13 +888,13 @@ public enum MediaProbe {
 
     // MARK: - byte helpers (no `load(as:)` — Data buffers aren't guaranteed aligned)
 
-    private static func readUInt32BE(_ data: Data, at offset: Int) -> UInt32 {
+    static func readUInt32BE(_ data: Data, at offset: Int) -> UInt32 {
         let base = data.startIndex + offset
         return UInt32(data[base]) << 24 | UInt32(data[base + 1]) << 16
             | UInt32(data[base + 2]) << 8 | UInt32(data[base + 3])
     }
 
-    private static func readUInt64BE(_ data: Data, at offset: Int) -> UInt64 {
+    static func readUInt64BE(_ data: Data, at offset: Int) -> UInt64 {
         let base = data.startIndex + offset
         var result: UInt64 = 0
         for i in 0..<8 { result = (result << 8) | UInt64(data[base + i]) }
