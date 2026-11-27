@@ -1,7 +1,6 @@
 import Foundation
 import Synchronization
 import Testing
-import ParallaxTestScaling
 import ParallaxCore
 import ParallaxCoreTestSupport
 import ParallaxPlayback
@@ -10,7 +9,7 @@ import ParallaxPlaybackTestSupport
 /// Where a delivery sends a file from what its first reads show: served as it is, handed to the
 /// bridge, or refused before either. The MP4 box trees built here hold no samples the bridge
 /// can read, so each one handed to it comes back refused by the bridge.
-@Suite("MediaDelivery — what the probe decides", .scaledTimeLimit())
+@Suite("MediaDelivery — what the probe decides", .timeLimit(.minutes(1)))
 struct MediaDeliveryProbeTests {
     typealias Fixture = ISOBMFFFixtures
 

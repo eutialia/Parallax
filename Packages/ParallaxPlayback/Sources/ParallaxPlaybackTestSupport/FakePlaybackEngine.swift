@@ -3,7 +3,6 @@ import CoreMedia
 import Observation
 import Testing
 import Synchronization
-import ParallaxTestScaling
 import ParallaxPlayback
 
 // MARK: — FakePlaybackEngine
@@ -175,13 +174,8 @@ public final class FakePlaybackEngine: PlaybackEngine {
     ///
     /// `timeout` is a safety net for the pathological "nobody will pull again" cases
     /// (nothing subscribed, the consumer parked forever inside its body, or a consumer
-    /// that `break`s out of its loop). The happy path still needs the consumer task
-    /// SCHEDULED, which is the runtime's call, not ours — a loaded CI runner was
-    /// measured taking 33s to run a just-spawned consumer, tripping the unscaled 5s
-    /// net — so the value is `CITimeScale`d like every anti-hang ceiling. The
-    /// deliberately-tiny timeouts in the negative-path tests scale too and still fire.
+    /// that `break`s out of its loop).
     public func settle(timeout: Duration = .seconds(5)) async throws {
-        let timeout = CITimeScale.seconds(timeout / .seconds(1))
         let target = barrier.pushCount()
         guard try await barrier.waitForDrain(upTo: target, timeout: timeout) else {
             throw SettleTimeout(pushed: target, processed: barrier.processedCount())
@@ -459,7 +453,7 @@ private final class DrainBarrier: Sendable {
         guard ledger.withLock({ $0.processed < target }) else { return true }
         return try await withThrowingTaskGroup(of: Bool.self) { group in
             group.addTask { await self.park(until: target); return true }
-            group.addTask { try await Ceiling.expire(timeout); return false }
+            group.addTask { try await Task.sleep(for: timeout); return false }
             // First child to finish wins; the loser is cancelled (the parked waiter
             // resumes through its cancellation handler, the sleeper just throws).
             let drained = try await group.next() ?? false

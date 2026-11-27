@@ -1,4 +1,4 @@
-import ParallaxTestScaling
+import ParallaxTestPolling
 import Testing
 
 /// Polls `condition` until it holds — and FAILS if it never does.
@@ -22,11 +22,11 @@ public func untilSettled(
         if await condition() { return }
         await Task.yield()
     }
-    guard let settled = try? await Ceiling.poll(CITimeScale.seconds(5), every: .milliseconds(1), until: condition),
+    guard let settled = try? await Ceiling.poll(.seconds(5), every: .milliseconds(1), until: condition),
           !settled
     else { return }
     Issue.record(
-        "the condition never settled within 1,000 scheduler turns and \(CITimeScale.seconds(5))",
+        "the condition never settled within 1,000 scheduler turns and 5 seconds",
         sourceLocation: sourceLocation
     )
 }

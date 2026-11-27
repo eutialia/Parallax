@@ -1,7 +1,6 @@
 import Foundation
 import ParallaxFeatures
 import Testing
-import ParallaxTestScaling
 
 /// The Connect gate must not require a password. Jellyfin accounts can be passwordless
 /// (`HasPassword: false`) and `AuthenticateByName` issues a token for an empty `Pw` — the official
@@ -33,7 +32,7 @@ private let connectGateCases: [ConnectGateCase] = [
     ConnectGateCase(name: "nothing at all", server: "", username: "", password: "", canSubmit: false),
 ]
 
-@Suite("Login view model · Connect gate", .scaledTimeLimit())
+@Suite("Login view model · Connect gate", .timeLimit(.minutes(1)))
 @MainActor
 struct LoginViewModelTests {
     @Test("the Connect gate requires a server and a username — and nothing else", arguments: connectGateCases)

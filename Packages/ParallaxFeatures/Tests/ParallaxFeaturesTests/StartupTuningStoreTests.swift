@@ -1,10 +1,9 @@
 import Foundation
 import Testing
-import ParallaxTestScaling
 import ParallaxPlayback
 @testable import ParallaxFeatures
 
-@Suite("StartupTuningStore", .scaledTimeLimit())
+@Suite("StartupTuningStore", .timeLimit(.minutes(1)))
 @MainActor
 struct StartupTuningStoreTests {
     /// Isolated defaults per call: `UserDefaults(suiteName:)` keeps writes out of the real standard

@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import ParallaxTestScaling
 import Testing
 
 /// A frame AVPlayer displayed, known by the number a numbered fixture draws into its picture.
@@ -37,7 +36,7 @@ struct ReadyPlayer {
         player.isMuted = true
 
         let clock = ContinuousClock()
-        let deadline = clock.now + CITimeScale.seconds(15)
+        let deadline = clock.now + .seconds(15)
         while item.status == .unknown, clock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

@@ -5,10 +5,9 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("SMB browse", .scaledTimeLimit())
+@Suite("SMB browse", .timeLimit(.minutes(1)))
 struct SMBBrowseScenarios {
     private static func file(_ name: String, modified: TimeInterval = 0) -> SMBDirectoryEntry {
         SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: Date(timeIntervalSince1970: modified))

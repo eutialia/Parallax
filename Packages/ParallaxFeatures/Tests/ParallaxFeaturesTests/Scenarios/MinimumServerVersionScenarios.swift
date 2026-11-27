@@ -1,10 +1,9 @@
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
-import ParallaxTestScaling
 import Testing
 
 @MainActor
-@Suite("Minimum server version", .scaledTimeLimit())
+@Suite("Minimum server version", .timeLimit(.minutes(1)))
 struct MinimumServerVersionScenarios {
     nonisolated static let refusal = "Parallax needs Jellyfin 12 or newer. This server runs 11.0.3."
 

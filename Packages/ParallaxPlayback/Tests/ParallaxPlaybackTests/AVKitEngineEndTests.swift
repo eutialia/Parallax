@@ -6,7 +6,6 @@ import ParallaxCore
 import ParallaxCoreTestSupport
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
-import ParallaxTestScaling
 
 /// Where AVPlayer waits with no deadline of its own: on the stream's first playlist, on the
 /// segment it needs to start after it turned ready, or on the segment after the one playing.
@@ -34,7 +33,7 @@ enum Stall: String, CaseIterable, CustomTestStringConvertible {
     }
 }
 
-@Suite("AVKitEngine — playing what the app plays", .serialized, .scaledTimeLimit())
+@Suite("AVKitEngine — playing what the app plays", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct AVKitEngineEndTests {
     @Test("a file that never becomes ready fails at 30 s, and one that turns ready and never starts, or stalls mid-playback, fails as a stall at 45 s",
@@ -102,14 +101,14 @@ struct AVKitEngineEndTests {
         await engine.play()
         await engine.play()
         try await requireEventually({ log.beats.contains { !$0.isBuffering && $0.provenance == .observed && $0.seconds > 0.5 } },
-                                    "the stream never played", timeout: CITimeScale.seconds(15))
+                                    "the stream never played", timeout: .seconds(15))
 
         try await pollUntil { clock.pendingSleeps.isEmpty }
         #expect(clock.pendingSleeps.isEmpty, "a deadline outlived the load: \(clock.pendingSleeps)")
         clock.advance(by: .seconds(30))
         let mark = log.beats.count
         try await requireEventually({ log.beats.dropFirst(mark).contains { $0.provenance == .observed } },
-                                    "the stream stopped playing", timeout: CITimeScale.seconds(15))
+                                    "the stream stopped playing", timeout: .seconds(15))
         #expect(log.failure == nil)
         log.stop()
         await engine.teardown()
@@ -159,17 +158,17 @@ struct AVKitEngineEndTests {
         switch stall {
         case .beforeReady:
             try await requireEventually({ item.status == .readyToPlay }, "the stream never recovered",
-                                        timeout: CITimeScale.seconds(15))
+                                        timeout: .seconds(15))
             // Joins the loads the engine's inventory waits on, so a `.ready` it let through is in.
             let asset = try #require(item.asset as? AVURLAsset)
             _ = try? await asset.loadMediaSelectionGroup(for: .audible)
             _ = try? await asset.loadMediaSelectionGroup(for: .legible)
         case .atStart:
             try await requireEventually({ item.loadedTimeRanges.contains { $0.timeRangeValue.end.seconds >= 4 } },
-                                        "the withheld segment never arrived", timeout: CITimeScale.seconds(15))
+                                        "the withheld segment never arrived", timeout: .seconds(15))
         case .midPlayback:
             try await requireEventually({ item.loadedTimeRanges.contains { $0.timeRangeValue.end.seconds >= 39 } },
-                                        "the withheld segment never arrived", timeout: CITimeScale.seconds(15))
+                                        "the withheld segment never arrived", timeout: .seconds(15))
         }
 
         #expect(engine.avPlayer.rate == 0, "the player plays on under the error")
@@ -220,11 +219,11 @@ struct AVKitEngineEndTests {
         let log = PositionBeatLog(engine)
         // A closed loopback port refuses the connection at once.
         try await engine.load(.fixture(url: try #require(URL(string: "http://127.0.0.1:1/not-a-stream.m3u8"))))
-        try await requireEventually({ log.failure != nil }, "the refused stream never failed", timeout: CITimeScale.seconds(15))
+        try await requireEventually({ log.failure != nil }, "the refused stream never failed", timeout: .seconds(15))
 
         try await engine.load(.fixture(url: AVKitFixtures.tiny))
         try await requireEventually({ !log.readyInventories.isEmpty }, "the load after the failure never got ready",
-                                    timeout: CITimeScale.seconds(15))
+                                    timeout: .seconds(15))
         log.stop()
         await engine.teardown()
     }
@@ -270,7 +269,7 @@ struct AVKitEngineEndTests {
         for track in own.reversed() {
             await engine.setSubtitleTrack(track)
             let expected = try #require(written[track.languageCode ?? ""])
-            try await pollUntil({ cues.latest == expected }, timeout: CITimeScale.seconds(4))
+            try await pollUntil({ cues.latest == expected }, timeout: .seconds(4))
             #expect(cues.latest == expected, "chose \(track.displayName)")
         }
         log.stop()
@@ -289,7 +288,7 @@ struct AVKitEngineEndTests {
         await engine.play()
 
         try await requireEventually({ log.beats.contains { !$0.isBuffering && $0.provenance == .observed && $0.seconds >= 1 } },
-                                    "the engine never played a second of it", timeout: CITimeScale.seconds(15))
+                                    "the engine never played a second of it", timeout: .seconds(15))
         let shown = await screen.framesShown(for: .seconds(1))
         #expect(shown.count > 12, "\(shown.count) pictures shown in a second")
         let misplaced = shown.filter { !$0.isTheSourceFrameForItsTime }

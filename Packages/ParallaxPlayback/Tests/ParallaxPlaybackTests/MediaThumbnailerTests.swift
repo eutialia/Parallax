@@ -3,12 +3,11 @@ import Foundation
 import Synchronization
 import Testing
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 import ParallaxCore
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
 
-@Suite("MediaThumbnailer", .scaledTimeLimit())
+@Suite("MediaThumbnailer", .timeLimit(.minutes(1)))
 struct MediaThumbnailerTests {
     /// The numbered fixtures run at 24 pictures a second with a keyframe every 48, so 5% into a
     /// 12 s file is the keyframe at the start and 5% into a minute is the one at 2 s. An MPG's

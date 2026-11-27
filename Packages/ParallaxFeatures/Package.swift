@@ -48,7 +48,7 @@ let package = Package(
                 .product(name: "ParallaxFileBrowseTestSupport", package: "ParallaxFileBrowse"),
                 .product(name: "ParallaxJellyfinTestSupport", package: "ParallaxJellyfin"),
                 .product(name: "ParallaxPlaybackTestSupport", package: "ParallaxPlayback"),
-                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
+                .product(name: "ParallaxTestPolling", package: "ParallaxCore"),
                 .product(name: "JellyfinAPI", package: "jellyfin-sdk-swift"),
             ],
             swiftSettings: [

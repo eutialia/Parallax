@@ -33,9 +33,7 @@ func makeTestImage(width: Int, height: Int) -> CGImage? {
     return context.makeImage()
 }
 
-/// PNG bytes for `image`. Deliberately NOT `ImageTranscode.encodeHEIC`: PNG is a pure software
-/// codec, so decode-side suites can produce their own input on hosts (virtualized CI) where the
-/// HEVC encoder hangs.
+/// PNG bytes for `image`, so a decode suite's input does not go through the encoder under test.
 func pngData(for image: CGImage) -> Data? {
     let data = NSMutableData()
     guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil)

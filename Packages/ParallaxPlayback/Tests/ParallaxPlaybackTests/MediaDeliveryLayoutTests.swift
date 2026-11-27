@@ -1,12 +1,11 @@
 import Foundation
 import Testing
 import ParallaxCore
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// How a bridged file is laid out for AVPlayer: its segments, its tracks and what each is
 /// delivered as, read from the playlists and init segments its delivery serves.
-@Suite("MediaDelivery — how a bridged file is laid out", .scaledTimeLimit())
+@Suite("MediaDelivery — how a bridged file is laid out", .timeLimit(.minutes(1)))
 struct MediaDeliveryLayoutTests {
 
     /// Each segment's length in milliseconds, from the delivery's playlist for `rendition`.

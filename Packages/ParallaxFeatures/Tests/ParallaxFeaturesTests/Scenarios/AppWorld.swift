@@ -8,7 +8,7 @@ import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
-import ParallaxTestScaling
+import ParallaxTestPolling
 import Synchronization
 import Testing
 
@@ -209,7 +209,7 @@ final class AppWorld {
         let arrived = try await withThrowingTaskGroup(of: Bool.self) { group in
             group.addTask { await Self.firstHolds(condition) }
             group.addTask {
-                try await Ceiling.expire(CITimeScale.seconds(5))
+                try await Task.sleep(for: .seconds(5))
                 return false
             }
             defer { group.cancelAll() }
@@ -229,7 +229,7 @@ final class AppWorld {
     /// `until`, for state behind an actor or in `UserDefaults`, which no observation reaches: it
     /// re-reads `condition` on a 20 ms tick.
     func until(_ condition: () async -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
-        guard try await Ceiling.poll(CITimeScale.seconds(5), until: condition) else {
+        guard try await Ceiling.poll(.seconds(5), until: condition) else {
             throw StateNeverArrived(awaitedAt: sourceLocation)
         }
     }

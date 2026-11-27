@@ -1,13 +1,12 @@
 import AVFoundation
 import Foundation
 import Testing
-import ParallaxTestScaling
 import ParallaxCore
 import ParallaxCoreTestSupport
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
 
-@Suite("MediaDelivery", .scaledTimeLimit())
+@Suite("MediaDelivery", .timeLimit(.minutes(1)))
 struct MediaDeliveryTests {
 
     /// A reader whose `read` never returns, cancellation included: a share stuck in a native

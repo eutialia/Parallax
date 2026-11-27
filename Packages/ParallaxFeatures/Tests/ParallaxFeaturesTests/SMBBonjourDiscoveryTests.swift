@@ -1,12 +1,11 @@
 import Observation
 import Synchronization
 import Testing
-import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 /// Live browsing (`NWBrowser`) needs a real network stack, so the run lifecycle is driven through
 /// the injected `browse` streams.
-@Suite("SMBBonjourDiscovery", .scaledTimeLimit())
+@Suite("SMBBonjourDiscovery", .timeLimit(.minutes(1)))
 struct SMBBonjourDiscoveryTests {
     @Test(
         "a Bonjour service name maps verbatim to id/name, with .local appended for the host",

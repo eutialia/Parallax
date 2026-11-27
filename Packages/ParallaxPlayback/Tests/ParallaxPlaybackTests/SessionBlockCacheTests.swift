@@ -2,10 +2,9 @@ import Foundation
 import Testing
 import ParallaxCoreTestSupport
 import ParallaxCore
-import ParallaxTestScaling
 @testable import ParallaxPlayback
 
-@Suite("SessionBlockCache", .scaledTimeLimit())
+@Suite("SessionBlockCache", .timeLimit(.minutes(1)))
 struct SessionBlockCacheTests {
 
     /// A file's blocks, some kept or on their way, and one asked for.

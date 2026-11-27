@@ -2,11 +2,10 @@ import AVFoundation
 import Foundation
 import Testing
 import ParallaxCore
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// The playlists a bridged delivery serves, fetched over HTTP.
-@Suite("MediaDelivery — playlists", .scaledTimeLimit())
+@Suite("MediaDelivery — playlists", .timeLimit(.minutes(1)))
 struct MediaDeliveryPlaylistTests {
 
     private static func delivered<Value>(_ name: String, _ read: (DeliveredFile) async throws -> Value) async throws -> Value {

@@ -5,13 +5,12 @@ import AVFoundation
 import CryptoKit
 import Foundation
 import Testing
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// Audio a delivery converts to FLAC, fetched over HTTP and read back by Apple's decoder.
 ///
 /// One case at a time: `copyNextSampleBuffer` blocks its thread.
-@Suite("MediaDelivery — converted audio", .serialized, .scaledTimeLimit())
+@Suite("MediaDelivery — converted audio", .serialized, .timeLimit(.minutes(1)))
 struct MediaDeliveryConvertedAudioTests {
     /// One segment as Apple's decoder reads it.
     struct Segment {

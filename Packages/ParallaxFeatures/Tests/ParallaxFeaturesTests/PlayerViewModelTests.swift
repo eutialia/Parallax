@@ -11,11 +11,11 @@ import ParallaxPlaybackTestSupport
 import ParallaxSubtitles
 import ParallaxCoreTestSupport
 import ParallaxFileBrowseTestSupport
-import ParallaxTestScaling
+import ParallaxTestPolling
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
-@Suite("PlayerViewModel integration", .scaledTimeLimit())
+@Suite("PlayerViewModel integration", .timeLimit(.minutes(1)))
 @MainActor
 struct PlayerViewModelTests {
     @Test("resolves, loads + plays, maps states, emits beats in order")
@@ -50,7 +50,7 @@ struct PlayerViewModelTests {
         // Drain: the consumer runs real awaits between beats (preferred-track
         // apply on .ready, session teardown on .ended), so a fixed sleep races
         // it. Poll for the full beat sequence with a bounded deadline instead.
-        _ = try await Ceiling.poll(CITimeScale.seconds(5)) { await reporting.events.count >= 3 }
+        _ = try await Ceiling.poll(.seconds(5)) { await reporting.events.count >= 3 }
 
         #expect(vm.phase == .playing)
 
@@ -4252,7 +4252,7 @@ struct PlayerViewModelTests {
     /// and asserting it through the live `MPNowPlayingInfoCenter` made them answerable by
     /// whatever else had touched the singleton. The controller's own cases, for which the info
     /// center IS the subject, stay app-hosted (`NowPlayingControllerTests`).
-    @Suite("NowPlaying", .scaledTimeLimit())
+    @Suite("NowPlaying", .timeLimit(.minutes(1)))
     @MainActor
     struct NowPlayingTests {
         @Test("PlayerViewModel publishes title/elapsed/rate to Now Playing on .playing")
@@ -4309,7 +4309,7 @@ struct PlayerViewModelTests {
 /// has a sidecar URL, so we fetch and draw it ourselves; an image stream has none, so
 /// the only thing that can draw it locally is the engine — and blinding the engine
 /// (`engineSubtitlesDisabled`) to protect the sidecars would silently cost the user those tracks.
-@Suite("PlayerViewModel — direct-play subtitle ownership", .scaledTimeLimit())
+@Suite("PlayerViewModel — direct-play subtitle ownership", .timeLimit(.minutes(1)))
 @MainActor
 struct DirectPlaySubtitleOwnershipTests {
 
@@ -4463,7 +4463,7 @@ struct DirectPlaySubtitleOwnershipTests {
 /// ffmpeg on first request), and the panel the pick was made from closes on the same
 /// turn as the tap. So the affordance is armed SYNCHRONOUSLY, by its own method, and
 /// these tests call it exactly the way the view does — with no `await` in sight.
-@Suite("PlayerViewModel — sidecar fetch indicator", .scaledTimeLimit())
+@Suite("PlayerViewModel — sidecar fetch indicator", .timeLimit(.minutes(1)))
 @MainActor
 struct SidecarFetchIndicatorTests {
 
@@ -4622,7 +4622,7 @@ struct SidecarFetchIndicatorTests {
 /// The fetch is parked on a gate rather than raced against a sleep: "a slow fetch for the old
 /// item cannot paint the new one's bar" is a statement about ORDERING, and a timing-based
 /// version of it would pass on a fast runner for the wrong reason.
-@Suite("PlayerViewModel — artwork accent lifecycle", .scaledTimeLimit())
+@Suite("PlayerViewModel — artwork accent lifecycle", .timeLimit(.minutes(1)))
 @MainActor
 struct PlayerAccentLifecycleTests {
 
@@ -4691,7 +4691,7 @@ struct PlayerAccentLifecycleTests {
     /// reports the instant it paints instead of riding out a fixed sleep. A case that expects a
     /// hue awaits `firstAccent(of:)` instead.
     private func waitForAccent(_ vm: PlayerViewModel,
-                               timeout: Duration = CITimeScale.seconds(2)) async {
+                               timeout: Duration = .seconds(2)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while vm.accentHSB == nil, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))

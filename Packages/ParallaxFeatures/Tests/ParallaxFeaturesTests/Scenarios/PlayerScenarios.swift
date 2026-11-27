@@ -9,10 +9,9 @@ import ParallaxJellyfinTestSupport
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("Player", .scaledTimeLimit())
+@Suite("Player", .timeLimit(.minutes(1)))
 struct PlayerScenarios {
     @Test("the server a video plays from revoking its token closes the player and tears its engine down")
     func serverSwitchClosesThePlayer() async throws {
@@ -791,7 +790,7 @@ struct PlayerScenarios {
     /// Remembering a pick is a fire-and-forget write; one sent at the wrong moment arrives a beat
     /// later. Waiting this out is what lets "the preference didn't change" mean something.
     private func settleWrites() async throws {
-        try await Task.sleep(for: CITimeScale.seconds(0.5))
+        try await Task.sleep(for: .seconds(0.5))
     }
 
     @Test("a subtitle pick that lands becomes the remembered language")

@@ -3,15 +3,14 @@ import Synchronization
 import Testing
 import ParallaxCore
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
 
 /// What an HTTP client gets from a delivery's URL and the paths beside it.
 ///
 /// `.serialized` because the stalled-download case holds four 5 MiB responses against full
-/// socket buffers, which a 2-core CI runner cannot absorb next to the rest.
-@Suite("MediaDelivery — HTTP", .serialized, .scaledTimeLimit(minutes: 3))
+/// socket buffers, which the rest of the run cannot absorb beside it.
+@Suite("MediaDelivery — HTTP", .serialized, .timeLimit(.minutes(3)))
 struct MediaDeliveryHTTPTests {
 
     /// High profile H.264 and AAC, served as stored.
@@ -78,7 +77,7 @@ struct MediaDeliveryHTTPTests {
         let started = ContinuousClock.now
         let response = try await rawHTTPExchange(
             with: url, sending: Data(text.utf8), halfCloseAfterSend: halfClosing, timeout: .seconds(4))
-        #expect(ContinuousClock.now - started < CITimeScale.seconds(3), "the server never closed", sourceLocation: sourceLocation)
+        #expect(ContinuousClock.now - started < .seconds(3), "the server never closed", sourceLocation: sourceLocation)
         return response
     }
 
@@ -458,10 +457,10 @@ struct MediaDeliveryHTTPTests {
             let url = file.url(of: "a0-0.m4s")
             let client = try SocketClient(url)
             client.send(Self.request(url))
-            let firstChunk = await client.receive(timeout: CITimeScale.seconds(5)) { WireResponse.all(in: $0).first?.chunks.count == 1 }
+            let firstChunk = await client.receive(timeout: .seconds(5)) { WireResponse.all(in: $0).first?.chunks.count == 1 }
             await reader.waitForHeldRead()
             client.closeSending()
-            let afterClose = await client.receive(timeout: CITimeScale.seconds(2))
+            let afterClose = await client.receive(timeout: .seconds(2))
             await reader.release()
 
             #expect(WireResponse.all(in: firstChunk.data).first?.chunks.count == 1)

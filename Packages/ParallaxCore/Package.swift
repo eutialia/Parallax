@@ -18,9 +18,9 @@ let package = Package(
         // (libass symbol isolation).
         .library(name: "ParallaxCore", targets: ["ParallaxCore"]),
         .library(name: "ParallaxCoreTestSupport", targets: ["ParallaxCoreTestSupport"]),
-        // Zero-dependency CI time scaling for tests. Safe to reach transitively
-        // from app-hosted bundles — must stay free of ParallaxCore forever.
-        .library(name: "ParallaxTestScaling", targets: ["ParallaxTestScaling"]),
+        // Zero-dependency test polling. Safe to reach transitively from app-hosted
+        // bundles — must stay free of ParallaxCore forever.
+        .library(name: "ParallaxTestPolling", targets: ["ParallaxTestPolling"]),
     ],
     targets: [
         .target(
@@ -29,25 +29,24 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
-        // Test-only CI ceiling scaling. No ParallaxCore dependency on purpose:
-        // app-hosted bundles may pull this in transitively without duplicating
-        // core types. CI detection stays out of shipping code.
+        // No ParallaxCore dependency on purpose: app-hosted bundles may pull this
+        // in transitively without duplicating core types.
         .target(
-            name: "ParallaxTestScaling",
+            name: "ParallaxTestPolling",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
         ),
         .target(
             name: "ParallaxCoreTestSupport",
-            dependencies: ["ParallaxCore", "ParallaxTestScaling"],
+            dependencies: ["ParallaxCore", "ParallaxTestPolling"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
         ),
         .testTarget(
             name: "ParallaxCoreTests",
-            dependencies: ["ParallaxCore", "ParallaxCoreTestSupport", "ParallaxTestScaling"],
+            dependencies: ["ParallaxCore", "ParallaxCoreTestSupport"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

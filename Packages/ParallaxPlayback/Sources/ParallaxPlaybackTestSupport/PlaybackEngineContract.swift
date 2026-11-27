@@ -2,7 +2,6 @@ import CoreMedia
 import Foundation
 import Testing
 import ParallaxPlayback
-import ParallaxTestScaling
 
 /// One engine and the media it plays, as that engine's suite stands them up for the contract.
 ///
@@ -93,7 +92,7 @@ public enum PlaybackEngineContract {
         await stage.engine.play()
         try await stage.mediaActs(on: asset)
         try await requireEventually({ record.states(of: opened).contains { $0.kind == "ready" } },
-                                    "the stream never got ready", timeout: CITimeScale.seconds(15))
+                                    "the stream never got ready", timeout: .seconds(15))
 
         #expect(opened != .none)
         let kinds = record.states(of: opened).map(\.kind)
@@ -115,13 +114,13 @@ public enum PlaybackEngineContract {
         await stage.engine.play()
         try await stage.mediaActs(on: asset)
         try await requireEventually({ record.positions(of: opened).contains { $0.provenance == .observed && !$0.isBuffering } },
-                                    "the stream never played", timeout: CITimeScale.seconds(15))
+                                    "the stream never played", timeout: .seconds(15))
 
         let target = 5.0
         let mark = record.beats.count
         await stage.engine.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         try await requireEventually({ record.positions(of: opened, from: mark).contains { $0.provenance == .observed } },
-                                    "nothing observed after the seek", timeout: CITimeScale.seconds(15))
+                                    "nothing observed after the seek", timeout: .seconds(15))
 
         let afterSeek = record.positions(of: opened, from: mark)
         let firstObserved = try #require(afterSeek.first { $0.provenance == .observed })
@@ -138,7 +137,7 @@ public enum PlaybackEngineContract {
         await stage.engine.play()
         try await stage.mediaActs(on: asset)
         try await requireEventually({ record.states(of: opened).contains { $0.kind == "failed" } },
-                                    "the unplayable stream never failed", timeout: CITimeScale.seconds(15))
+                                    "the unplayable stream never failed", timeout: .seconds(15))
 
         let failures = record.states(of: opened).compactMap { state -> PlaybackError? in
             if case .failed(let error) = state { error } else { nil }
@@ -189,7 +188,7 @@ public enum PlaybackEngineContract {
         await stage.engine.play()
         try await stage.mediaActs(on: asset)
         try await requireEventually({ record.inventory(of: opened) != nil }, "the stream never got ready",
-                                    timeout: CITimeScale.seconds(15))
+                                    timeout: .seconds(15))
 
         // AVFoundation also offers machine translations into the host's preferred languages,
         // after the stream's own renditions.

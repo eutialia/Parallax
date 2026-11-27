@@ -1,12 +1,11 @@
 import Foundation
 import Testing
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// The samples a bridged delivery copies out of a file, fetched over HTTP and read back by
 /// libavformat's MP4 demuxer, which shares no code with the muxer that wrote them. The oracle is
 /// the source fixture itself: ffprobe's packet list of it, or libavformat's own read of it.
-@Suite("MediaDelivery — copied samples", .scaledTimeLimit())
+@Suite("MediaDelivery — copied samples", .timeLimit(.minutes(1)))
 struct MediaDeliveryCopiedSampleTests {
 
     @Test(

@@ -2,7 +2,6 @@ import Foundation
 import AVFoundation
 import CoreMedia
 import Testing
-import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
@@ -63,7 +62,7 @@ extension AVKitEngine {
     /// holds the CI step for ten minutes. A timeout cancels the drain, which finishes `state`
     /// for every consumer.
     func firstBeat(
-        within timeout: Duration = CITimeScale.seconds(10),
+        within timeout: Duration = .seconds(10),
         where match: @escaping @Sendable (PlaybackBeat) -> Bool
     ) async -> PlaybackBeat? {
         let drain = Task { [state] () -> PlaybackBeat? in
@@ -71,7 +70,7 @@ extension AVKitEngine {
             return nil
         }
         let deadline = Task {
-            try await Ceiling.expire(timeout)
+            try await Task.sleep(for: timeout)
             drain.cancel()
         }
         defer { deadline.cancel() }
@@ -92,7 +91,7 @@ extension PlaybackBeat {
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
 // Swift Testing applies no default timeout, so an engine that never finishes its continuation
 // wedges the whole run instead of failing its own test.
-@Suite("PlaybackEngine stream contract", .serialized, .scaledTimeLimit())
+@Suite("PlaybackEngine stream contract", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct PlaybackEngineStreamContractTests {
 
@@ -228,7 +227,7 @@ struct AVKitLogRedactionTests {
 // `.timeLimit`: every test here drains a real AVFoundation state stream until `.ready`. A
 // simulator with a wedged mediaserverd (or a fixture that failed to copy) publishes neither
 // beat; `firstBeat` bounds that wait, the limit bounds everything after it.
-@Suite("AVKitEngine — assets that render their own subtitles", .serialized, .scaledTimeLimit())
+@Suite("AVKitEngine — assets that render their own subtitles", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct AVKitSubtitleSuppressionTests {
 
@@ -324,7 +323,7 @@ struct AVKitSubtitleSuppressionTests {
 /// 3-second fixture: the question is what AVFoundation does, which no fake can answer.
 // `.timeLimit`: each test drains a real AVFoundation stream until `.ready`; a wedged
 // mediaserverd would otherwise suspend forever.
-@Suite("AVKitEngine — the seek-settle contract", .serialized, .scaledTimeLimit())
+@Suite("AVKitEngine — the seek-settle contract", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct AVKitSeekSettleTests {
 
@@ -470,7 +469,7 @@ struct AVKitSeekSettleTests {
         try await clock.waitForSleep(dueIn: .seconds(45))
         clock.advance(by: .seconds(45))
 
-        let failure = await engine.firstBeat(within: CITimeScale.seconds(5)) {
+        let failure = await engine.firstBeat(within: .seconds(5)) {
             if case .failed = $0.state { true } else { false }
         }
         guard case .failed(let error)? = failure?.state else {
@@ -584,7 +583,7 @@ struct AVKitSeekSettleTests {
         let reloaded = try await engine.load(.fixture(url: AVKitFixtures.subtitled))
         await engine.play()
         try await requireEventually({ log.beats.contains { $0.provenance == .observed && !$0.isBuffering && $0.seconds > 0.5 } },
-                                    "the new stream never published an observed beat", timeout: CITimeScale.seconds(10))
+                                    "the new stream never published an observed beat", timeout: .seconds(10))
         #expect(reloaded != .none)
         log.stop()
         await engine.teardown()
@@ -599,7 +598,7 @@ struct AVKitSeekSettleTests {
         try await engine.load(.fixture(url: AVKitFixtures.subtitled))
         await engine.play()
         try await requireEventually({ log.beats.contains { $0.provenance == .observed && !$0.isBuffering && $0.seconds > 0.5 } },
-                                    "the stream never published an observed beat", timeout: CITimeScale.seconds(10))
+                                    "the stream never published an observed beat", timeout: .seconds(10))
         #expect(log.beats.allSatisfy { $0.seconds < 4.5 }, "the seek before the load moved the stream: \(log.beats)")
         log.stop()
         await engine.teardown()
@@ -647,7 +646,7 @@ struct AVKitSeekSettleTests {
         await engine.play()
 
         try await requireEventually({ log.beats.contains { $0.provenance == .observed && !$0.isBuffering } },
-                                    "the resume never resolved", timeout: CITimeScale.seconds(10))
+                                    "the resume never resolved", timeout: .seconds(10))
         // The resume lands on its segment's first frame, at 26 s.
         let early = log.beats.filter { $0.provenance == .observed && $0.seconds < 25.9 }
         #expect(early.isEmpty, "an observed beat escaped the resume window: \(early)")
@@ -681,7 +680,7 @@ enum SupersededCallback: String, CaseIterable, CustomTestStringConvertible {
 /// The race cannot be held open against real AVFoundation, so the superseded session is captured
 /// and its callbacks delivered by hand. Everything around them is the real engine.
 // `.timeLimit`: each case drains a real AVFoundation stream until the new item is `.ready`.
-@Suite("AVKitEngine — a superseded session publishes nothing", .serialized, .scaledTimeLimit(minutes: 2))
+@Suite("AVKitEngine — a superseded session publishes nothing", .serialized, .timeLimit(.minutes(2)))
 @MainActor
 struct AVKitSupersededSessionTests {
 
@@ -750,7 +749,7 @@ struct AVKitSupersededSessionTests {
 /// An Apple TV that switches frame rate while AVPlayer chooses a variant fails the item with
 /// `AVErrorNoCompatibleAlternatesForExternalDisplay`, so the display is asked before the item
 /// reaches the player.
-@Suite("AVKitEngine — the display is prepared before the item reaches the player", .serialized, .scaledTimeLimit())
+@Suite("AVKitEngine — the display is prepared before the item reaches the player", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct AVKitDisplayPreparationTests {
     @MainActor

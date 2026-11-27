@@ -5,10 +5,9 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("Offline recovery and foreground return", .scaledTimeLimit())
+@Suite("Offline recovery and foreground return", .timeLimit(.minutes(1)))
 struct RecoveryScenarios {
     private struct NASUnreachable: Error {}
 

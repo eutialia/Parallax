@@ -1,5 +1,4 @@
 import Testing
-import ParallaxTestScaling
 import Foundation
 import ParallaxCore
 import ParallaxJellyfin
@@ -11,7 +10,7 @@ import ParallaxJellyfin
 /// via `FakeMediaRepository`) rather than the concrete `LibraryRepository` — see the task report
 /// for why Home/MovieDetail/SeriesDetail/Search aren't covered here.
 @MainActor
-@Suite("LibraryGridViewModel user-data subscription", .scaledTimeLimit())
+@Suite("LibraryGridViewModel user-data subscription", .timeLimit(.minutes(1)))
 struct LibraryGridViewModelUserDataTests {
     @Test("a change patches a matching item's userData in place")
     func patchesMatchingItem() async {

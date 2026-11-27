@@ -47,9 +47,9 @@ let package = Package(
                 // Never add ParallaxCoreTestSupport here: it's a SECOND product of the
                 // ParallaxCore package, and a sibling product drags in a duplicate
                 // ParallaxCore target when this reaches the app-hosted ParallaxTests
-                // bundle, breaking `as? AppError` casts. ParallaxTestScaling is safe —
+                // bundle, breaking `as? AppError` casts. ParallaxTestPolling is safe —
                 // it's the only ParallaxCore-package product with no ParallaxCore dep.
-                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
+                .product(name: "ParallaxTestPolling", package: "ParallaxCore"),
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
@@ -63,7 +63,6 @@ let package = Package(
                 .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
                 .product(name: "AetherLibavutil", package: "FFmpegBuild"),
                 .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
-                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             resources: [
                 .copy("Fixtures"),

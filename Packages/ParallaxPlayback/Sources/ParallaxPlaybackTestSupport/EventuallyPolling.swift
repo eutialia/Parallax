@@ -1,5 +1,5 @@
 import Foundation
-import ParallaxTestScaling
+import ParallaxTestPolling
 import Testing
 
 /// Waits for a MainActor condition instead of sleeping a margin, and ends the test if it never
@@ -10,8 +10,7 @@ import Testing
 /// with different sleep granularities and two different opinions on whether expiry is a
 /// failure. It is one helper: expiry IS a failure (a condition that never holds is exactly
 /// what a test is asserting against), and the timeout is an anti-hang ceiling, never part of
-/// the claim — hence `CITimeScale`, so an oversubscribed runner cannot trip it while the code
-/// under test behaves.
+/// the claim.
 ///
 /// `sourceLocation` defaults to the CALLER's, so a failure points at the assertion rather than
 /// at this file.
@@ -19,7 +18,7 @@ import Testing
 public func requireEventually(
     _ condition: () -> Bool,
     _ what: Comment,
-    timeout: Duration = CITimeScale.seconds(5),
+    timeout: Duration = .seconds(5),
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
     try await pollUntil(condition, timeout: timeout)
@@ -33,7 +32,7 @@ public func requireEventually(
 @discardableResult
 public func pollUntil(
     _ condition: () -> Bool,
-    timeout: Duration = CITimeScale.seconds(5)
+    timeout: Duration = .seconds(5)
 ) async throws -> Bool {
     try await Ceiling.poll(timeout) { condition() }
 }

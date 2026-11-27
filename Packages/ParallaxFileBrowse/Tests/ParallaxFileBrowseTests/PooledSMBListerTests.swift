@@ -1,7 +1,6 @@
 import Foundation
 import ParallaxCoreTestSupport
 import Testing
-import ParallaxTestScaling
 @testable import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
 
@@ -11,7 +10,7 @@ import ParallaxFileBrowseTestSupport
 /// native call is still pending.
 /// Time-limited: most of these tests wait on a gate or a detached check-in, so a regression
 /// that never signals should fail red rather than hang the whole run.
-@Suite("PooledSMBLister", .scaledTimeLimit(minutes: 3))
+@Suite("PooledSMBLister", .timeLimit(.minutes(3)))
 struct PooledSMBListerTests {
 
     private struct ListFailure: Error {}

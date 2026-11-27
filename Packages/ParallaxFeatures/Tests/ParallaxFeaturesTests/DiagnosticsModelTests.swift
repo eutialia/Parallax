@@ -2,12 +2,11 @@ import Foundation
 import ParallaxCore
 import ParallaxFileBrowseTestSupport
 @testable import ParallaxFeatures
-import ParallaxTestScaling
 import Synchronization
 import Testing
 
 @MainActor
-@Suite("Diagnostics settings", .scaledTimeLimit())
+@Suite("Diagnostics settings", .timeLimit(.minutes(1)))
 struct DiagnosticsModelTests {
     @Test("turning logging off while the saved runs load keeps it off once they land")
     func toggleDuringReloadSticks() async {

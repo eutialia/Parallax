@@ -1,10 +1,9 @@
 import Foundation
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 import Testing
 @testable import ParallaxCore
 
-@Suite("Diagnostics handoff server", .scaledTimeLimit())
+@Suite("Diagnostics handoff server", .timeLimit(.minutes(1)))
 struct DiagnosticsHandoffServerTests {
 
     /// Large enough that a client which never reads parks the server's send against a full socket
@@ -22,7 +21,7 @@ struct DiagnosticsHandoffServerTests {
             await untilSettled { await server.liveConnectionCount == 4 }
             // Only a lower bound on "parked in send": a reset that lands while the serve is still
             // reading the head unwinds on its own and would pass without the fix.
-            try await Task.sleep(for: CITimeScale.seconds(0.3))
+            try await Task.sleep(for: .seconds(0.3))
 
             downloads.prefix(2).forEach { $0.reset() }
             await untilSettled { await server.liveConnectionCount == 2 }
@@ -68,8 +67,8 @@ struct DiagnosticsHandoffServerTests {
         }
     }
 
-    /// The listener binds every interface; the test reaches it over loopback, which headless CI
-    /// runners are allowed to talk to without local-network access.
+    /// The listener binds every interface; the test reaches it over loopback, which needs no
+    /// local-network access.
     private static func loopbackURL(of server: DiagnosticsHandoffServer) async throws -> URL {
         let endpoint = try await server.start()
         let port = try #require(endpoint.url.port)

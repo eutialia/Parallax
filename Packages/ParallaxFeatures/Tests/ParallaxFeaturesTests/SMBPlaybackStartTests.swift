@@ -2,7 +2,6 @@ import Foundation
 import Synchronization
 import CoreMedia
 import Testing
-import ParallaxTestScaling
 import ParallaxCore
 @testable import ParallaxFeatures
 import ParallaxPlayback
@@ -15,7 +14,7 @@ import ParallaxSubtitles
 /// SMB direct-play entry: `PlayerViewModel.start(smbItem:)` builds a `PlayableAsset`
 /// straight from a resolved SMB file, served over the local bridge: no Jellyfin resolve,
 /// no DeviceProfile, no playSessionID, no progress reporting.
-@Suite("PlayerViewModel SMB start", .scaledTimeLimit())
+@Suite("PlayerViewModel SMB start", .timeLimit(.minutes(1)))
 @MainActor
 struct SMBPlaybackStartTests {
 

@@ -1,7 +1,6 @@
 import Foundation
 import CoreMedia
 import Testing
-import ParallaxTestScaling
 @testable import ParallaxFeatures
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
@@ -42,7 +41,7 @@ private func sidecarURL(session: Int) -> URL {
 /// loser was dropped on the floor; these hold them to the one rule that replaced them —
 /// merge into `PendingReload`, reload once, settle every dimension, and let the LAST reload
 /// of a run be the one that spends the intent.
-@Suite("PlayerViewModel — actions during a reload", .scaledTimeLimit())
+@Suite("PlayerViewModel — actions during a reload", .timeLimit(.minutes(1)))
 @MainActor
 struct PlayerReloadQueueTests {
 

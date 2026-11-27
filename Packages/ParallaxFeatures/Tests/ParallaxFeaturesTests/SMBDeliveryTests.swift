@@ -1,7 +1,6 @@
 import Foundation
 import os
 import Testing
-import ParallaxTestScaling
 import ParallaxCore
 import ParallaxCoreTestSupport
 import ParallaxFileBrowse
@@ -10,7 +9,7 @@ import ParallaxPlaybackTestSupport
 @testable import ParallaxFeatures
 
 /// What `SMBDelivery` adds over `MediaDelivery` is who releases the pooled reader, and when.
-@Suite("SMBDelivery", .scaledTimeLimit())
+@Suite("SMBDelivery", .timeLimit(.minutes(1)))
 struct SMBDeliveryTests {
 
     /// Records how its borrow was ended and runs a test-supplied check at drain time. With
@@ -53,7 +52,7 @@ struct SMBDeliveryTests {
 
     private static func fetch(_ url: URL) async -> Bool {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = CITimeScale.interval(10)
+        configuration.timeoutIntervalForRequest = 10
         return (try? await URLSession(configuration: configuration).data(from: url)) != nil
     }
 

@@ -1,10 +1,9 @@
 import ParallaxFileBrowseTestSupport
 @testable import ParallaxFeatures
-import ParallaxTestScaling
 import Testing
 
 @MainActor
-@Suite("Thumbnail cache card", .scaledTimeLimit())
+@Suite("Thumbnail cache card", .timeLimit(.minutes(1)))
 struct ThumbnailCacheModelTests {
     @Test("a size read that lands after a clear leaves the card showing Empty")
     func lateSizeReadAfterClearStaysEmpty() async {

@@ -1,11 +1,10 @@
 import Foundation
 import Testing
-import ParallaxTestScaling
 @testable import ParallaxPlayback
 
 /// A stream that reorders its pictures further than it declares, which no encoder a test host
 /// has writes.
-@Suite("SegmentWriter", .scaledTimeLimit())
+@Suite("SegmentWriter", .timeLimit(.minutes(1)))
 struct SegmentWriterTests {
     @Test("a picture shown earlier than one already given its decode time fails the segment")
     func pictureReorderedPastTheLookaheadFails() async throws {

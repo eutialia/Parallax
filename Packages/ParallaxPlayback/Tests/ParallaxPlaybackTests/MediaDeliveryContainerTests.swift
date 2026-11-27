@@ -3,12 +3,11 @@ import Synchronization
 import Testing
 import ParallaxCore
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// How a bridged delivery reads each container, seen in what it serves: its playlists, and its
 /// segments read back by libavformat's own demuxer against that demuxer's reading of the source.
-@Suite("MediaDelivery — reading each container", .scaledTimeLimit())
+@Suite("MediaDelivery — reading each container", .timeLimit(.minutes(1)))
 struct MediaDeliveryContainerTests {
 
     /// A rendition and the source stream it carries. `reframed` when the source stores the

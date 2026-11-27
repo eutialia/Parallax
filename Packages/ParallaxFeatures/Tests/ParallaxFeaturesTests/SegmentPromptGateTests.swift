@@ -1,10 +1,9 @@
 import Testing
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 @MainActor
-@Suite("Segment prompt one-shot", .scaledTimeLimit())
+@Suite("Segment prompt one-shot", .timeLimit(.minutes(1)))
 struct SegmentPromptGateTests {
     /// The playhead's segment, moved by the test the way position beats move it.
     private final class Playhead {

@@ -1,13 +1,12 @@
 import Foundation
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 import Testing
 @testable import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
 
 /// Time-limited: nearly every test here waits on a gate or a detached teardown, so a
 /// regression that never signals should fail red rather than hang the whole run.
-@Suite("SMBConnectionPool", .scaledTimeLimit(minutes: 3))
+@Suite("SMBConnectionPool", .timeLimit(.minutes(3)))
 struct SMBConnectionPoolTests {
 
     private struct ConnectFailure: Error {}
