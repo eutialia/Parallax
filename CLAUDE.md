@@ -49,7 +49,7 @@ Headless `xcodebuild` is the default. Reach for the Xcode MCP only for what head
 - Packages: `scripts/verify.sh [filter]` on the host.
 - `-only-testing:` and the `verify.sh` filter take the Swift type name. The `@Suite` display name matches nothing and fakes a pass.
 - Real-keychain suites self-skip on unentitled simulator hosts. A skip is expected, a failure is real.
-- Run the tests for what you changed. CI owns the full matrix.
+- Run the tests for what you changed, and before a PR, `scripts/verify.sh` and the iOS and tvOS builds. CI runs only the drift checks; the builds and tests are local.
 
 ### Xcode MCP
 
