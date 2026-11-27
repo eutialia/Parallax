@@ -788,6 +788,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         case .readyToPlay:
             guard isLive(session) else { break }   // a dead item disarms nothing
             loadWatchdog.disarm()   // item is playable — the load succeeded
+            // Played before it was ready, the player may already be waiting for more of the
+            // stream: that edge came before ready and armed nothing, and no later one will.
+            if player.timeControlStatus == .waitingToPlayAtSpecifiedRate { armStallWatchdog(for: session) }
             // (The resume seek already happened at load time, pre-ready — see
             // load(). Seeking here re-targeted an already-position-0 player.)
             // Media-selection groups load asynchronously: the synchronous

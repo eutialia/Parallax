@@ -8,18 +8,27 @@ import ParallaxPlayback
 import ParallaxPlaybackTestSupport
 import ParallaxTestScaling
 
-/// Where AVPlayer waits with no deadline of its own: on the stream's first playlist, or on the
-/// segment after the one playing.
+/// Where AVPlayer waits with no deadline of its own: on the stream's first playlist, on the
+/// segment it needs to start after it turned ready, or on the segment after the one playing.
 enum Stall: String, CaseIterable, CustomTestStringConvertible {
     case beforeReady
+    case atStart
     case midPlayback
 
     var testDescription: String { rawValue }
 
     /// The long-GOP stream's segments are 13 s long, and AVPlayer turns ready on two of them.
+    /// The subtitled stream's are 2 s long: it turns ready on one and waits for more to start.
+    var stream: URL {
+        get throws { self == .atStart ? try AVKitFixtures.subtitledStream : try AVKitFixtures.longGOPStream }
+    }
+
+    var playlist: String { self == .atStart ? "master.m3u8" : "main.m3u8" }
+
     var withheld: String {
         switch self {
         case .beforeReady: "/main.m3u8"
+        case .atStart: "/video-1.m4s"
         case .midPlayback: "/seg2.mp4"
         }
     }
@@ -28,12 +37,12 @@ enum Stall: String, CaseIterable, CustomTestStringConvertible {
 @Suite("AVKitEngine — playing what the app plays", .serialized, .scaledTimeLimit())
 @MainActor
 struct AVKitEngineEndTests {
-    @Test("a file that never becomes ready fails at 30 s, and playback that stalls for 45 s fails as a stall",
+    @Test("a file that never becomes ready fails at 30 s, and one that turns ready and never starts, or stalls mid-playback, fails as a stall at 45 s",
           arguments: Stall.allCases)
     func watchdogsFireOnARealStall(stall: Stall) async throws {
         let gate = ResponseGate()
         let server = try HLSLoopbackServer.serving(
-            directory: AVKitFixtures.longGOPStream, withholding: [stall.withheld], until: gate)
+            directory: try stall.stream, withholding: [stall.withheld], until: gate)
         defer {
             gate.open()
             server.stop()
@@ -41,7 +50,7 @@ struct AVKitEngineEndTests {
         let clock = TestClock()
         let engine = AVKitEngine(clock: clock)
         let log = PositionBeatLog(engine)
-        try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
+        try await engine.load(.fixture(url: try await server.baseURL().appending(path: stall.playlist)))
 
         let deadline: Duration
         let expected: PlaybackError
@@ -50,6 +59,13 @@ struct AVKitEngineEndTests {
             (deadline, expected) = (.seconds(30), .loadTimedOut)
             await engine.play()
             try await clock.waitForSleep(dueIn: deadline)
+        case .atStart:
+            (deadline, expected) = (.seconds(45), .networkStalled)
+            await engine.play()
+            try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
+            // The load deadline ends when the stream turns ready; the stall's takes over.
+            try await pollUntil { clock.pendingSleeps == [deadline] }
+            #expect(clock.pendingSleeps == [deadline])
         case .midPlayback:
             (deadline, expected) = (.seconds(45), .networkStalled)
             try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
@@ -107,7 +123,7 @@ struct AVKitEngineEndTests {
     func recoveryAfterTheDeadlineStaysFailed(stall: Stall) async throws {
         let gate = ResponseGate()
         let server = try HLSLoopbackServer.serving(
-            directory: AVKitFixtures.longGOPStream, withholding: [stall.withheld], until: gate)
+            directory: try stall.stream, withholding: [stall.withheld], until: gate)
         defer {
             gate.open()
             server.stop()
@@ -115,12 +131,16 @@ struct AVKitEngineEndTests {
         let clock = TestClock()
         let engine = AVKitEngine(clock: clock)
         let log = PositionBeatLog(engine)
-        try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
+        try await engine.load(.fixture(url: try await server.baseURL().appending(path: stall.playlist)))
         let deadline: Duration
         switch stall {
         case .beforeReady:
             deadline = .seconds(30)
             await engine.play()
+        case .atStart:
+            deadline = .seconds(45)
+            await engine.play()
+            try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
         case .midPlayback:
             deadline = .seconds(45)
             try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
@@ -144,6 +164,9 @@ struct AVKitEngineEndTests {
             let asset = try #require(item.asset as? AVURLAsset)
             _ = try? await asset.loadMediaSelectionGroup(for: .audible)
             _ = try? await asset.loadMediaSelectionGroup(for: .legible)
+        case .atStart:
+            try await requireEventually({ item.loadedTimeRanges.contains { $0.timeRangeValue.end.seconds >= 4 } },
+                                        "the withheld segment never arrived", timeout: CITimeScale.seconds(15))
         case .midPlayback:
             try await requireEventually({ item.loadedTimeRanges.contains { $0.timeRangeValue.end.seconds >= 39 } },
                                         "the withheld segment never arrived", timeout: CITimeScale.seconds(15))
@@ -152,6 +175,41 @@ struct AVKitEngineEndTests {
         #expect(engine.avPlayer.rate == 0, "the player plays on under the error")
         #expect(log.beats.count == published.beats, "\(log.beats.dropFirst(published.beats))")
         #expect(log.readyInventories.count == published.inventories)
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A seek during a stall is the viewer asking again, so it gets the whole wait.
+    @Test("a seek during a stall starts its 45 s over")
+    func seekDuringAStallStartsItsDeadlineOver() async throws {
+        let gate = ResponseGate()
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: [Stall.midPlayback.withheld], until: gate)
+        defer {
+            gate.open()
+            server.stop()
+        }
+        let clock = TestClock()
+        let engine = AVKitEngine(clock: clock)
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
+        try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
+        await engine.seek(to: .seconds(24))
+        await engine.play()
+        try await requireEventually({ log.beats.contains { $0.isBuffering && $0.seconds >= 25 } },
+                                    "playback never stalled on the withheld segment")
+        try await pollUntil { clock.pendingSleeps == [.seconds(45)] }
+        clock.advance(by: .seconds(30))
+
+        // Back into the part already buffered, which is still short of the withheld segment.
+        await engine.seek(to: .seconds(25.5))
+        try await requireEventually({ clock.pendingSleeps == [.seconds(45)] },
+                                    "the deadline did not start over: \(clock.pendingSleeps)")
+        clock.advance(by: .seconds(44))
+        #expect(log.failure == nil)
+        clock.advance(by: .seconds(1))
+        try await requireEventually({ log.failure != nil }, "the deadline never failed the stream")
+        #expect(log.failure == .networkStalled)
         log.stop()
         await engine.teardown()
     }
