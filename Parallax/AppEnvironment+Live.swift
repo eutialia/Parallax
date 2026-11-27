@@ -43,9 +43,10 @@ extension AppEnvironment {
             thumbnailer: MediaThumbnailer(),
             makePlaybackEngine: {
                 #if os(tvOS)
-                AVKitEngine(tuning: startupTuningStore.selected.tuning, prepareDisplay: DisplayCriteriaMatcher.prepare(for:))
+                AVKitEngine(
+                    tuning: startupTuningStore.selected.tuning, clock: clock, prepareDisplay: DisplayCriteriaMatcher.prepare(for:))
                 #else
-                AVKitEngine(tuning: startupTuningStore.selected.tuning)
+                AVKitEngine(tuning: startupTuningStore.selected.tuning, clock: clock)
                 #endif
             },
             makeNowPlaying: { NowPlayingController() },

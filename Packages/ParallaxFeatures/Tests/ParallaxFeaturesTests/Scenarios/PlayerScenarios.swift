@@ -382,7 +382,7 @@ struct PlayerScenarios {
                 "the closed player reached the audio session after the next one activated it: \(calls)")
     }
 
-    @Test("closing the player while a failed next-episode start still waits on its encode kill holds the next pick until that start has ended its audio")
+    @Test("closing the player while the next episode's start waits on the display holds the next pick until that start has ended its audio")
     func nextPickWaitsForAFailedEpisodeStart() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
             .series("Severance", in: "Shows", episodes: [2])
@@ -394,13 +394,14 @@ struct PlayerScenarios {
         let player = try await world.openPlayer()
         try await world.until { player.nextEpisode?.name == "Severance S1E2" }
         try await world.streamPlays(at: .seconds(49 * 60), of: .seconds(50 * 60))
-        world.engines.loadError = AppError.playback(.unsupportedFormat(reason: nil))
-        den.holdResponses(to: .encodingKills)
+        world.engines.holdsLoads = true
         world.streamEnds()
-        // The next episode's start has activated audio, failed its load, and waits on the kill
-        // of its encode before it ends that audio.
-        try await world.until { den.heldResponseCount == 1 }
-        world.engines.loadError = nil
+        // The next episode's start has activated audio, and its load waits on the display.
+        await waitUntil("the next episode's load never parked") {
+            world.engines.count == 2 && world.engine.hasParked(.load)
+        }
+        world.engines.holdsLoads = false
+        let starting = world.engine
 
         let closing = world.dismissPlayer()
         world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
@@ -411,9 +412,10 @@ struct PlayerScenarios {
         }
         try await world.until { !world.app.playback.isPlayerPresent || world.app.playback.request != nil }
 
-        #expect(world.app.playback.request == nil, "the next player opened while the failed start could still end its audio")
+        #expect(world.app.playback.request == nil, "the next player opened while the waiting start could still end its audio")
 
-        den.releaseResponses()
+        // The close tore the engine down, so the load fails once the display has switched.
+        starting.release(.load)
         try await world.until { world.app.playback.request != nil }
         try await world.openPlayer()
         await closing.value

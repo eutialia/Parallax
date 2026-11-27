@@ -69,48 +69,35 @@ final class HLSLoopbackServer: @unchecked Sendable {
             let target = text.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
             let path = target.split(separator: "?").first.map(String.init) ?? "/"
             self.lock.withLock { self.requestedPaths.append(path) }
-
-            guard let response = self.respond(path) else {
-                // Accepted, then hung up with nothing sent — the abort the client reads as
-                // "the network connection was lost".
-                connection.cancel()
-                return
-            }
-            var head = "HTTP/1.1 200 OK\r\n"
-            head += "Content-Type: \(response.contentType)\r\n"
-            head += "Content-Length: \(response.body.count)\r\n"
-            head += "Connection: close\r\n\r\n"
-            var payload = Data(head.utf8)
-            payload.append(response.body)
-            connection.send(content: payload, completion: .contentProcessed { _ in
-                connection.cancel()
-            })
+            // Off the listener's queue: a response held back must not hold up the others, nor
+            // the bytes of one already on its way.
+            DispatchQueue.global().async { self.answer(connection, with: self.respond(path)) }
         }
+    }
+
+    private func answer(_ connection: NWConnection, with response: (contentType: String, body: Data)?) {
+        guard let response else {
+            // Accepted, then hung up with nothing sent — the abort the client reads as
+            // "the network connection was lost".
+            connection.cancel()
+            return
+        }
+        var head = "HTTP/1.1 200 OK\r\n"
+        head += "Content-Type: \(response.contentType)\r\n"
+        head += "Content-Length: \(response.body.count)\r\n"
+        head += "Connection: close\r\n\r\n"
+        var payload = Data(head.utf8)
+        payload.append(response.body)
+        connection.send(content: payload, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
 }
 
 extension HLSLoopbackServer {
-    /// The shape of the failing device case: a multivariant playlist that resolves, pointing at
-    /// a variant playlist the server accepts and then drops. AVFoundation logs the master in
-    /// `accessLog()` (it transferred bytes) and the variant in `errorLog()` (it did not), and
-    /// fails the item — because a variant playlist is required to reach `.readyToPlay`.
-    static func servingOnlyTheMasterPlaylist() throws -> HLSLoopbackServer {
-        try HLSLoopbackServer { path in
-            guard path.hasSuffix("/master.m3u8") else { return nil }
-            let playlist = """
-                #EXTM3U
-                #EXT-X-VERSION:7
-                #EXT-X-STREAM-INF:BANDWIDTH=3506400,CODECS="hvc1.2.4.L150.B0,mp4a.40.2",RESOLUTION=1920x1080
-                hls1/main/main.m3u8
-
-                """
-            return ("application/vnd.apple.mpegurl", Data(playlist.utf8))
-        }
-    }
-
     /// Serves the files of `directory` by name: playlists as HLS, everything else as MP4. A path
     /// in `withheld` waits for `gate` to open, the way a transcode job still producing a segment
-    /// does. The wait holds the server's one queue, so later requests queue behind it.
+    /// does.
     static func serving(directory: URL, withholding withheld: Set<String>, until gate: ResponseGate) throws -> HLSLoopbackServer {
         try HLSLoopbackServer { path in
             let file = directory.appending(path: String(path.drop { $0 == "/" }))

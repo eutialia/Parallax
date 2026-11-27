@@ -25,8 +25,8 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     nonisolated var state: AsyncStream<PlaybackBeat> { get }
 
     /// Load the asset. Seeks to `asset.startTime` when the item becomes ready.
-    /// Throws `PlaybackError` if the item cannot be prepared, and `CancellationError` if a
-    /// teardown or another load supersedes it before its item reaches the player.
+    /// Throws only `CancellationError`, when a teardown or another load supersedes it before its
+    /// item reaches the player. Media that cannot play fails on `state` as `.failed`.
     ///
     /// Opens a new SESSION and returns its id. An engine is reloadable in place (the transcode
     /// re-anchor / track switch reuses it so the video layer survives the swap), so this is the

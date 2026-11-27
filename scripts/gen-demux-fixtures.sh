@@ -734,4 +734,46 @@ for turn in 90 180 270; do
     ffmpeg -v error -y -display_rotation "$turn" -i "$OUT/numbered-h264-silent.mkv" -map 0:v -c copy \
         -movflags +faststart -bitexact -fflags +bitexact "$OUT/numbered-h264-rotated-$turn.mp4"
 done
+# The numbered picture in an MP4 AVPlayer plays as it is stored, so the engine's capture of a
+# file played directly has the same picture as one of a bridged file.
+numbered numbered-h264.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -movflags +faststart
+# An HLS presentation as a Jellyfin transcode serves it: the video, and a WebVTT rendition for
+# each of three subtitle streams, the second of them forced only. Each cue names its own track.
+# The renditions are named "Unknown", as a transcode manifest that dropped the names reads, so
+# the engine names them from the server's streams.
+subtitled_hls() {
+    local dir="$OUT/../subtitled-hls"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -t 8 -c:v libx264 -preset veryfast -bf 0 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p \
+        -bitexact -fflags +bitexact \
+        -f hls -hls_time 2 -hls_playlist_type vod -hls_segment_type fmp4 \
+        -hls_fmp4_init_filename video-init.mp4 -hls_segment_filename "$dir/video-%d.m4s" "$dir/video.m3u8"
+    local language
+    for language in eng fra deu; do
+        {
+            echo "WEBVTT"
+            echo "X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0"
+            for half in $(seq 0 15); do
+                printf '\n%02d:%02d.%03d --> %02d:%02d.%03d\n%s\n' \
+                    0 $((half / 2)) $((half % 2 * 500)) 0 $(((half + 1) / 2)) $(((half + 1) % 2 * 500)) "$language"
+            done
+        } > "$dir/subtitles-$language.vtt"
+        printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:8\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:8.000,\nsubtitles-%s.vtt\n#EXT-X-ENDLIST\n' \
+            "$language" > "$dir/subtitles-$language.m3u8"
+    done
+    cat > "$dir/master.m3u8" <<'PLAYLIST'
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Unknown",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,URI="subtitles-eng.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Unknown",LANGUAGE="fr",DEFAULT=NO,AUTOSELECT=YES,FORCED=YES,URI="subtitles-fra.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Unknown",LANGUAGE="de",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,URI="subtitles-deu.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="avc1.64000a",RESOLUTION=160x90,SUBTITLES="subs"
+video.m3u8
+PLAYLIST
+}
+subtitled_hls
 ls -l "$OUT"

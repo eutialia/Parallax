@@ -28,7 +28,6 @@ struct FakePlaybackEngineTests {
 
         try await fake.load(asset)
         let duration = CMTime(seconds: 3600, preferredTimescale: 1000)
-        fake.push(.loading)
         fake.push(.ready(duration: duration, tracks: .empty))
 
         await task.value

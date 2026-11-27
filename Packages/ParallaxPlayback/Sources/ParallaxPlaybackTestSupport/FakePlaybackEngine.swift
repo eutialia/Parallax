@@ -45,6 +45,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
         var selectedSubtitleTrackID: TrackID? = nil
         var isPlayingNow = false
         var hasLoaded = false
+        var isTornDown = false
         /// The duration the current session's last duration-carrying beat reported.
         var duration: CMTime?
     }
@@ -195,22 +196,25 @@ public final class FakePlaybackEngine: PlaybackEngine {
         }
     }
 
-    /// Opens a new session like the real engine, so a reload's incoming beats are
-    /// distinguishable from the outgoing ones a test left in flight.
+    /// Opens a new session and publishes `.loading` from it before it suspends, as
+    /// `AVKitEngine` does, and throws only what that engine throws: `CancellationError`, for a
+    /// load a teardown or another load overtook while it was parked. Media that cannot play
+    /// fails on `state`, which is the test's to push.
     @discardableResult
     public func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID {
         recordedState.withLock {
             $0.loadedAssets.append(asset)
             $0.calls.append("load")
-        }
-        await gates[.load]!.park()
-        if let loadError { throw loadError }
-        recordedState.withLock {
-            $0.hasLoaded = true
             $0.duration = nil
         }
-        session = session.next()
-        return session
+        let opened = session.next()
+        session = opened
+        push(.loading, from: opened)
+        await gates[.load]!.park()
+        if let loadError { throw loadError }
+        guard session == opened, !recordedState.read({ $0.isTornDown }) else { throw CancellationError() }
+        recordedState.withLock { $0.hasLoaded = true }
+        return opened
     }
 
     public func play() async {
@@ -256,7 +260,8 @@ public final class FakePlaybackEngine: PlaybackEngine {
         /// Inside `await engine.seek(...)` — the window a synchronous fence can land in
         /// mid-seek.
         case seek
-        /// Inside `load(_:)`, before the stream opens: a reload has already adopted the new
+        /// Inside `load(_:)`, after it has opened its session and before it returns: where
+        /// `AVKitEngine` waits for the display to switch. A reload has already adopted the new
         /// resolve while the engine has not loaded it.
         case load
         /// State DELIVERY, with the element already pulled from the stream: the beat is in
@@ -283,7 +288,10 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     /// True while at least one caller is parked on `call`'s gate. `requireEventually`-friendly
     /// proof that the caller really is suspended, so the interleaving under test is not a guess.
-    public func hasParked(_ call: ParkedCall) -> Bool { gates[call]!.hasParked }
+    public func hasParked(_ call: ParkedCall) -> Bool { gates[call]!.parkedCount > 0 }
+
+    /// How many callers are parked on `call`'s gate now.
+    public func parkedCount(_ call: ParkedCall) -> Int { gates[call]!.parkedCount }
 
     /// Lift `call`'s gate and resume everything parked on it. Later calls pass straight through.
     public func release(_ call: ParkedCall) { gates[call]!.release() }
@@ -311,7 +319,10 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
 
     public func teardown() async {
-        recordedState.withLock { $0.calls.append("teardown") }
+        recordedState.withLock {
+            $0.calls.append("teardown")
+            $0.isTornDown = true
+        }
         await gates[.teardown]!.park()
         finish()
     }
@@ -347,9 +358,9 @@ private final class ParkingGate: Sendable {
 
     func hold() { state.withLock { $0.isHeld = true } }
 
-    /// True while at least one caller is suspended here — `waitUntil`-friendly proof that
-    /// the interleaving under test really happened, rather than a guess about scheduling.
-    var hasParked: Bool { state.withLock { !$0.parked.isEmpty } }
+    /// The callers suspended here now: `waitUntil`-friendly proof that the interleaving under
+    /// test really happened, rather than a guess about scheduling.
+    var parkedCount: Int { state.withLock { $0.parked.count } }
 
     func release() {
         let due = state.withLock { s -> [CheckedContinuation<Void, Never>] in

@@ -9,7 +9,7 @@ public enum PlaybackError: Error, Sendable, Equatable {
     /// The playback buffer emptied and did not recover.
     case networkStalled
     /// The item produced neither a first frame nor an error inside the engine's load
-    /// deadline (`LoadWatchdog`). Deliberately NOT `assetNotPlayable`, which it used to
+    /// deadline. Deliberately NOT `assetNotPlayable`, which it used to
     /// borrow: nothing about the asset is known to be wrong — a cold transcode, a slow
     /// server or a wedged segment fetch all land here, and reporting them as a decode
     /// failure points the user at the file instead of the link.
