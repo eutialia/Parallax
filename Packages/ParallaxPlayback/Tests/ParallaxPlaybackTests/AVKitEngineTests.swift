@@ -186,11 +186,11 @@ final class DisplaySwitch {
 struct AVKitLogRedactionTests {
     private static let names = ["Videos", "hls1", "main", "47.mp4", "-1.mp4", "master.m3u8", "main.m3u8", "init.mp4", "Audio"]
 
-    private static func hex(_ count: Int, using random: inout SplitMix) -> String {
+    private static func hex(_ count: Int, using random: inout SeededGenerator) -> String {
         String((0..<count).map { _ in "0123456789abcdef".randomElement(using: &random)! })
     }
 
-    private static func component(using random: inout SplitMix) -> (text: String, isID: Bool) {
+    private static func component(using random: inout SeededGenerator) -> (text: String, isID: Bool) {
         switch Int.random(in: 0..<5, using: &random) {
         case 0: (hex(32, using: &random), true)
         case 1: ([8, 4, 4, 4, 12].map { hex($0, using: &random) }.joined(separator: "-"), true)
@@ -201,7 +201,7 @@ struct AVKitLogRedactionTests {
     @Test("the tail is the last three resource names of the path, never the query or an item id")
     func tailNamesTheResource() {
         let seed = UInt64(0x7461_696C)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<500 {
             let path = (0..<Int.random(in: 0...7, using: &random)).map { _ in Self.component(using: &random) }
             let secret = Self.hex(24, using: &random)

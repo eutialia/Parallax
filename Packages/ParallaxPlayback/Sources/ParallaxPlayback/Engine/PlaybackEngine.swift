@@ -79,13 +79,6 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Set the playback rate (1.0 = normal). Persisted by the engine so a
     /// later `play()` resumes at the chosen speed.
     func setRate(_ rate: Float) async
-
-    /// Best-effort single-frame capture near the current playback position, for SMB thumbnail
-    /// backfill (see `PlayerViewModel` in the app target). Must never throw and must never stall
-    /// or otherwise perturb playback — any failure (no active item, decode error, API unsupported
-    /// on this engine) returns nil. The returned Data is an already-encoded still image (HEIC or
-    /// JPEG — see below), not raw pixels.
-    func captureFrame() async -> Data?
 }
 
 public extension PlaybackEngine {
@@ -97,7 +90,4 @@ public extension PlaybackEngine {
 
     /// Default: no-op. Engines that support variable-speed playback override.
     func setRate(_ rate: Float) async {}
-
-    /// Default: nil. A fake engine never pays for a capture the backfill would discard.
-    func captureFrame() async -> Data? { nil }
 }

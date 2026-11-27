@@ -216,17 +216,6 @@ struct SMBArtworkScenarios {
         #expect(world.thumbnailer.grabs == 2)
     }
 
-    @Test("a frame captured during playback becomes the tile's thumbnail, with no frame grab")
-    func playbackCaptureIsCached() async throws {
-        let (world, provider, heat, ref) = try await Self.openHeat()
-
-        await provider.backfillThumbnail(item: heat, ref: ref, duration: .seconds(42)) { TestFrames.scene }
-        let artwork = await provider.artwork(for: heat, ref: ref, sidecar: nil)
-
-        #expect(Self.frame(of: artwork) == "scene")
-        #expect(world.thumbnailer.grabs == 0)
-    }
-
     @Test("a poster cached by the sidecar tier is served across a relaunch without a re-download")
     func posterSurvivesRelaunch() async throws {
         let ref = AppWorld.smbRef

@@ -60,7 +60,6 @@ extension AppModel {
         let resolver = services.smbPlaybackResolver
         let session = services.urlSession
         let timeout = services.subtitleFetchTimeout
-        let artworkProvider = services.mediaArtworkProvider
         return PlayerViewModel(
             deviceProfileBuilder: services.deviceProfileBuilder,
             clock: clock,
@@ -79,13 +78,7 @@ extension AppModel {
                 }
                 return await Self.fetchSubtitle(url, over: session, timeout: timeout)
             },
-            smbResumeStore: services.smbResumeStore,
-            // SMB-only: live-session frame grab → `MediaArtworkProvider` cache. Duration is
-            // threaded from the player at call time (~8s in); the WAN I/O skip and the cache-key
-            // recipe both stay inside the provider.
-            backfillThumbnail: { duration, captureFrame in
-                await artworkProvider.backfillThumbnail(item: item, ref: ref, duration: duration, captureFrame: captureFrame)
-            }
+            smbResumeStore: services.smbResumeStore
         )
     }
 
