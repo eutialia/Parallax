@@ -649,6 +649,85 @@ numbered numbered-h264-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 
 numbered numbered-h264-fragmented.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -movflags +frag_keyframe+empty_moov+default_base_moof
 numbered numbered-h264-fragmented-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=ts=DTS-STARTDTS" -movflags +frag_keyframe+empty_moov+default_base_moof
 numbered numbered-h264-fragmented-base-offset-no-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=ts=DTS-STARTDTS" -movflags +frag_keyframe+empty_moov
+# The same again with each sample's duration left to the moov's `trex`, which a fragmenter that
+# writes only what differs from the defaults does: no `trun` or `tfhd` in it gives one.
+python3 - "$OUT/numbered-h264-fragmented-no-show-times.mp4" "$OUT/numbered-h264-fragmented-trex-durations-no-show-times.mp4" <<'PYTHON'
+import struct, sys
+source, target = sys.argv[1], sys.argv[2]
+data = open(source, "rb").read()
+
+def boxes(buf, start, end):
+    at = start
+    while at + 8 <= end:
+        size, kind = struct.unpack(">I4s", buf[at:at + 8])
+        yield kind.decode(), buf[at + 8:at + size]
+        at += size
+
+def box(kind, body):
+    return struct.pack(">I4s", len(body) + 8, kind.encode()) + body
+
+durations = {}
+
+def traf(body):
+    out, removed = b"", 0
+    for kind, content in boxes(body, 0, len(body)):
+        if kind == "tfhd":
+            flags, track = struct.unpack(">II", content[:8])
+            at = 8 + (8 if flags & 1 else 0) + (4 if flags & 2 else 0)
+            if flags & 8:
+                durations[track] = struct.unpack(">I", content[at:at + 4])[0]
+                content = struct.pack(">I", flags & ~8) + content[4:at] + content[at + 4:]
+        elif kind == "trun":
+            flags, count = struct.unpack(">II", content[:8])
+            head = 8 + (4 if flags & 1 else 0) + (4 if flags & 4 else 0)
+            fields = [bit for bit in (0x100, 0x200, 0x400, 0x800) if flags & bit]
+            rows = [content[head + i * 4 * len(fields):head + (i + 1) * 4 * len(fields)] for i in range(count)]
+            if flags & 0x100:
+                rows = [row[4:] for row in rows]
+                flags &= ~0x100
+            content = struct.pack(">II", flags, count) + content[8:head] + b"".join(rows)
+        out += box(kind, content)
+    return out
+
+def moof(body):
+    rebuilt = b"".join(box(kind, traf(content) if kind == "traf" else content) for kind, content in boxes(body, 0, len(body)))
+    shrink = len(body) - len(rebuilt)
+    # Each trun's data offset counts from the moof's start, and the moof is shorter now.
+    out = b""
+    for kind, content in boxes(rebuilt, 0, len(rebuilt)):
+        if kind == "traf":
+            inner = b""
+            for k, c in boxes(content, 0, len(content)):
+                if k == "trun" and struct.unpack(">I", c[:4])[0] & 1:
+                    c = c[:8] + struct.pack(">i", struct.unpack(">i", c[8:12])[0] - shrink) + c[12:]
+                inner += box(k, c)
+            content = inner
+        out += box(kind, content)
+    return out
+
+fragments = b"".join(
+    box(kind, moof(content) if kind == "moof" else content)
+    for kind, content in boxes(data, 0, len(data)) if kind in ("moof", "mdat"))
+
+def moov(body):
+    out = b""
+    for kind, content in boxes(body, 0, len(body)):
+        if kind == "mvex":
+            inner = b""
+            for k, c in boxes(content, 0, len(content)):
+                if k == "trex":
+                    track = struct.unpack(">I", c[4:8])[0]
+                    c = c[:12] + struct.pack(">I", durations[track]) + c[16:]
+                inner += box(k, c)
+            content = inner
+        out += box(kind, content)
+    return out
+
+head = b"".join(box(kind, moov(content) if kind == "moov" else content)
+                for kind, content in boxes(data, 0, len(data)) if kind in ("ftyp", "moov"))
+# The mfra's offsets point at moofs that moved; a recorder's file has none.
+open(target, "wb").write(head + fragments)
+PYTHON
 # Show times a constant two pictures after decode times, in decode order, with audio the bridge
 # would convert.
 numbered numbered-h264-dts-flat-show-times.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -bsf:v "setts=pts=DTS+2*DURATION" -c:a dca -strict experimental -b:a 768k -ac 2

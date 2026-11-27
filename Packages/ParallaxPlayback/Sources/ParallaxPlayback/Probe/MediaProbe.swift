@@ -263,7 +263,12 @@ enum MediaProbe {
                 sawVideoTrak = true
                 profile = info.firstStsdEntry.flatMap { videoProfile(moovData, entry: $0) }
                 let fragment = firstFragment.flatMap { range in
-                    info.trackID.map { TrackFragment(offset: range.offset, size: range.size, trackID: $0) }
+                    info.trackID.map {
+                        TrackFragment(
+                            offset: range.offset, size: range.size, trackID: $0,
+                            defaultDuration: defaultSampleDuration(
+                                moovData, in: moovHeader.contentStart..<moovHeader.boxEnd, trackID: $0))
+                    }
                 }
                 if let firstFourcc = info.fourccs.first {
                     let mappedCodec = mapVideoFourcc(firstFourcc)
@@ -479,6 +484,8 @@ enum MediaProbe {
         let offset: UInt64
         let size: UInt64
         let trackID: UInt32
+        /// The `trex`'s.
+        let defaultDuration: UInt32
     }
 
     /// A track's sample durations and show-time offsets in decode order, and where the
@@ -574,7 +581,7 @@ enum MediaProbe {
 
         guard let fragment, fragment.size <= UInt64(fragmentByteCap),
               let moof = try? await reader.read(offset: fragment.offset, length: Int(fragment.size)),
-              let samples = fragmentSamples(moof, at: fragment.offset, trackID: fragment.trackID),
+              let samples = fragmentSamples(moof, at: fragment.offset, trackID: fragment.trackID, defaultDuration: fragment.defaultDuration),
               !samples.isEmpty
         else { return nil }
         // A run without composition offsets shows each sample at its decode time, as a
