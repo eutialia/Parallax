@@ -12,16 +12,35 @@ extension MediaProbe {
         let compositionOffset: Int32?
     }
 
+    /// The duration the `trex` of track `trackID` gives the track's fragment samples where
+    /// neither the `trun` nor the `tfhd` gives one: a fragmenter that writes only what differs
+    /// from it leaves every sample's duration there. Read from the moov's `mvex` in
+    /// `moov[range]`, the moov's content; 0 when it has none.
+    static func defaultSampleDuration(_ moov: Data, in range: Range<Int>, trackID: UInt32) -> UInt32 {
+        guard let mvex = firstChildBox(moov, type: "mvex", in: range) else { return 0 }
+        for trex in allChildBoxes(moov, type: "trex", in: mvex.contentStart..<mvex.boxEnd) {
+            var reader = FieldReader(data: moov, at: trex.contentStart, end: trex.boxEnd)
+            // Version and flags, then the track and its default sample description.
+            guard reader.uint32() != nil, let track = reader.uint32(), reader.uint32() != nil,
+                  let duration = reader.uint32()
+            else { continue }
+            if track == trackID { return duration }
+        }
+        return 0
+    }
+
     /// The samples of track `trackID` in `moof`, the whole box as read from file offset
     /// `moofOffset`, in decode order. Nil when the fragment holds no `traf` for the track or a
-    /// box in it is cut short. A duration neither the `trun` nor the `tfhd` gives, left to the
-    /// moov's `trex`, reads as 0, and no show times are judged on it.
-    static func fragmentSamples(_ moof: Data, at moofOffset: UInt64, trackID: UInt32) -> [FragmentSample]? {
+    /// box in it is cut short. A duration the fragment does not give is `defaultDuration`, the
+    /// `trex`'s; at 0 no show times are judged on it.
+    static func fragmentSamples(
+        _ moof: Data, at moofOffset: UInt64, trackID: UInt32, defaultDuration: UInt32
+    ) -> [FragmentSample]? {
         guard let header = readBoxHeader(moof, at: 0, limit: moof.count), header.type == "moof" else { return nil }
         for traf in allChildBoxes(moof, type: "traf", in: header.contentStart..<header.boxEnd) {
             let content = traf.contentStart..<traf.boxEnd
             guard let tfhd = firstChildBox(moof, type: "tfhd", in: content),
-                  let track = TrackFragmentHeader(moof, box: tfhd, moofOffset: moofOffset)
+                  let track = TrackFragmentHeader(moof, box: tfhd, moofOffset: moofOffset, defaultDuration: defaultDuration)
             else { return nil }
             guard track.trackID == trackID else { continue }
             var samples: [FragmentSample] = []
@@ -36,14 +55,15 @@ extension MediaProbe {
         return nil
     }
 
-    /// `tfhd`: the track, where its data is counted from, and the defaults for its samples.
+    /// `tfhd`: the track, where its data is counted from, and the defaults for its samples. Its
+    /// duration overrides the `trex`'s.
     private struct TrackFragmentHeader {
         let trackID: UInt32
         let baseOffset: UInt64
         let duration: UInt32
         let size: UInt32
 
-        init?(_ data: Data, box: BoxHeader, moofOffset: UInt64) {
+        init?(_ data: Data, box: BoxHeader, moofOffset: UInt64, defaultDuration: UInt32) {
             var reader = FieldReader(data: data, at: box.contentStart, end: box.boxEnd)
             guard let flags = reader.uint32().map({ $0 & 0xFF_FFFF }), let trackID = reader.uint32() else { return nil }
             // An explicit base, else the moof's own start: ffmpeg's default-base-is-moof, and
@@ -54,7 +74,7 @@ extension MediaProbe {
                 base = UInt64(high) << 32 | UInt64(low)
             }
             if flags & 0x02 != 0, reader.uint32() == nil { return nil }
-            var duration: UInt32 = 0
+            var duration = defaultDuration
             if flags & 0x08 != 0 {
                 guard let value = reader.uint32() else { return nil }
                 duration = value

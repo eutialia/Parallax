@@ -374,6 +374,8 @@ struct MediaDeliveryProbeTests {
             ("numbered-h264-fragmented-no-show-times.mp4", Route.unplayable(.directHazards([.decodeOrderTimestamps]))),
             // Its fragments' data counted from an explicit base offset, not from the moof.
             ("numbered-h264-fragmented-base-offset-no-show-times.mp4", .unplayable(.directHazards([.decodeOrderTimestamps]))),
+            // Its samples' durations given only by the moov's `trex`.
+            ("numbered-h264-fragmented-trex-durations-no-show-times.mp4", .unplayable(.directHazards([.decodeOrderTimestamps]))),
             ("numbered-h264-no-show-times.mp4", .unplayable(.directHazards([.decodeOrderTimestamps]))),
             ("numbered-h264-fragmented.mp4", .served("video/mp4")),
           ])
