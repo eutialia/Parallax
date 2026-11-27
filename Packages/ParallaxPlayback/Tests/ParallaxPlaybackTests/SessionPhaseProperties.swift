@@ -15,6 +15,8 @@ struct SessionPhaseProperties {
     private static let ongoing: [PlaybackState] = [
         .idle, .loading, .ready(duration: .zero, tracks: .empty),
         .playing(position: .zero, duration: .zero, buffered: nil, provenance: .observed),
+        .paused(position: .zero, duration: .zero, buffered: nil, provenance: .observed),
+        .buffering(position: .zero, duration: .zero, buffered: nil, provenance: .observed),
     ]
     private static let terminal: [PlaybackState] = [.ended, .failed(.assetNotPlayable), .failed(.networkStalled)]
 

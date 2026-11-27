@@ -2,8 +2,8 @@ import Foundation
 import ParallaxTestScaling
 import Testing
 
-/// Waits for a MainActor condition instead of sleeping a margin, failing rather than hanging
-/// if it never holds.
+/// Waits for a MainActor condition instead of sleeping a margin, and ends the test if it never
+/// holds: the lines after it may depend on it.
 ///
 /// Every suite that drives a real engine needs this and each had grown its own copy —
 /// `requireEventually` in `AVKitSeekSettleTests`, another in the app's `PlayerViewModelTests` —
@@ -23,7 +23,7 @@ public func requireEventually(
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
     try await pollUntil(condition, timeout: timeout)
-    #expect(condition(), what, sourceLocation: sourceLocation)
+    try #require(condition(), what, sourceLocation: sourceLocation)
 }
 
 /// `requireEventually` without the assertion: waits for `condition` and returns whether it

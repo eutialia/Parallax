@@ -54,7 +54,7 @@ struct AudioReadStartProperties {
         let clusters = Self.clusters(in: data)
         try #require(clusters.count > 4)
         let lastTime = try #require(clusters.last).milliseconds * 1_000_000
-        let seed = UInt64.random(in: .min ... .max)
+        let seed = UInt64(0x7374_6172_7431)
         var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let keyframe = IndexedKeyframe(
@@ -104,7 +104,7 @@ struct AudioReadStartProperties {
         let data = try BridgeFixture.data("flv-h264.flv")
         let tags = Self.tagStarts(in: data)
         try #require(tags.count > 4)
-        let seed = UInt64.random(in: .min ... .max)
+        let seed = UInt64(0x7374_6172_7432)
         var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let keyframe = IndexedKeyframe(time: 0, position: try #require(tags.dropFirst().randomElement(using: &random)))
@@ -120,7 +120,7 @@ struct AudioReadStartProperties {
 
     @Test("an audio read looks back eight seconds of the span before its keyframe in a Matroska file, at the span's rate, and never further than the span, whose entries may share a time; elsewhere as far as the container's own distance")
     func audioLookback() {
-        let seed = UInt64.random(in: .min ... .max)
+        let seed = UInt64(0x7374_6172_7433)
         var generator = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let previous = IndexedKeyframe(
@@ -153,7 +153,7 @@ struct AudioReadStartProperties {
 
     @Test("an audio read looks twice as far back each time it finds no place to start, and starts at the previous keyframe once the look reaches it")
     func audioReadLooksFurtherBack() {
-        let seed = UInt64.random(in: .min ... .max)
+        let seed = UInt64(0x7374_6172_7434)
         var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let position = Int64.random(in: 2...(1 << 30), using: &random)
