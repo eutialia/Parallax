@@ -125,10 +125,12 @@ final class CodecParameters: @unchecked Sendable {
     }
 
     /// The samples one frame holds, which is the same for every frame of a stream. The
-    /// container records it for AAC. For the rest libavcodec's parser reads it from the header
-    /// of `frame`, one whole frame of the stream. Zero when neither knows.
+    /// container records it for AAC, and ALAC's configuration gives it. For the rest
+    /// libavcodec's parser reads it from the header of `frame`, one whole frame of the stream.
+    /// Zero when none of them knows.
     func samplesPerFrame(readingHeaderOf frame: Data) -> Int {
         if pointer.pointee.frame_size > 0 { return Int(pointer.pointee.frame_size) }
+        if pointer.pointee.codec_id == AV_CODEC_ID_ALAC { return alacFrameLength }
         guard let parser = av_parser_init(Int32(pointer.pointee.codec_id.rawValue)) else { return 0 }
         defer { av_parser_close(parser) }
         var context = avcodec_alloc_context3(nil)
@@ -259,9 +261,18 @@ final class CodecParameters: @unchecked Sendable {
 
     /// The codec's configuration as the container gives it. For H.264 and HEVC that is an MP4
     /// record, which starts with a version byte of one, or the stream's own parameter sets,
-    /// each behind a start code, as a transport stream carries them.
-    private var configuration: [UInt8] {
+    /// each behind a start code, as a transport stream carries them. For Opus, its `OpusHead`.
+    var configuration: [UInt8] {
         Array(UnsafeBufferPointer(start: pointer.pointee.extradata, count: Int(pointer.pointee.extradata_size)))
+    }
+
+    /// The frame length an `ALACSpecificConfig` opens with (Apple's ALAC specification), behind
+    /// the size and `alac` tag of the box libavformat keeps it in.
+    private var alacFrameLength: Int {
+        let configuration = configuration
+        let start = configuration.count >= 36 && configuration[4..<8].elementsEqual("alac".utf8) ? 12 : 0
+        guard configuration.count >= start + 24 else { return 0 }
+        return configuration[start..<start + 4].reduce(0) { $0 << 8 | Int($1) }
     }
 
     /// An `av1C` record: a marker and version byte, then the profile and level, then the tier
