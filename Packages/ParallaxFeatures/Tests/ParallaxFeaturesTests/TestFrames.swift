@@ -1,9 +1,10 @@
 import CoreGraphics
 import Foundation
-import ParallaxCore
+import ImageIO
+import UniformTypeIdentifiers
 
 /// An encoded still shaped like what a thumbnailer hands back, built in code so the tests carry no
-/// binary fixtures. 320×180, encoded by `ImageTranscode.encodeHEIC` as the thumbnailers do.
+/// binary fixtures. 320×180, as JPEG: what a thumbnailer hands back on a host with no HEVC encoder.
 enum TestFrames {
     /// A lit frame: colour bars under a diagonal luma ramp, with hard edges between the bars.
     static let scene = frame { x, y in
@@ -32,6 +33,10 @@ enum TestFrames {
             data: &bytes, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        return try! ImageTranscode.encodeHEIC(context.makeImage()!)
+        let encoded = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(encoded, UTType.jpeg.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        precondition(CGImageDestinationFinalize(destination))
+        return encoded as Data
     }
 }

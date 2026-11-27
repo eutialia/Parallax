@@ -425,7 +425,7 @@ public actor MediaArtworkProvider {
             guard let image = ImageTranscode.downscaledImage(from: data, maxPixelSize: Self.sidecarMaxPixel) else {
                 throw SidecarFailure.undecodable
             }
-            let heic = try ImageTranscode.encodeHEIC(image)
+            let heic = try await ImageTranscode.encodeHEIC(image)
             // Clean lifecycle → the pooled connection checks back in reusable.
             await reader.disconnect()
             let elapsed = elapsed() - start
