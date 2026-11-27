@@ -30,16 +30,24 @@ public enum ImageTranscode {
     ///   - quality: lossy-compression quality, 0 (smallest) … 1 (best). Default 0.75 — the knee
     ///     where a tile-scale still stops shrinking meaningfully for the artifacts it trades.
     /// - Returns: HEIC bytes, or JPEG bytes if HEIC is unavailable on this host.
-    public static func encodeHEIC(_ image: CGImage, quality: Double = 0.75) throws -> Data {
-        if let heic = encode(image, as: UTType.heic, quality: quality) {
-            return heic
+    public static func encodeHEIC(_ image: CGImage, quality: Double = 0.75) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            encoding.async {
+                continuation.resume(with: Result {
+                    if let heic = encode(image, as: UTType.heic, quality: quality) { return heic }
+                    // No HEVC encoder on this host — fall back to JPEG rather than failing the fetch.
+                    if let jpeg = encode(image, as: UTType.jpeg, quality: quality) { return jpeg }
+                    throw ImageTranscodeError.encodingFailed
+                })
+            }
         }
-        // No HEVC encoder on this host — fall back to JPEG rather than failing the fetch.
-        if let jpeg = encode(image, as: UTType.jpeg, quality: quality) {
-            return jpeg
-        }
-        throw ImageTranscodeError.encodingFailed
     }
+
+    /// Off Swift's task threads: the software HEVC encoder a host without encoder hardware has
+    /// waits on work those threads run, so encodes that hold all of them never finish. Measured
+    /// on the iOS 27 Simulator: sixteen at once from a task group hung, on GCD threads they took
+    /// 50 ms.
+    private static let encoding = DispatchQueue(label: "parallax.image-encode", attributes: .concurrent)
 
     /// Encodes `image` to `type` via ImageIO, or nil if the destination can't be created
     /// (unavailable encoder on this host) or fails to finalize. `kCGImageDestinationLossyCompressionQuality`

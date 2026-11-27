@@ -132,6 +132,17 @@ struct MediaThumbnailerTests {
         #expect(picture.size.height == 90 && abs(picture.size.width - 213) <= 1, "\(picture.size)")
     }
 
+    /// A screen of tiles asks for many at once, and a device has few cores to run them on.
+    @Test("thumbnails asked for at once, twice as many as the device has cores, all arrive")
+    func thumbnailsAskedForAtOnceAllArrive() async throws {
+        let count = 2 * ProcessInfo.processInfo.activeProcessorCount
+        let sizes = try await withThrowingTaskGroup(of: Int.self) { group in
+            for _ in 0..<count { group.addTask { try await Self.thumbnail("anamorphic.mkv").data.count } }
+            return try await group.reduce(into: [Int]()) { $0.append($1) }
+        }
+        #expect(sizes.count == count && sizes.allSatisfy { $0 > 0 })
+    }
+
     /// Each stored 160 by 90, with a display matrix that turns it counterclockwise by the
     /// quarters given.
     @Test("a video recorded in portrait or upside down gets an upright thumbnail", arguments: [

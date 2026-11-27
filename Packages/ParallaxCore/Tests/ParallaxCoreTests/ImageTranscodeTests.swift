@@ -71,9 +71,9 @@ struct ImageTranscodeDecodeTests {
 )
 struct ImageTranscodeEncodeTests {
     @Test("encoded bytes decode back at the source dimensions")
-    func encodeProducesDecodableImage() throws {
+    func encodeProducesDecodableImage() async throws {
         let image = try #require(makeTestImage(width: 120, height: 80))
-        let data = try ImageTranscode.encodeHEIC(image)
+        let data = try await ImageTranscode.encodeHEIC(image)
 
         #expect(data.isEmpty == false)
         // Codec-agnostic on purpose: HEIC on a host with an HEVC encoder, JPEG on one without.
@@ -85,9 +85,9 @@ struct ImageTranscodeEncodeTests {
     /// The output must be a real photographic codec (HEIC where available, JPEG otherwise) — never
     /// PNG, whose lossless entropy coder bloats a video frame 5–10×.
     @Test("output is a HEIC or JPEG blob, never PNG")
-    func encodedOutputIsPhotographicCodec() throws {
+    func encodedOutputIsPhotographicCodec() async throws {
         let image = try #require(makeTestImage(width: 64, height: 64))
-        let data = try ImageTranscode.encodeHEIC(image)
+        let data = try await ImageTranscode.encodeHEIC(image)
 
         let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
         let type = try #require(CGImageSourceGetType(source) as String?)
@@ -98,12 +98,12 @@ struct ImageTranscodeEncodeTests {
     /// Quality is honoured, not ignored: the whole point of the knee at 0.75 is that lower
     /// settings actually buy smaller tiles.
     @Test("a lower quality produces fewer bytes")
-    func qualityAffectsSize() throws {
+    func qualityAffectsSize() async throws {
         // A gradient, not a flat fill — a solid colour compresses to the same handful of bytes
         // at every quality, which would make this assertion vacuous.
         let image = try #require(makeGradientImage(width: 320, height: 320))
-        let low = try ImageTranscode.encodeHEIC(image, quality: 0.1)
-        let high = try ImageTranscode.encodeHEIC(image, quality: 0.95)
+        let low = try await ImageTranscode.encodeHEIC(image, quality: 0.1)
+        let high = try await ImageTranscode.encodeHEIC(image, quality: 0.95)
         #expect(low.count < high.count)
     }
 

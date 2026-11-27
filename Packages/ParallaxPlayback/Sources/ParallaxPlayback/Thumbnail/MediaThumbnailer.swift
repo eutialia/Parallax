@@ -29,11 +29,11 @@ public struct MediaThumbnailer: Thumbnailing {
         let cover = demuxer.isMatroska ? try await MatroskaCoverArt.extract(reader) : await demuxer.attachedPicture()
         try Task.checkCancellation()
         if let poster = cover.flatMap(Self.poster) {
-            return ThumbnailFrame(data: try ImageTranscode.encodeHEIC(poster), duration: duration)
+            return ThumbnailFrame(data: try await ImageTranscode.encodeHEIC(poster), duration: duration)
         }
         let picture = try await demuxer.picture(
             near: ThumbnailPosition.time(start: demuxer.start, duration: demuxer.duration))
-        return ThumbnailFrame(data: try ImageTranscode.encodeHEIC(picture), duration: duration)
+        return ThumbnailFrame(data: try await ImageTranscode.encodeHEIC(picture), duration: duration)
     }
 
     private static func poster(_ data: Data) -> CGImage? {
