@@ -62,6 +62,9 @@ struct MediaDeliveryPlaybackTests {
     @Test("an MKV, a TS and an MPG whose copied audio starts 0.3 s after the first picture each play from their first frame, every frame at its own time, and from a seek",
           arguments: [
             "numbered-h264-late-aac", "numbered-h264-late-eac3", "numbered-h264-late-aac.ts", "numbered-h264-late-ac3.mpg",
+            "numbered-h264-late-he-aac", "numbered-h264-late-he-aac-v2", "numbered-h264-late-he-aac.ts",
+            "numbered-h264-late-flac", "numbered-h264-late-flac-24-bit", "numbered-h264-late-alac", "numbered-h264-late-alac-no-b",
+            "numbered-h264-late-opus", "numbered-h264-late-opus-surround",
           ])
     func lateAudioPlaysFromTheFirstFrame(name: String) async throws {
         try await Self.expectFirstFrameAndSeek(from: PlayedFile(name))

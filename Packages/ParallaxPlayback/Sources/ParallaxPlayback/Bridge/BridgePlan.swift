@@ -265,7 +265,7 @@ struct BridgePlan: Sendable {
         }
 
         let audioDecisions = audioStreams.map { AudioDecision(for: $0, copied: isCopied($0), openingWith: packets(of: $0)) }
-        let audioStart = audioDecisions.compactMap(\.start).min()
+        let audioStart = audioDecisions.compactMap { $0.start(from: cuts.boundaries[0]) }.min()
         guard audioStreams.isEmpty || audioStart != nil else { throw noDeliverableAudio }
 
         let videoDelivery: Delivery
@@ -281,8 +281,8 @@ struct BridgePlan: Sendable {
         case .refuse(let refusal):
             throw refusal
         }
-        // Enough that the earliest decode time and the earliest audio sample are both at or
-        // above zero.
+        // Enough that the earliest decode time and the earliest audio sample, a copied track's
+        // silence counted, are all at or above zero.
         let leadTime = (videoDelivery.decodeLead * 1_000_000_000 + Self.videoTimescale - 1) / Self.videoTimescale
         let origin = max(0, leadTime - min(videoStart, audioStart ?? videoStart))
 
@@ -421,16 +421,26 @@ enum AudioDecision {
             samplesPerFrame = frame
         }
 
-        /// Silence from the file's first picture, at `firstPicture`, to the track's first frame,
-        /// on the track's `clock`. A frame the muxer joins with others has no sample of its own
-        /// to be placed in.
+        /// Ticks on the track's clock: the silence that goes in front of the track for it to
+        /// start no later than the file's first picture, at `firstPicture`. Zero for a codec
+        /// whose frames have no fixed length.
+        func silenceLength(from firstPicture: Int64) -> Int64 {
+            guard samplesPerFrame > 0 else { return 0 }
+            return LeadingSilence.length(
+                from: firstPicture, to: start, sampleRate: Int64(stream.parameters.sampleRate),
+                frameLength: Int64(samplesPerFrame))
+        }
+
+        /// Nanoseconds in the file's own time: where the track starts, its silence in front.
+        func start(from firstPicture: Int64) -> Int64 {
+            let rate = Int64(stream.parameters.sampleRate)
+            return start - (silenceLength(from: firstPicture) * 1_000_000_000 + rate - 1) / rate
+        }
+
+        /// The silence of `silenceLength(from:)` up to the track's first frame, on its `clock`.
         func leadingSilence(on clock: MediaClock, from firstPicture: Int64) -> LeadingSilence? {
-            guard samplesPerFrame > 0, stream.parameters.framesPerSample(of: samplesPerFrame) == 1 else { return nil }
-            let firstFrame = clock.ticks(at: start)
-            // The track's grid would move the picture to the start of a frame, which may be after it.
-            let lead = (Int128(start - firstPicture) * Int128(clock.timescale) + 999_999_999) / 1_000_000_000
-            return LeadingSilence(
-                of: stream.parameters, from: firstFrame - Int64(lead), to: firstFrame,
+            LeadingSilence(
+                of: stream.parameters, lasting: silenceLength(from: firstPicture), until: clock.ticks(at: start),
                 frameLength: Int64(samplesPerFrame))
         }
 
@@ -468,11 +478,11 @@ enum AudioDecision {
         self = delivered ?? .omit(name: stream.parameters.displayName)
     }
 
-    /// Nanoseconds: where the track's first sample is in the file's own time. Nil for a
-    /// stream left out.
-    var start: Int64? {
+    /// Nanoseconds in the file's own time: where the track starts, from the file's first
+    /// picture at `firstPicture`. Nil for a stream left out.
+    func start(from firstPicture: Int64) -> Int64? {
         switch self {
-        case .copy(let audio): audio.start
+        case .copy(let audio): audio.start(from: firstPicture)
         case .convert(let audio): audio.start
         case .omit: nil
         }

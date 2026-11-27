@@ -669,6 +669,20 @@ late_audio numbered-h264-late-aac.mkv -c:a aac -b:a 24k -ac 1
 late_audio numbered-h264-late-eac3.mkv -c:a eac3 -b:a 96k -ac 2
 late_audio numbered-h264-late-aac.ts -c:a aac -b:a 24k -ac 1 -muxrate 0 -f mpegts
 late_audio numbered-h264-late-ac3.mpg -b:v 600k -minrate 600k -maxrate 600k -bufsize 150k -x264-params nal-hrd=cbr -c:a ac3 -b:a 64k -ac 2 -f vob
+late_audio numbered-h264-late-flac.mkv -c:a flac -ac 2
+late_audio numbered-h264-late-flac-24-bit.mkv -c:a flac -sample_fmt s32 -ac 2
+late_audio numbered-h264-late-alac.mkv -c:a alac -ac 2
+# No B-frames, so no decode lead moves the file's start: 4096-sample ALAC frames back from the
+# first sound reach before zero.
+late_audio numbered-h264-late-alac-no-b.mkv -bf 0 -c:a alac -ac 2
+late_audio numbered-h264-late-opus.mkv -c:a libopus -b:a 64k -ac 2
+# Opus in 5.1 is four Opus streams in each packet, two of them stereo.
+late_audio numbered-h264-late-opus-surround.mkv -c:a libopus -b:a 128k -ac 6 -mapping_family 1
+# HE-AAC, whose frames are AAC-LC at half the rate with the higher band coded on top, and HE-AAC
+# v2, which codes stereo as mono with how to spread it. AudioToolbox's encoder writes both.
+late_audio numbered-h264-late-he-aac.mkv -c:a aac_at -profile:a 4 -b:a 32k -ac 2
+late_audio numbered-h264-late-he-aac-v2.mkv -c:a aac_at -profile:a 28 -b:a 24k -ac 2
+late_audio numbered-h264-late-he-aac.ts -c:a aac_at -profile:a 4 -b:a 32k -ac 2 -muxrate 0 -f mpegts
 # The numbered picture over silence, with a 10 ms burst of 1 kHz centred on pictures 60 and
 # 204, in audio the bridge converts: where the bursts land against the pictures shows whether
 # converted audio kept its place.

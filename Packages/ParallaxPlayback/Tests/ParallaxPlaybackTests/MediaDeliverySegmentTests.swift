@@ -211,14 +211,23 @@ struct MediaDeliverySegmentTests {
         // frame is at 294.7 ms, and ten frames of 32 ms start 25 ms before the picture.
         ("numbered-h264-late-aac", "a0", 440, 6, 12), ("numbered-h264-late-aac.ts", "a0", 440, 6, 12),
         ("numbered-h264-late-eac3", "a0", 440, 6, 12.025), ("numbered-h264-late-ac3.mpg", "a0", 440, 6, 12.025),
+        // HE-AAC, HE-AAC v2 and HE-AAC behind ADTS headers, FLAC, ALAC and Opus, led in the same
+        // way. FLAC's frames of 1,024, of 16 bits and of 24, start 20 ms before the picture. ALAC's of 4,096 start 41 ms
+        // before it, and its last frame, of 448, decodes at full length: 76 ms past the end.
+        ("numbered-h264-late-he-aac", "a0", 440, 6, 12), ("numbered-h264-late-he-aac-v2", "a0", 440, 6, 12),
+        ("numbered-h264-late-he-aac.ts", "a0", 440, 6, 12), ("numbered-h264-late-flac", "a0", 440, 6, 12.02),
+        ("numbered-h264-late-flac-24-bit", "a0", 440, 6, 12.02),
+        ("numbered-h264-late-alac", "a0", 440, 6, 12.117), ("numbered-h264-late-opus", "a0", 440, 6, 12),
+        ("numbered-h264-late-opus-surround", "a0", 440, 6, 12),
     ])
     func audioRenditionDecodesToTheSourceTone(
         name: String, rendition: String, hertz: Double, segmentCount: Int, seconds: Double
     ) async throws {
         let file = try await DeliveredFile.start(name)
-        let initSegment: Data
+        let initSegment: Data, master: String
         var segmentBytes: [Data] = []
         do {
+            master = try await file.master
             #expect(try await file.segmentSeconds(of: "\(rendition).m3u8").count == segmentCount)
             initSegment = try await file.bytes("\(rendition)-init.mp4")
             for index in 0..<segmentCount { segmentBytes.append(try await file.bytes("\(rendition)-\(index).m4s")) }
@@ -232,9 +241,11 @@ struct MediaDeliverySegmentTests {
 
         let decodedSeconds = Double(segments.joined().count) / 48_000
         // Decoding a segment on its own drops the decoder's start-up samples from each: up to
-        // 40 ms for AAC. The last frame of a FLAC or Opus track holds fewer samples than the
-        // rest and decodes at its full length: up to 20 ms over.
-        #expect((-0.02...0.04 * Double(segmentCount)).contains(seconds - decodedSeconds), "\(decodedSeconds) s")
+        // 40 ms for AAC, and 85 ms for HE-AAC, whose band above is decoded after the band below.
+        // The last frame of a FLAC or Opus track holds fewer samples than the rest and decodes
+        // at its full length: up to 20 ms over.
+        let startUp = master.contains("mp4a.40.5") || master.contains("mp4a.40.29") ? 0.085 : 0.04
+        #expect((-0.02...startUp * Double(segmentCount)).contains(seconds - decodedSeconds), "\(decodedSeconds) s")
         // A tenth of a second holds whole cycles of each tone (44, 66 or 88), so the part of a window that
         // is the tone is its projection onto one sine and one cosine. A segment's first window
         // is left out: it holds the decoder settling.
