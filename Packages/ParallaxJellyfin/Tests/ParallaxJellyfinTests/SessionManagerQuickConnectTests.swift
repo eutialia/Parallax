@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-import ParallaxTestScaling
 import JellyfinAPI
 import ParallaxCore
 import ParallaxCoreTestSupport
@@ -159,7 +158,7 @@ struct SessionManagerQuickConnectTests {
     /// The auth client swallows its own cancellation and ends the event stream cleanly, so a run the
     /// user backed out of leaves the loop like a finished one, possibly holding an approved secret.
     /// It must stop there: exchanging the secret signs in to a server the user just walked away from.
-    @Test("A cancelled run never exchanges an approved secret", .scaledTimeLimit())
+    @Test("A cancelled run never exchanges an approved secret", .timeLimit(.minutes(1)))
     func cancelledRunNeverExchangesSecret() async throws {
         let (released, release) = AsyncStream.makeStream(of: [String].self)
         let storeHarness = JellyfinFixtures.serverStore("SessionManagerQuickConnectTests")

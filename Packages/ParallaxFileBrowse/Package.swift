@@ -46,7 +46,6 @@ let package = Package(
                 "ParallaxFileBrowse",
                 "ParallaxFileBrowseTestSupport",
                 .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
-                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),

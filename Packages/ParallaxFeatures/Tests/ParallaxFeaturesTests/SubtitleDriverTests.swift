@@ -2,11 +2,10 @@ import CoreGraphics
 import Testing
 import ParallaxCoreTestSupport
 import ParallaxSubtitles
-import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 @MainActor
-@Suite("Subtitle overlay driver", .scaledTimeLimit())
+@Suite("Subtitle overlay driver", .timeLimit(.minutes(1)))
 struct SubtitleDriverTests {
     private actor FakeSource: SubtitleFrameSource {
         private(set) var canvases: [CGSize] = []

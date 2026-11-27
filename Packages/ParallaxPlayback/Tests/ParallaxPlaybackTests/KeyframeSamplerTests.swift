@@ -1,11 +1,10 @@
 import Testing
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 @testable import ParallaxPlayback
 
 /// The sampler's rules, held over generated files. A case's inputs come from its seed, which a
 /// failure prints.
-@Suite("KeyframeSampler — properties", .scaledTimeLimit())
+@Suite("KeyframeSampler — properties", .timeLimit(.minutes(1)))
 struct KeyframeSamplerTests {
 
     /// A file known only by where its video keyframes are. A keyframe's time is its position.

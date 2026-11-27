@@ -7,10 +7,9 @@ import ParallaxFileBrowseTestSupport
 import ParallaxJellyfin
 import ParallaxPlaybackTestSupport
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("SMB artwork", .scaledTimeLimit())
+@Suite("SMB artwork", .timeLimit(.minutes(1)))
 struct SMBArtworkScenarios {
     @Test("thumbnail generation waits while the player is on screen and finishes once it closes")
     func generationPausesUnderThePlayer() async throws {

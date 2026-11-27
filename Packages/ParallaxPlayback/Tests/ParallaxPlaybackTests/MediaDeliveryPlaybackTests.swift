@@ -1,12 +1,11 @@
 import AVFoundation
 import Foundation
 import Testing
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// What AVPlayer shows of a file `MediaDelivery` bridges, read from the number each numbered
 /// fixture draws into its pictures.
-@Suite("MediaDelivery — what AVPlayer shows", .serialized, .scaledTimeLimit())
+@Suite("MediaDelivery — what AVPlayer shows", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct MediaDeliveryPlaybackTests {
 

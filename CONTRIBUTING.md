@@ -19,7 +19,7 @@ You keep the copyright to your work. Contributions are voluntary and unpaid. Bli
 - App logic lives in the local Swift packages under `Packages/`; the app target is UI and wiring.
 - `#if os(...)` is allowed only in the app target, never in `Packages/`. CI enforces this.
 - Packages must not import SwiftUI or Combine.
-- Run the package tests before submitting (the CI workflow shows the schemes and destinations).
+- Before submitting, run `scripts/verify.sh` and build the app for iOS and tvOS; CI runs only the drift checks.
 - New SwiftPM dependencies must be credited in the in-app About screen
   (`Parallax/Features/Settings/About/Acknowledgements.swift`) and `CREDITS.md`;
   `scripts/check-acknowledgements.sh` enforces this in CI.

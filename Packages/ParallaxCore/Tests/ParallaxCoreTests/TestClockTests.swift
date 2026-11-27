@@ -1,9 +1,8 @@
 import ParallaxCoreTestSupport
 import Synchronization
 import Testing
-import ParallaxTestScaling
 
-@Suite("TestClock", .scaledTimeLimit())
+@Suite("TestClock", .timeLimit(.minutes(1)))
 struct TestClockTests {
     @Test("waiting for a sleep by its duration holds until that sleep parks, whatever else is parked")
     func waitsForTheSleepItNames() async throws {

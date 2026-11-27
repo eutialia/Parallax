@@ -1,11 +1,10 @@
 import Testing
-import ParallaxTestScaling
 import Foundation
 import ParallaxCore
 import ParallaxJellyfin
 @testable import ParallaxFeatures
 
-@Suite("Library source identity", .scaledTimeLimit())
+@Suite("Library source identity", .timeLimit(.minutes(1)))
 struct LibraryRefTests {
     @Test("Same collection id under different sources is not equal")
     func sourceDisambiguates() {

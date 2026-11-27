@@ -2,14 +2,13 @@ import AVFoundation
 import Foundation
 import Testing
 import ParallaxCore
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// Video a delivery converts to HEVC on a device with the fewest decoders, fetched over HTTP and
 /// read back by Apple's decoder. The fixtures' pictures carry their own frame numbers.
 ///
 /// One case at a time: `copyNextSampleBuffer` blocks its thread.
-@Suite("MediaDelivery — converted video", .serialized, .scaledTimeLimit())
+@Suite("MediaDelivery — converted video", .serialized, .timeLimit(.minutes(1)))
 struct MediaDeliveryConvertedVideoTests {
     /// One picture of a segment.
     struct Picture: Equatable {

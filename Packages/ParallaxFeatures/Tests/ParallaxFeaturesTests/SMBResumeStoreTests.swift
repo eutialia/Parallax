@@ -1,11 +1,10 @@
 import Foundation
 import CoreMedia
 import Testing
-import ParallaxTestScaling
 import ParallaxCore
 @testable import ParallaxFeatures
 
-@Suite("SMBResumeStore", .scaledTimeLimit())
+@Suite("SMBResumeStore", .timeLimit(.minutes(1)))
 struct SMBResumeStoreTests {
     /// Two hours, the reference runtime every position below is expressed against.
     private static let runtime = CMTime(seconds: 7200, preferredTimescale: 600)

@@ -2,12 +2,11 @@ import Foundation
 import Synchronization
 import Testing
 import ParallaxCore
-import ParallaxTestScaling
 @testable import ParallaxPlayback
 
 /// What a demuxer does that a delivery of the fixtures cannot show: no decoder stops giving
 /// pictures.
-@Suite("MediaDemuxer", .scaledTimeLimit())
+@Suite("MediaDemuxer", .timeLimit(.minutes(1)))
 struct MediaDemuxerTests {
 
     /// Takes every packet and never has enough: a decoder that gives no more pictures.

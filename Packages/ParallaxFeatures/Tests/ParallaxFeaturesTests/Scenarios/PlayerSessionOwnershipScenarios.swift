@@ -7,10 +7,9 @@ import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import ParallaxPlayback
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("Player session ownership", .scaledTimeLimit())
+@Suite("Player session ownership", .timeLimit(.minutes(1)))
 struct PlayerSessionOwnershipScenarios {
     enum Route: String, CaseIterable, CustomTestStringConvertible {
         case smbOverBridge, jellyfin

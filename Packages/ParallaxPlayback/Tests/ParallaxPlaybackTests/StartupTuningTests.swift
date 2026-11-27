@@ -1,11 +1,10 @@
 import AVFoundation
 import Testing
-import ParallaxTestScaling
 import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
 /// What a tuning profile does to the item the engine loads, before it plays.
-@Suite("StartupTuning — the loaded item", .serialized, .scaledTimeLimit())
+@Suite("StartupTuning — the loaded item", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct StartupTuningLoadTests {
     @Test(".systemDefault leaves the loaded item's forward buffer at AVFoundation's own")
@@ -30,7 +29,7 @@ struct StartupTuningLoadTests {
 /// The forward-buffer target is a startup knob: it buys the first frame sooner. Left on for the
 /// session, AVPlayer keeps only that much ahead of the playhead, and the progress bar's buffered
 /// layer shrinks back onto the dot between segments.
-@Suite("StartupTuning — after startup", .serialized, .scaledTimeLimit())
+@Suite("StartupTuning — after startup", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct StartupTuningReleaseTests {
     @Test("once playback starts, the buffer runs past the startup target")
@@ -45,7 +44,7 @@ struct StartupTuningReleaseTests {
 
         // 13 s segments: under a 3 s target the buffer holds at a segment's end until the
         // playhead nears it, so a 40 s buffer this early means the target let go.
-        let ahead = await engine.firstBeat(within: CITimeScale.seconds(6)) { beat in
+        let ahead = await engine.firstBeat(within: .seconds(6)) { beat in
             guard case .playing(let position, _, let buffered?, _) = beat.state else { return false }
             return CMTimeGetSeconds(buffered) >= 39 && CMTimeGetSeconds(position) < 13
         }

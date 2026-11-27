@@ -4,7 +4,6 @@ import AetherLibavutil
 import CryptoKit
 import Foundation
 import ParallaxCore
-import ParallaxTestScaling
 import Synchronization
 import Testing
 import ParallaxPlayback
@@ -23,7 +22,7 @@ struct LibrarySweepTests {
 
     @Test(
         "every sampled MKV either has segments that match its source or a named refusal",
-        .enabled(if: root != nil), .scaledTimeLimit(minutes: 60))
+        .enabled(if: root != nil), .timeLimit(.minutes(60)))
     func librarySweep() async throws {
         // libavformat logs to stderr, and a log line may one day carry the path it opened.
         av_log_set_level(AV_LOG_QUIET)

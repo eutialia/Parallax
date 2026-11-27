@@ -17,5 +17,3 @@ jobs:
         run: ./scripts/check-no-dismiss-in-nav-owner.sh
       - name: Run acknowledgements drift check
         run: ./scripts/check-acknowledgements.sh
-      - name: Run scaled time limit check
-        run: ./scripts/check-scaled-time-limits.sh

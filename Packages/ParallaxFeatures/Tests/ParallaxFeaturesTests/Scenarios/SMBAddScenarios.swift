@@ -2,10 +2,9 @@ import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxJellyfin
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("SMB add and remove", .scaledTimeLimit())
+@Suite("SMB add and remove", .timeLimit(.minutes(1)))
 struct SMBAddScenarios {
     private static let shares = [
         SMBShare(name: "Media", comment: "Movies & TV"),

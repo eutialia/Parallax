@@ -55,7 +55,6 @@ let package = Package(
                 "ParallaxCore",
                 .product(name: "Get", package: "Get"),
                 .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
-                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             resources: [
                 .copy("Fixtures"),

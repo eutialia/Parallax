@@ -2,10 +2,9 @@ import ParallaxCore
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("Library", .scaledTimeLimit())
+@Suite("Library", .timeLimit(.minutes(1)))
 struct LibraryScenarios {
     @Test("the library list shows each server's libraries under its name, and a hidden library drops out")
     func listShowsEachServersLibraries() async throws {

@@ -1,4 +1,3 @@
-import ParallaxTestScaling
 import Synchronization
 
 /// A `Clock` that only moves when the test calls `advance(by:)`.
@@ -162,7 +161,7 @@ public final class TestClock: Clock, Sendable {
                 return true
             }
             group.addTask {
-                try await Ceiling.expire(CITimeScale.seconds(5))
+                try await Task.sleep(for: .seconds(5))
                 return false
             }
             defer { group.cancelAll() }

@@ -4,11 +4,10 @@ import Synchronization
 import Testing
 import ParallaxCore
 import ParallaxCoreTestSupport
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// A delivery of a file too large to read whole, and of reads that stick or fail once it plays.
-@Suite("MediaDelivery — a large file, and reads that stick or fail", .serialized, .scaledTimeLimit())
+@Suite("MediaDelivery — a large file, and reads that stick or fail", .serialized, .timeLimit(.minutes(1)))
 struct MediaDeliveryLargeFileTests {
 
     /// Sampled until no stretch of 8 MB is left unread, and on a share slow enough that the time
@@ -122,7 +121,7 @@ struct MediaDeliveryLargeFileTests {
     @Test("the first fragment of a segment is handed over before the segment's last packet is read")
     func firstFragmentComesBeforeTheSegmentIsRead() async throws {
         let (file, reader, client) = try await Self.segmentRequestHeldShortOfItsEnd()
-        let received = await client.receive(timeout: CITimeScale.seconds(10), until: Self.hasAFragment)
+        let received = await client.receive(timeout: .seconds(10), until: Self.hasAFragment)
         reader.release()
         await file.stop()
 
@@ -132,10 +131,10 @@ struct MediaDeliveryLargeFileTests {
     @Test("a segment read cancelled after its first fragment fetches at most one more read, and returns")
     func cancelledSegmentStopsItsRead() async throws {
         let (file, reader, client) = try await Self.segmentRequestHeldShortOfItsEnd()
-        try #require(Self.hasAFragment(await client.receive(timeout: CITimeScale.seconds(10), until: Self.hasAFragment).data))
+        try #require(Self.hasAFragment(await client.receive(timeout: .seconds(10), until: Self.hasAFragment).data))
         await reader.awaitWedgedRead()
         client.closeSending()
-        try #require(await client.receive(timeout: CITimeScale.seconds(5)).closed)
+        try #require(await client.receive(timeout: .seconds(5)).closed)
         let readsWhenLetGo = reader.readsStarted
         reader.release()
         await file.stop()

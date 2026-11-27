@@ -2,10 +2,9 @@ import ParallaxFeatures
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import Testing
-import ParallaxTestScaling
 
 @MainActor
-@Suite("Launch", .scaledTimeLimit())
+@Suite("Launch", .timeLimit(.minutes(1)))
 struct LaunchScenarios {
     @Test("a cold launch with no saved server lands on login and cuts the launch story")
     func coldLaunchWithoutServerLandsOnLogin() async throws {

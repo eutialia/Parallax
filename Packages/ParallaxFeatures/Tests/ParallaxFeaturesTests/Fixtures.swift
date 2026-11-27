@@ -3,7 +3,7 @@ import ParallaxCore
 import ParallaxCoreTestSupport
 @testable import ParallaxFeatures
 import ParallaxJellyfin
-import ParallaxTestScaling
+import ParallaxTestPolling
 import Testing
 
 // Package-side copies of the app test target's `SharedFixtures` builders these suites need. The
@@ -247,13 +247,13 @@ final class StubUserDataWriter: UserDataWriting, @unchecked Sendable {
 
 /// Waits for `condition` and records an issue at the caller's line if it never holds, so a later
 /// `#expect` can't fail for the wrong reason. Polls under `Ceiling`: the limit is a hang detector,
-/// never part of the claim, so it rides `CITimeScale` and a starved runner can't trip it. Runs on
+/// never part of the claim. Runs on
 /// the caller's actor, so a main-actor condition stays isolated and actor state can be awaited.
 func waitUntil(
     _ comment: Comment = "the awaited condition never held",
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: () async -> Bool
 ) async {
-    let held = (try? await Ceiling.poll(CITimeScale.seconds(10)) { await condition() }) ?? false
+    let held = (try? await Ceiling.poll(.seconds(10)) { await condition() }) ?? false
     if !held { Issue.record(comment, sourceLocation: sourceLocation) }
 }

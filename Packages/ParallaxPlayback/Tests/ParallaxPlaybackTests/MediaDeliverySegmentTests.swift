@@ -3,12 +3,11 @@ import Foundation
 import Synchronization
 import Testing
 import ParallaxCore
-import ParallaxTestScaling
 import ParallaxPlayback
 
 /// The segments a bridged delivery serves, fetched over HTTP and read back by libavformat's own
 /// demuxer.
-@Suite("MediaDelivery — the segments it serves", .scaledTimeLimit())
+@Suite("MediaDelivery — the segments it serves", .timeLimit(.minutes(1)))
 struct MediaDeliverySegmentTests {
 
     /// The samples of `rendition`, fetched from a delivery of `name` in `order`.

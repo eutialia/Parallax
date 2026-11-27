@@ -1,12 +1,11 @@
 import Foundation
 import Testing
-import ParallaxTestScaling
 @testable import ParallaxPlayback
 
 /// No case at `MediaDelivery` reaches these. A put waits on a full channel only behind a client
 /// that stops reading a segment larger than the socket buffers, which no fixture has, and a
 /// failure lands before the server's next take only when it wins a race against the send.
-@Suite("FragmentChannel", .scaledTimeLimit())
+@Suite("FragmentChannel", .timeLimit(.minutes(1)))
 struct FragmentChannelTests {
 
     /// `body` on a thread of its own, as a demuxer's queue runs a segment.
