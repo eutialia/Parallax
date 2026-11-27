@@ -161,6 +161,9 @@ struct BridgePlan: Sendable {
         /// The video's segments cover the file. The audio's stop at the last segment the
         /// audio reaches. That one lasts until the file ends and holds all the audio left.
         let segments: [Segment]
+        /// What a copied audio track's first segment starts with. Nil for video, converted
+        /// audio, and a track that starts with the first picture.
+        let leadingSilence: LeadingSilence?
     }
 
     /// A run of index entries played as one segment.
@@ -298,7 +301,7 @@ struct BridgePlan: Sendable {
         video = Track(
             rendition: videoRendition,
             initSegment: try SegmentWriter.initSegment(for: videoRendition, describedBy: videoDescribed),
-            segments: segments)
+            segments: segments, leadingSilence: nil)
         // AVPlayer waits for good at an audio segment it cannot get, and ends the item where
         // the shorter rendition ends. So a track's list stops at the last segment its audio
         // reaches, and that segment is stretched to the end of the file.
@@ -315,9 +318,11 @@ struct BridgePlan: Sendable {
             // A converted track is described by a frame of what it is converted to.
             let described = if case .audio(let converted) = rendition.delivery { converted.firstFrame }
                 else { packets(of: rendition.stream) }
+            let copied = audioDecisions.lazy.compactMap(\.copied).first { $0.stream.index == stream }
             audio.append(Track(
                 rendition: rendition, initSegment: try SegmentWriter.initSegment(for: rendition, describedBy: described),
-                segments: segments[..<lastWithAudio] + [cuts.segment(from: lastWithAudio, on: videoRendition.clock)]))
+                segments: segments[..<lastWithAudio] + [cuts.segment(from: lastWithAudio, on: videoRendition.clock)],
+                leadingSilence: copied?.leadingSilence(on: rendition.clock, from: cuts.boundaries[0])))
         }
         self.audio = audio
         defaultAudio = renditions.firstIndex { $0.stream.isDefault } ?? renditions.indices.first
@@ -416,6 +421,19 @@ enum AudioDecision {
             samplesPerFrame = frame
         }
 
+        /// Silence from the file's first picture, at `firstPicture`, to the track's first frame,
+        /// on the track's `clock`. A frame the muxer joins with others has no sample of its own
+        /// to be placed in.
+        func leadingSilence(on clock: MediaClock, from firstPicture: Int64) -> LeadingSilence? {
+            guard samplesPerFrame > 0, stream.parameters.framesPerSample(of: samplesPerFrame) == 1 else { return nil }
+            let firstFrame = clock.ticks(at: start)
+            // The track's grid would move the picture to the start of a frame, which may be after it.
+            let lead = (Int128(start - firstPicture) * Int128(clock.timescale) + 999_999_999) / 1_000_000_000
+            return LeadingSilence(
+                of: stream.parameters, from: firstFrame - Int64(lead), to: firstFrame,
+                frameLength: Int64(samplesPerFrame))
+        }
+
         func rendition(origin: Int64) -> Rendition {
             Rendition(
                 stream: stream, delivery: .copy(codec: codec, supplementalCodec: nil, decodeLead: 0),
@@ -467,6 +485,10 @@ enum AudioDecision {
         case .convert(let audio): audio.rendition(origin: origin)
         case .omit: nil
         }
+    }
+
+    var copied: CopiedAudio? {
+        if case .copy(let audio) = self { audio } else { nil }
     }
 
     var converted: ConvertedAudio? {

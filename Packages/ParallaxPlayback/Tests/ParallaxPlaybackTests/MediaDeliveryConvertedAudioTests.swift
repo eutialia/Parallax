@@ -153,26 +153,26 @@ struct MediaDeliveryConvertedAudioTests {
     /// MP2, whose decoder gives 16 and dithers them.
     ///
     /// The whole decode drops what the file marks as the codec's: its priming at the start and
-    /// its padding at the end. The delivery drops the priming, keeps the padding (`padding`
-    /// sample frames past the stream's end), and leaves WMA's first frame out (`opening`). Where
-    /// the audio then starts after the first picture, the delivery starts it there with silence
-    /// (`lead` sample frames): a sample after it for MP3 and MP2, and WMA's first frame.
+    /// its padding at the end. The delivery drops the priming and keeps the padding (`padding`
+    /// sample frames past the stream's end). Where the audio then starts after the first
+    /// picture, the delivery starts it there with silence (`lead` sample frames): a sample after
+    /// it for MP3 and MP2.
     ///
     /// `vorbis-bursts` is libvorbis's encode of a tone with bursts of noise, where its frames
     /// change length, and the frame after a change is timed 9 ms from where its samples are.
     /// `mp3-44k` has frames of 26.122 ms timed to the millisecond, after a first one of 47
     /// samples: a segment that places its frames by their times alone is two samples off.
     @Test("a lossy track's segments hold what one decode of the whole stream gives, to within two steps of the depth its decoder gives, each segment starting where the one before ends", arguments: [
-        ("mp3", "a0", 1, 24, 0, 431, 1), ("mp2", "a0", 1, 16, 0, 0, 1), ("vorbis", "a0", 1, 24, 0, 512, 0),
-        ("vorbis-bursts", "a0", 1, 24, 0, 0, 0), ("wma", "a0", 1, 24, 2048, 0, 2048), ("ac3-dts-51", "a1", 2, 24, 0, 256, 0),
-        ("mp3-44k", "a0", 1, 24, 0, 407, 0), ("ts-mp2.ts", "a0", 1, 16, 0, 0, 0),
+        ("mp3", "a0", 1, 24, 431, 1), ("mp2", "a0", 1, 16, 0, 1), ("vorbis", "a0", 1, 24, 512, 0),
+        ("vorbis-bursts", "a0", 1, 24, 0, 0), ("wma", "a0", 1, 24, 0, 0), ("ac3-dts-51", "a1", 2, 24, 256, 0),
+        ("mp3-44k", "a0", 1, 24, 407, 0), ("ts-mp2.ts", "a0", 1, 16, 0, 0),
     ])
     func lossyTrackMatchesOneDecodeOfTheStream(
-        name: String, rendition: String, stream: Int, bits: Int, opening: Int, padding: Int, lead: Int
+        name: String, rendition: String, stream: Int, bits: Int, padding: Int, lead: Int
     ) async throws {
         let segments = try await Self.segments(of: rendition, from: name).segments
         let channels = try #require(segments.first?.channelCount)
-        let whole = try Self.decodedWhole(name, stream: stream).dropFirst(opening * channels)
+        let whole = try Self.decodedWhole(name, stream: stream)
 
         let delivered = segments.flatMap(\.samples)
         #expect(delivered.prefix(lead * channels).allSatisfy { $0 == 0 }, "\(delivered.prefix(lead * channels))")

@@ -57,6 +57,9 @@ struct MediaPacket: Sendable, Equatable {
     let duration: Int64?
     let isKeyframe: Bool
     let data: Data
+    /// Sample frames at the start of what the packet decodes to that the container marks as
+    /// the codec's priming. Zero for video, and for every audio packet but a stream's first.
+    let primingSamples: Int
 }
 
 /// A video keyframe a read can start at.
@@ -760,8 +763,23 @@ actor MediaDemuxer {
                 decodeTime: findsKeyframesByDecodeTime ? decodeTime(of: packet) : nil,
                 duration: packet.pointee.duration > 0 ? nanoseconds(packet.pointee.duration, of: stream) : nil,
                 isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0,
-                data: Data(bytes: bytes, count: Int(packet.pointee.size)))
+                data: Data(bytes: bytes, count: Int(packet.pointee.size)), primingSamples: primingSamples(of: packet))
         }
+    }
+
+    /// The codec delay a Matroska file or an MP4's edit list gives the stream, on the packet
+    /// timed that long before the stream starts. libavformat marks it only on the first packet
+    /// it reads, which a read after a seek is not, and a decoder that is not told drops its own
+    /// guess at the priming: for WMA a frame more than the encoder put there.
+    private func primingSamples(of packet: UnsafeMutablePointer<AVPacket>) -> Int {
+        let stream = context.pointee.streams[Int(packet.pointee.stream_index)]!.pointee
+        let parameters = stream.codecpar.pointee
+        guard parameters.initial_padding > 0, parameters.sample_rate > 0, packet.pointee.pts != Self.noTime,
+              stream.start_time != Self.noTime
+        else { return 0 }
+        let padding = av_rescale_q(
+            Int64(parameters.initial_padding), AVRational(num: 1, den: parameters.sample_rate), stream.time_base)
+        return abs(packet.pointee.pts + padding - stream.start_time) <= 1 ? Int(parameters.initial_padding) : 0
     }
 
     private func seek(to keyframe: IndexedKeyframe, warmUp: Int64 = 0) throws {

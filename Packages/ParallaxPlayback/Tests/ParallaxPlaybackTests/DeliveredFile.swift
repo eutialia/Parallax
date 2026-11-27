@@ -115,7 +115,9 @@ final class RecordingRelay: Sendable {
     struct Traffic: CustomStringConvertible {
         var toServer = 0, toClient = 0
         var closed: String?
-        var description: String { "↑\(toServer) ↓\(toClient) \(closed ?? "open")" }
+        /// The last state the relay's own connection to the server reached.
+        var server = "setup"
+        var description: String { "↑\(toServer) ↓\(toClient) \(closed ?? "open"), to the server \(server)" }
     }
 
     init(forwardingTo url: URL) throws {
@@ -136,6 +138,7 @@ final class RecordingRelay: Sendable {
                     if let closed, $0[place].closed == nil { $0[place].closed = closed }
                 }
             }
+            server.stateUpdateHandler = { state in self.traffic.withLock { $0[place].server = "\(state)" } }
             client.start(queue: queue)
             server.start(queue: queue)
             Self.pipe(from: client, to: server, observing: requests.take) { count(true, $0, $1.map { "client \($0)" }) }

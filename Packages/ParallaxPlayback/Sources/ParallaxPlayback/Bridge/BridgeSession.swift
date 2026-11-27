@@ -82,6 +82,7 @@ struct BridgeSession: MediaResponder {
                             try await demuxers.using {
                                 try await $0.write(
                                     segment, of: rendition, takingLaterAudio: takingLaterAudio,
+                                    leadingSilence: index == 0 ? track.leadingSilence : nil,
                                     into: channel, handedOver: handedOver, stopwatch: stopwatch,
                                     converted: conversions.add)
                             }
@@ -109,8 +110,10 @@ struct BridgeSession: MediaResponder {
 extension MediaDemuxer {
     /// Reads, writes and hands over one segment as one call on the demuxer's queue, which
     /// blocks while `channel` is full. Packets of other streams are dropped as they are read.
+    /// `leadingSilence` goes in front of the packets of a copied audio track's first segment.
     fileprivate func write(
         _ segment: BridgePlan.Segment, of rendition: Rendition, takingLaterAudio: Bool,
+        leadingSilence: LeadingSilence?,
         into channel: FragmentChannel, handedOver: @escaping @Sendable () -> Void,
         stopwatch: @escaping @Sendable () -> @Sendable () -> Duration, converted: (Double) -> Void
     ) throws {
@@ -123,6 +126,11 @@ extension MediaDemuxer {
         let (lower, upper) = (segment.entries.lowerBound, segment.entries.upperBound)
         switch rendition.delivery {
         case .copy:
+            if let leadingSilence {
+                for (start, frame) in zip(leadingSilence.starts, leadingSilence.frames) {
+                    try sink.accept(frame, isKeyframe: true, at: start, lasting: leadingSilence.frameLength)
+                }
+            }
             try read(
                 rendition.stream.index, from: lower, to: upper, takingLaterAudio: takingLaterAudio,
                 clock: rendition.clock, into: sink)
