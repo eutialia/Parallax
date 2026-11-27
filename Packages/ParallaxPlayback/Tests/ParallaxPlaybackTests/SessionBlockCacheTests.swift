@@ -34,7 +34,7 @@ struct SessionBlockCacheTests {
 
     @Test("a read takes the block asked for and, reading on from the block before, the blocks after it up to the first one kept or on its way, the file's end, or a read's worth")
     func aReadTakesTheBlocksAfterOnlyReadingOn() {
-        let seed = UInt64.random(in: .min ... .max)
+        let seed = UInt64(0x626C_6F63_6B73)
         var generator = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let asked = Asked.random(using: &generator)

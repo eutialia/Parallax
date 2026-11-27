@@ -50,8 +50,8 @@ nonisolated struct SMBDelivery: Sendable {
     /// bounded and awaited, so the caller's next fetch cannot overlap it.
     ///
     /// - Parameter discardingConnection: the connection is dropped instead of returning to the
-    ///   pool. An hours-long playback socket may be silently degraded: stalls surface as short
-    ///   reads, never a thrown error, so the pool's taint rule cannot catch them.
+    ///   pool. An hours-long playback socket may be degraded without a read ever throwing, so
+    ///   the pool's taint rule cannot catch it.
     func stop(discardingConnection: Bool = false) async {
         await delivery.stop()
         if discardingConnection { await reader.markUnreusable() }

@@ -2,7 +2,9 @@ import Foundation
 import Testing
 @testable import ParallaxPlayback
 
-/// A WMA Pro opening, which no file a test host can make holds: ffmpeg does not encode WMA Pro.
+/// An opening that decodes to frames with no time, which a WMA Pro file has and no file a test
+/// host can make does: ffmpeg does not encode WMA Pro. A Vorbis opening stands in, its packets'
+/// times taken away.
 @Suite("Converted audio")
 struct ConvertedAudioTests {
     @Test("a stream whose opening decodes to frames with no time starts at its first packet's time")
