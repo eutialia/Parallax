@@ -90,12 +90,13 @@ final class EngineLedger {
     /// broken fixture rather than a case worth branching on.
     var live: FakePlaybackEngine { engines.last! }
 
-    /// Set, every engine built from then on fails its `load` with it.
-    var loadError: (any Error)?
+    /// Set, every engine built from then on parks its `load`, as `AVKitEngine` does while the
+    /// display switches to the asset's mode, until that engine releases it.
+    var holdsLoads = false
 
     func make() -> FakePlaybackEngine {
         let engine = FakePlaybackEngine()
-        engine.loadError = loadError
+        if holdsLoads { engine.hold(.load) }
         engines.append(engine)
         return engine
     }
@@ -540,20 +541,16 @@ enum PlayerFixtures {
     }
 
     /// What a direct-play ENGINE reports for `resolved`: one track per subtitle stream,
-    /// under the engine's own id namespace and its raw container naming. This is the
-    /// inventory the menu builder has to join back to the server's list.
+    /// numbered by its place among the subtitles as `AVKitEngine` numbers it, under the
+    /// container's raw naming. This is the inventory the menu builder has to join back to the
+    /// server's list.
     static func engineSubtitleInventory(for resolved: ResolvedPlayback) -> TrackInventory {
-        TrackInventory(
-            audio: [],
-            subtitles: resolved.mediaStreams
-                .filter { $0.kind == .subtitle }
-                .map { stream in
-                    SubtitleTrack(id: .avKitOption(stream.index),
-                                  displayName: stream.isImageSubtitle ? "PGS" : "SubRip",
-                                  languageCode: stream.language,
-                                  isForced: false)
-                }
-        )
+        .avKitSubtitles(resolved.mediaStreams
+            .filter { $0.kind == .subtitle }
+            .map { stream in
+                LegibleRendition(displayName: stream.isImageSubtitle ? "PGS" : "SubRip",
+                                 languageCode: stream.language, isForcedOnly: stream.isForced)
+            })
     }
 
     /// A VP9/WebM/Opus direct-play item: container and codec both outside AVPlayer's support.

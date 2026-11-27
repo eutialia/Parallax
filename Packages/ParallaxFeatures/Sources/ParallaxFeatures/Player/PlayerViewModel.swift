@@ -924,7 +924,7 @@ public final class PlayerViewModel {
 
     /// Deadline for the re-resolve inside an engine-reusing reload (a track switch). That
     /// span shows the loading scrim with NO watchdog armed yet —
-    /// `LoadWatchdog`/`StallWatchdog` only arm from `engine.play()` — so an unbounded
+    /// the engine's load and stall deadlines only arm from `engine.play()` — so an unbounded
     /// resolve left the scrim up forever (tvOS field report, 2026-07-20).
     static let reloadResolveDeadline: Duration = .seconds(15)
 

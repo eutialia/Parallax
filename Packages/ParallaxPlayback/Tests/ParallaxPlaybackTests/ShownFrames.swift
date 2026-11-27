@@ -31,9 +31,7 @@ struct ReadyPlayer {
         let item = AVPlayerItem(url: url)
         // Three seconds keeps AVPlayer from fetching all of a minute-long file.
         item.preferredForwardBufferDuration = 3
-        output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        ])
+        output = .numberedPictures()
         item.add(output)
         player = AVPlayer(playerItem: item)
         player.isMuted = true
@@ -56,21 +54,37 @@ struct ReadyPlayer {
                 to: CMTime(seconds: seconds, preferredTimescale: 24_000), toleranceBefore: .zero, toleranceAfter: .zero)
         }
         player.play()
+        let shown = await output.framesShown(for: duration)
+        player.pause()
+        return shown
+    }
+}
+
+extension AVPlayerItemVideoOutput {
+    /// A numbered picture output that will be added to an item.
+    static func numberedPictures() -> AVPlayerItemVideoOutput {
+        AVPlayerItemVideoOutput(pixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        ])
+    }
+
+    /// The frames the item this output is added to shows in the next `duration`.
+    @MainActor
+    func framesShown(for duration: Duration) async -> [ShownFrame] {
         var shown: [ShownFrame] = []
         let clock = ContinuousClock()
         let end = clock.now + duration
         while clock.now < end {
-            let time = output.itemTime(forHostTime: CACurrentMediaTime())
+            let time = itemTime(forHostTime: CACurrentMediaTime())
             var displayed = CMTime.invalid
-            if output.hasNewPixelBuffer(forItemTime: time),
-               let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &displayed) {
+            if hasNewPixelBuffer(forItemTime: time),
+               let buffer = copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &displayed) {
                 shown.append(ShownFrame(
                     seconds: displayed.seconds, number: BridgeFixture.frameNumber(in: buffer),
                     numberAbove: BridgeFixture.frameNumber(in: buffer, rowsAboveTheMiddle: 1)))
             }
             try? await Task.sleep(for: .milliseconds(4))
         }
-        player.pause()
         return shown
     }
 }

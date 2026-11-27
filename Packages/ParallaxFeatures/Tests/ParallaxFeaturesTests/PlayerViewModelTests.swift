@@ -4529,7 +4529,7 @@ struct DirectPlaySubtitleOwnershipTests {
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
         #expect(vm.availableSubtitleTracks.count == 1)
         let row = try #require(vm.availableSubtitleTracks.first)
-        #expect(row.id == .avKitOption(2))   // the engine draws it — locally, for free
+        #expect(row.id == .avKitOption(0))   // the engine draws it — locally, for free
         #expect(row.isBurnedIn == false)    // no server re-encode earned
         #expect(row.displayName == "English")   // the server's menu label, not the engine's "PGS"
     }
@@ -4553,7 +4553,7 @@ struct DirectPlaySubtitleOwnershipTests {
         let vm = try await startedVM(resolved, engine: engine)
 
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
-        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .avKitOption(3)])
+        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .avKitOption(1)])
         #expect(vm.availableSubtitleTracks.allSatisfy { !$0.isBurnedIn })
     }
 
@@ -4576,9 +4576,9 @@ struct DirectPlaySubtitleOwnershipTests {
     func enginePickIsAdoptedWhenTheEngineDraws() async throws {
         let engine = FakePlaybackEngine()
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
-        let vm = try await startedVM(resolved, engine: engine, selecting: .avKitOption(2))
+        let vm = try await startedVM(resolved, engine: engine, selecting: .avKitOption(0))
 
-        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(2))
+        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(0))
         // Nothing was commanded at all — the engine's own pick stands. Matched on the
         // whole family of calls, not the one literal: a fake that reformats its log
         // would make a single-string negative pass forever.
@@ -4594,7 +4594,7 @@ struct DirectPlaySubtitleOwnershipTests {
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
             text: [2: "eng"], image: [3: "jpn"]
         )
-        let vm = try await startedVM(resolved, engine: engine, selecting: .avKitOption(2))
+        let vm = try await startedVM(resolved, engine: engine, selecting: .avKitOption(0))
 
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(engine.calls.contains("setSubtitleTrack(nil)"))
@@ -4611,8 +4611,8 @@ struct DirectPlaySubtitleOwnershipTests {
         )
         let vm = try await startedVM(resolved, engine: engine)
 
-        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(2))
-        #expect(engine.selectedSubtitleTrackID == .avKitOption(2))
+        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(0))
+        #expect(engine.selectedSubtitleTrackID == .avKitOption(0))
     }
 
     /// Burn-in stays opt-in. The engine can't be joined to this image stream (two

@@ -1,41 +1,29 @@
 import AVFoundation
 import Testing
 import ParallaxTestScaling
+import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
-@Suite("StartupTuning")
+/// What a tuning profile does to the item the engine loads, before it plays.
+@Suite("StartupTuning — the loaded item", .serialized, .scaledTimeLimit())
 @MainActor
-struct StartupTuningTests {
-    /// An `AVPlayerItem` never asked to load network data — enough to read/write its
-    /// `preferredForwardBufferDuration`, which is all `applyTuning` touches.
-    private func makeItem() -> AVPlayerItem {
-        AVPlayerItem(asset: AVURLAsset(url: URL(string: "https://example.invalid/video.mp4")!))
+struct StartupTuningLoadTests {
+    @Test(".systemDefault leaves the loaded item's forward buffer at AVFoundation's own")
+    func systemDefaultLeavesTheItemAlone() async throws {
+        let engine = AVKitEngine(tuning: .systemDefault, clock: TestClock())
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        let item = try #require(engine.avPlayer.currentItem)
+        #expect(item.preferredForwardBufferDuration == AVPlayerItem(url: try AVKitFixtures.tiny).preferredForwardBufferDuration)
+        await engine.teardown()
     }
 
-    /// `nil` means "leave the property alone", NOT "write the documented default" — the
-    /// distinction the type doc calls out, because touching a property at all pins
-    /// behavior against a future OS default change.
-    @Test(".systemDefault carries no knobs and leaves the item untouched")
-    func systemDefaultAppliesNothing() {
-        #expect(StartupTuning.systemDefault.preferredForwardBufferSeconds == nil)
-
-        let item = makeItem()
-        let before = item.preferredForwardBufferDuration
-        AVKitEngine.applyTuning(.systemDefault, to: item)
-        #expect(item.preferredForwardBufferDuration == before)
-    }
-
-    /// 0 is a *meaningful* value ("let AVFoundation choose per-item"), distinct from nil,
-    /// so it must be written through rather than treated as absent.
-    @Test("an explicit forward-buffer target is written onto the item",
-          arguments: [0.0, 1.0, 3.0, 12.5] as [Double])
-    func explicitTuningApplies(seconds: Double) {
-        let item = makeItem()
-        AVKitEngine.applyTuning(
-            StartupTuning(preferredForwardBufferSeconds: seconds),
-            to: item
-        )
-        #expect(item.preferredForwardBufferDuration == seconds)
+    /// 0 is meaningful ("let AVFoundation choose per item"), not absent.
+    @Test("an explicit forward-buffer target is on the loaded item", arguments: [0.0, 1.0, 3.0, 12.5] as [Double])
+    func explicitTargetIsOnTheItem(seconds: Double) async throws {
+        let engine = AVKitEngine(tuning: StartupTuning(preferredForwardBufferSeconds: seconds), clock: TestClock())
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        #expect(engine.avPlayer.currentItem?.preferredForwardBufferDuration == seconds)
+        await engine.teardown()
     }
 }
 
@@ -51,7 +39,7 @@ struct StartupTuningReleaseTests {
             directory: AVKitFixtures.longGOPStream, withholding: [], until: ResponseGate()
         )
         defer { server.stop() }
-        let engine = AVKitEngine(tuning: StartupTuning(preferredForwardBufferSeconds: 3))
+        let engine = AVKitEngine(tuning: StartupTuning(preferredForwardBufferSeconds: 3), clock: TestClock())
         try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
         await engine.play()
 

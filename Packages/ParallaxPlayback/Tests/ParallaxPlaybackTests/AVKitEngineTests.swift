@@ -4,6 +4,7 @@ import CoreMedia
 import Testing
 import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
+import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
 /// The real media every AVKit suite drives AVFoundation with. One home rather than a copy per
@@ -26,6 +27,18 @@ enum AVKitFixtures {
             try #require(
                 Bundle.module.url(forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures"),
                 "tiny.mp4 fixture missing from the test bundle"
+            )
+        }
+    }
+
+    /// An HLS presentation as a Jellyfin transcode serves it: 8 s of video and three WebVTT
+    /// renditions, English, a forced-only French and German, in that order, each cue naming its
+    /// rendition ("eng", "fra", "deu").
+    static var subtitledStream: URL {
+        get throws {
+            try #require(
+                Bundle.module.url(forResource: "subtitled-hls", withExtension: nil, subdirectory: "Fixtures"),
+                "subtitled-hls fixture missing from the test bundle"
             )
         }
     }
@@ -79,65 +92,129 @@ extension PlaybackBeat {
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
 // Swift Testing applies no default timeout, so an engine that never finishes its continuation
 // wedges the whole run instead of failing its own test.
-@Suite("PlaybackEngine stream contract", .scaledTimeLimit())
+@Suite("PlaybackEngine stream contract", .serialized, .scaledTimeLimit())
 @MainActor
 struct PlaybackEngineStreamContractTests {
 
     @Test("the state stream is pre-seeded with .idle")
     func emitsIdleFirst() async {
-        await PlaybackEngineContract.emitsIdleFirst(AVKitEngine())
+        await PlaybackEngineContract.emitsIdleFirst(AVKitEngine(clock: TestClock()))
     }
 
     @Test("teardown finishes the state stream so consumers' for-await loops end")
     func teardownFinishesStream() async {
-        await PlaybackEngineContract.teardownFinishesStream(AVKitEngine())
+        await PlaybackEngineContract.teardownFinishesStream(AVKitEngine(clock: TestClock()))
     }
 
     @Test("a load goes through the same states, a seek lands the same way while playing, load throws the same errors, and subtitle options are numbered the same",
-          .disabled("pending"))
-    func matchesTheOtherEngine() async throws {}
+          arguments: PlaybackEngineClause.allCases)
+    func matchesTheOtherEngine(clause: PlaybackEngineClause) async throws {
+        try await PlaybackEngineContract.holds(clause) { AVKitStage() }
+    }
+}
+
+/// `AVKitEngine` on real media. Its loads suspend only where the app's do: waiting for the
+/// display to switch to the asset's mode.
+@MainActor
+final class AVKitStage: PlaybackEngineStage {
+    private let avKit: AVKitEngine
+    private let display = DisplaySwitch()
+    private var server: HLSLoopbackServer?
+    var engine: any PlaybackEngine { avKit }
+
+    init() {
+        let display = display
+        avKit = AVKitEngine(clock: TestClock(), prepareDisplay: { _ in await display.switched() })
+    }
+
+    func subtitledStream() async throws -> PlayableAsset {
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.subtitledStream, withholding: [], until: ResponseGate())
+        self.server = server
+        return .fixture(url: try await server.baseURL().appending(path: "master.m3u8"))
+    }
+
+    /// A closed loopback port refuses the connection at once, so this needs no server.
+    func unplayableStream() -> PlayableAsset {
+        .fixture(url: URL(string: "http://127.0.0.1:1/not-a-stream.m3u8")!)
+    }
+
+    /// Mounts a picture output, as the app mounts its layer: a headless player with neither a
+    /// picture nor sound to play waits to minimize stalls for good.
+    func mediaActs(on asset: PlayableAsset) async throws {
+        avKit.avPlayer.currentItem?.add(AVPlayerItemVideoOutput(pixelBufferAttributes: nil))
+    }
+    func holdLoads() { display.hold() }
+    func releaseLoads() { display.release() }
+    var parkedLoads: Int { display.waiting }
+
+    func tearDown() async {
+        await avKit.teardown()
+        server?.stop()
+    }
+}
+
+/// A display mode switch that takes as long as the test holds it.
+@MainActor
+final class DisplaySwitch {
+    private var isHeld = false
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    var waiting: Int { parked.count }
+
+    func hold() { isHeld = true }
+
+    func release() {
+        isHeld = false
+        let due = parked
+        parked = []
+        due.forEach { $0.resume() }
+    }
+
+    func switched() async {
+        guard isHeld else { return }
+        await withCheckedContinuation { parked.append($0) }
+    }
 }
 
 /// `redactedTail` is the only thing that ever writes an HLS resource URI into a log,
 /// and the ApiKey rides in that URI's query — so dropping the query is a security
-/// contract, not cosmetics.
+/// contract, not cosmetics. Exercised over generated Jellyfin-shaped URIs: resource names
+/// mixed with the 32-hex and UUID item ids Jellyfin puts mid-path, under a query that carries
+/// a secret.
 @Suite("AVKitEngine — HLS error-log redaction")
 @MainActor
 struct AVKitLogRedactionTests {
+    private static let names = ["Videos", "hls1", "main", "47.mp4", "-1.mp4", "master.m3u8", "main.m3u8", "init.mp4", "Audio"]
 
-    @Test("names the resource, drops the query and the item id", arguments: [
-        ("https://jf.example.com/Videos/abc/main.m3u8?ApiKey=SECRET", "Videos/abc/main.m3u8"),
-        ("https://jf.example.com/Videos/abc/hls1/main/123.mp4?ApiKey=SECRET&x=1", "hls1/main/123.mp4"),
-        ("https://jf.example.com/master.m3u8", "master.m3u8"),
-        // The real shape. Two components were not enough: a Jellyfin segment URI spends one of
-        // them on `main`, so `47.mp4` arrived without the `hls1/main` that says it is a media
-        // segment and not an init one — and a playlist URI spent both on a 32-hex item id.
-        (
-            "https://jf.example.com/Videos/a1b2c3d4e5f60718293a4b5c6d7e8f90/hls1/main/47.mp4?ApiKey=SECRET",
-            "hls1/main/47.mp4"
-        ),
-        (
-            "https://jf.example.com/Videos/a1b2c3d4e5f60718293a4b5c6d7e8f90/master.m3u8?PlaySessionId=x",
-            "Videos/master.m3u8"
-        ),
-        (
-            "https://jf.example.com/Videos/a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90/hls1/main/-1.mp4",
-            "hls1/main/-1.mp4"
-        ),
-    ])
-    func redactsTail(uri: String, expected: String) {
-        let tail = AVKitEngine.redactedTail(of: uri)
-        #expect(tail == expected)
-        #expect(tail?.contains("SECRET") == false)
-        #expect(tail?.contains("?") == false)
+    private static func hex(_ count: Int, using random: inout SplitMix) -> String {
+        String((0..<count).map { _ in "0123456789abcdef".randomElement(using: &random)! })
     }
 
-    @Test("returns nil when there is no path to report", arguments: [
-        "https://jf.example.com",
-        "https://jf.example.com/",
-    ])
-    func nilWithoutPath(uri: String) {
-        #expect(AVKitEngine.redactedTail(of: uri) == nil)
+    private static func component(using random: inout SplitMix) -> (text: String, isID: Bool) {
+        switch Int.random(in: 0..<5, using: &random) {
+        case 0: (hex(32, using: &random), true)
+        case 1: ([8, 4, 4, 4, 12].map { hex($0, using: &random) }.joined(separator: "-"), true)
+        default: (names.randomElement(using: &random)!, false)
+        }
+    }
+
+    @Test("the tail is the last three resource names of the path, never the query or an item id")
+    func tailNamesTheResource() {
+        let seed = UInt64(0x7461_696C)
+        var random = SplitMix(seed: seed)
+        for _ in 0..<500 {
+            let path = (0..<Int.random(in: 0...7, using: &random)).map { _ in Self.component(using: &random) }
+            let secret = Self.hex(24, using: &random)
+            let query = Bool.random(using: &random) ? "?ApiKey=\(secret)&PlaySessionId=\(Self.hex(8, using: &random))" : ""
+            let trailing = Bool.random(using: &random) ? "/" : ""
+            let uri = "https://jf.example.com/" + path.map(\.text).joined(separator: "/") + trailing + query
+            let tail = AVKitEngine.redactedTail(of: uri)
+
+            let resources = path.filter { !$0.isID }.map(\.text)
+            let expected = resources.isEmpty ? nil : resources.suffix(3).joined(separator: "/")
+            #expect(tail == expected, "seed \(seed): \(uri)")
+            #expect(tail.map { !$0.contains(secret) && !$0.contains("?") } ?? true, "seed \(seed): \(uri)")
+        }
     }
 }
 
@@ -169,7 +246,7 @@ struct AVKitSubtitleSuppressionTests {
 
     @Test("reaches .ready with a legible group present and nothing selected in it")
     func readyPublishesNoLegibleSelection() async throws {
-        let engine = AVKitEngine()
+        let engine = AVKitEngine(clock: TestClock())
         let tracks = try await loadAndAwaitReady(engine, disabled: true)
         let info = await engine.debugSnapshot()
 
@@ -183,7 +260,7 @@ struct AVKitSubtitleSuppressionTests {
 
     @Test("setSubtitleTrack is refused — the legible group stays empty")
     func setSubtitleTrackIsRefused() async throws {
-        let engine = AVKitEngine()
+        let engine = AVKitEngine(clock: TestClock())
         let tracks = try await loadAndAwaitReady(engine, disabled: true)
 
         let track = try #require(tracks.subtitles.first)
@@ -206,7 +283,7 @@ struct AVKitSubtitleSuppressionTests {
     /// the deselect earns its keep on the HLS transcode path the fixture cannot reach.
     @Test("selecting an audio track leaves the legible group unselected")
     func audioSelectionDoesNotResurrectSubtitles() async throws {
-        let engine = AVKitEngine()
+        let engine = AVKitEngine(clock: TestClock())
         // Criteria stated rather than inherited: a simulator whose system language matches
         // neither `eng` nor `fra` would have nothing to re-apply in the first place.
         engine.avPlayer.setMediaSelectionCriteria(
@@ -227,7 +304,7 @@ struct AVKitSubtitleSuppressionTests {
     /// The control: the refusal above is the ASSET's intent talking, not a broken selector.
     @Test("an ordinary asset still selects, and can still be turned off")
     func ordinaryAssetSelectsNormally() async throws {
-        let engine = AVKitEngine()
+        let engine = AVKitEngine(clock: TestClock())
         let tracks = try await loadAndAwaitReady(engine, disabled: false)
         let track = try #require(tracks.subtitles.first)
 
@@ -260,10 +337,8 @@ struct AVKitSeekSettleTests {
     /// and its task has finished on return, so from the log's construction onward there is
     /// exactly one consumer. The ordering matters too — the log must be built AFTER this
     /// returns, which is what every caller does, or the two would split the beats.
-    private func readyEngine(
-        _ url: URL? = nil, stallDeadline: Duration = StallWatchdog.defaultDeadline
-    ) async throws -> AVKitEngine {
-        let engine = AVKitEngine(stallDeadline: stallDeadline)
+    private func readyEngine(_ url: URL? = nil, clock: TestClock = TestClock()) async throws -> AVKitEngine {
+        let engine = AVKitEngine(clock: clock)
         try await engine.load(.fixture(url: url ?? AVKitFixtures.subtitled))
         switch await engine.firstBeat(where: \.isReadyOrFailed)?.state {
         case .ready?: return engine
@@ -344,14 +419,15 @@ struct AVKitSeekSettleTests {
             gate.open()
             server.stop()
         }
-        let engine = try await readyEngine(try await server.baseURL().appending(path: "main.m3u8"))
+        let clock = TestClock()
+        let engine = try await readyEngine(try await server.baseURL().appending(path: "main.m3u8"), clock: clock)
         await engine.pause()
         let log = PositionBeatLog(engine)
 
         let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }   // segment 2 is 26–39 s
         // The paused player can ask for the segment on its own before the seek task runs, so
         // the request alone doesn't say the seek has started; its armed deadline does.
-        try await requireEventually({ engine.isSeekFetchArmed }, "the fetch armed no stall deadline")
+        try await clock.waitForSleep(dueIn: .seconds(45))
         try await requireEventually({ server.pathsRequested.contains("/seg2.mp4") },
                                     "the seek never asked for its segment")
         gate.open()
@@ -361,7 +437,7 @@ struct AVKitSeekSettleTests {
                                     "the seek never resolved")
         let landing = try #require(log.beats.last { $0.provenance == .observed })
         #expect(abs(landing.seconds - 33) < 0.1, "landed at \(landing.seconds)s")
-        #expect(!engine.isSeekFetchArmed, "a seek that landed left its stall deadline running")
+        #expect(clock.pendingSleeps.isEmpty, "a seek that landed left its stall deadline running")
         log.stop()
         await engine.teardown()
     }
@@ -381,8 +457,8 @@ struct AVKitSeekSettleTests {
             gate.open()
             server.stop()
         }
-        let engine = try await readyEngine(try await server.baseURL().appending(path: "main.m3u8"),
-                                           stallDeadline: .milliseconds(500))
+        let clock = TestClock()
+        let engine = try await readyEngine(try await server.baseURL().appending(path: "main.m3u8"), clock: clock)
         await engine.pause()
 
         final class Flag { var isSet = false }
@@ -391,6 +467,8 @@ struct AVKitSeekSettleTests {
             await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600))   // segment 2 is 26–39 s
             seekReturned.isSet = true
         }
+        try await clock.waitForSleep(dueIn: .seconds(45))
+        clock.advance(by: .seconds(45))
 
         let failure = await engine.firstBeat(within: CITimeScale.seconds(5)) {
             if case .failed = $0.state { true } else { false }
@@ -420,107 +498,21 @@ struct AVKitSeekSettleTests {
             gate.open()
             server.stop()
         }
-        let engine = AVKitEngine()
+        let clock = TestClock()
+        let engine = AVKitEngine(clock: clock)
         let session = try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8")))
         #expect(await engine.firstBeat(where: \.isReadyOrFailed).map { if case .ready = $0.state { true } else { false } } == true)
         await engine.pause()
 
         let seek = Task { await engine.seek(to: CMTime(seconds: 33, preferredTimescale: 600)) }
-        try await requireEventually({ engine.isSeekFetchArmed }, "the fetch armed no stall deadline")
+        try await clock.waitForSleep(dueIn: .seconds(45))
 
         engine.handleEnded(from: session)
-        #expect(!engine.isSeekFetchArmed, "the item ended and its seek's stall deadline kept running")
+        #expect(clock.pendingSleeps.isEmpty, "the item ended and its seek's stall deadline kept running")
         // The dead-segment test owns teardown with the segment withheld; here the seek just ends.
         gate.open()
         await engine.teardown()
         await seek.value
-    }
-
-    /// Overlapping seeks: the NEWEST one owns every subsequent beat, and — the half this
-    /// replaced got wrong — its own beat must not depend on the superseded call. Gating it on
-    /// `inFlightSeeks == 0` made the winner's post-seek beat wait for the LOSER's continuation
-    /// to have been resumed by AVFoundation first; a paused player (the drag-scrub flow pauses
-    /// before seeking) then published no post-seek beat at all and the seek-fetch scrim never
-    /// cleared. The serial says "I am the newest" without asking anyone else's state.
-    ///
-    /// Explicit `Task { @MainActor in … }`s rather than `async let`: an `async let` child is NOT
-    /// actor-inherited, so the two seeks would hop onto this actor in whatever order the runtime
-    /// picked and "the newest one" would be undefined — the test would have been asserting on a
-    /// coin flip. Tasks enqueued on the main executor run in creation order, which makes
-    /// "second supersedes first" a fact.
-    ///
-    /// The window itself cannot be held open against real AVFoundation — a seek on a ready,
-    /// fully-buffered local fixture resolves before the test can look, and a pre-ready one
-    /// resolves immediately with `finished == false` — and nothing here can pin which
-    /// continuation resumes first either. So the claim is pinned on the outcome, which is what
-    /// the contract actually promises: the newest target is observed, the superseded one is
-    /// never observed, and the window is closed by the time the newest call returns.
-    @Test("overlapping seeks: the newest target is observed, the superseded one publishes nothing")
-    func supersededSeekObservesNothing() async throws {
-        let engine = try await readyEngine()
-        await engine.pause()
-        let log = PositionBeatLog(engine)
-
-        let first = Task { @MainActor in
-            await engine.seek(to: CMTime(seconds: 2.5, preferredTimescale: 600))
-        }
-        let second = Task { @MainActor in
-            await engine.seek(to: CMTime(seconds: 1, preferredTimescale: 600))
-        }
-        await second.value
-        // Awaited BEFORE the superseded call: the newest seek closes the whole window itself,
-        // rather than waiting for the older slot to drain.
-        #expect(engine.inFlightSeeks == 0, "the newest seek left the window open")
-        await first.value
-        #expect(engine.inFlightSeeks == 0, "the superseded completion reopened the window")
-
-        try await requireEventually({
-            log.beats.contains { $0.provenance == .observed && abs($0.seconds - 1) < 0.5 }
-        }, "the engine never observed the newest target")
-        // And the superseded target owns nothing: its 2.5s landing is never evidence, in either
-        // completion order. (Its pre-seek echo is `.buffering`/`.projected` — a request. An
-        // observed 0:00 tick may precede both seeks; that one is the pre-seek clock, outside
-        // either window.)
-        #expect(log.beats.contains { $0.provenance == .observed && abs($0.seconds - 2.5) < 0.5 } == false,
-                "the superseded seek published an observed beat: \(log.beats)")
-        log.stop()
-        await engine.teardown()
-    }
-
-    /// The load-time resume seek (`PlayableAsset.startTime`) is a seek like any other, and the
-    /// seek-settle contract has to cover it: after a transcode re-anchor the app calls
-    /// `load(startTime: B)`, so the NEW stream's first beats can be published while the resume
-    /// is still queued against a not-yet-ready item. Labelled `.observed` they read as "the
-    /// player really is at 00:00" — exactly the evidence a consumer uses to drop a held seek
-    /// target, which would snap the bar to zero in the middle of the re-anchor.
-    ///
-    /// **What this can and cannot claim.** The window is armed synchronously — `load()` has no
-    /// suspension point after it queues the seek — so `inFlightSeeks == 1` is an observation,
-    /// not a race, and that is the half the defect was in. The other half, "the beats inside
-    /// the window are `.stale`", turns out to be unreachable from a LOCAL 3-second fixture: the
-    /// resume lands before the periodic observer's first tick, so the window opens and closes
-    /// with nothing inside it. The original assertion was written as an `allSatisfy` over that
-    /// empty set and passed without testing anything; measured, it is empty every run. So the
-    /// claim is restated as what actually holds here — no beat escapes before the resume lands,
-    /// least of all an observed 0:00.
-    @Test("the load-time resume seek opens a settle window, and no beat escapes before it lands")
-    func loadTimeResumeSeekOpensASettleWindow() async throws {
-        let engine = AVKitEngine()
-        let log = PositionBeatLog(engine)
-
-        try await engine.load(.fixture(url: AVKitFixtures.subtitled,
-                                       startTime: CMTime(seconds: 1.5, preferredTimescale: 600)))
-        #expect(engine.inFlightSeeks == 1, "the resume seek left the settle window closed")
-        await engine.play()
-
-        try await requireEventually({ log.beats.contains { $0.provenance == .observed } },
-                                    "the resume never resolved")
-        // `1.4` rather than `1.5` tolerates the segment-accurate landing AVPlayer's default
-        // tolerance permits.
-        #expect(log.beats.allSatisfy { $0.seconds >= 1.4 },
-                "a beat escaped the resume window: \(log.beats.filter { $0.seconds < 1.4 })")
-        log.stop()
-        await engine.teardown()
     }
 
     /// A reload while an ordinary `seek(to:)` is outstanding. AVFoundation does not promise to
@@ -536,7 +528,7 @@ struct AVKitSeekSettleTests {
     /// through `seekDidFinish(generation:)` directly. Everything around it is the real engine.
     @Test("a reload reclaims an abandoned seek's window, and its late completion is a no-op")
     func reloadReclaimsAnAbandonedSeeksWindow() async throws {
-        let engine = AVKitEngine()
+        let engine = AVKitEngine(clock: TestClock())
         let log = PositionBeatLog(engine)
 
         // The load-time resume seek is the only window a test can hold open deterministically:
@@ -569,210 +561,98 @@ struct AVKitSeekSettleTests {
         await engine.teardown()
     }
 
-    /// `PlaybackEngine.seek(to:)` is documented as a no-op with no item loaded, and without the
-    /// guard it was not one: it opened a settle window and awaited a seek AVFoundation does not
-    /// promise to complete without a `currentItem` — an unresolved one strands the caller (a
-    /// scrub commit) and leaves the slot open, which labels every later beat `.stale`.
-    ///
-    /// **This does not go red on iOS 26**: measured there, `AVPlayer.seek` resolves
-    /// `finished == false` with no item, so the slot self-closes and both assertions hold
-    /// either way. It stays as the regression pin for the contract — the no-op is ours to
-    /// guarantee, not AVFoundation's to keep.
-    @Test("a seek with no item loaded returns at once and counts nothing")
-    func seekWithNoItemLoadedIsANoOp() async throws {
-        let engine = AVKitEngine()
+    /// The resume of a transcode re-anchor waits on a segment the server has not cut yet, and a
+    /// second reload can land before it does. AVFoundation does not promise to resolve a seek
+    /// queued against an item it no longer plays, and the new stream's clock is not that seek's.
+    @Test("a reload that abandons a queued resume seek publishes the new stream's clock as observed")
+    func reloadOverAQueuedResumeSeekObservesTheNewStream() async throws {
+        let gate = ResponseGate()
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: ["/seg2.mp4"], until: gate)
+        defer {
+            gate.open()
+            server.stop()
+        }
+        let engine = AVKitEngine(clock: TestClock())
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8"),
+                                       startTime: CMTime(seconds: 30, preferredTimescale: 600)))
+        await engine.play()
+        try await requireEventually({ server.pathsRequested.contains("/seg2.mp4") },
+                                    "the resume never asked for its segment")
 
+        let reloaded = try await engine.load(.fixture(url: AVKitFixtures.subtitled))
+        await engine.play()
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && !$0.isBuffering && $0.seconds > 0.5 } },
+                                    "the new stream never published an observed beat", timeout: CITimeScale.seconds(10))
+        #expect(reloaded != .none)
+        log.stop()
+        await engine.teardown()
+    }
+
+    @Test("a seek before anything is loaded returns, and the stream loaded after it publishes its clock as observed")
+    func seekBeforeALoadLeavesTheStreamObserved() async throws {
+        let engine = AVKitEngine(clock: TestClock())
+        let log = PositionBeatLog(engine)
         await engine.seek(to: CMTime(seconds: 5, preferredTimescale: 600))
 
-        #expect(engine.inFlightSeeks == 0, "the no-op seek leaked a settle window")
-        #expect(engine.seekGeneration == 0, "the no-op seek superseded a batch that never existed")
-        await engine.teardown()
-    }
-}
-
-/// The two watchdogs are the engine's only "it just spun forever" exits, and what they say when
-/// they fire is the whole diagnosis the user and the log get. The expiries are driven directly
-/// rather than waited out — `LoadWatchdog`'s own contract suite already covers the timer; this is
-/// about the beat it produces.
-@Suite("AVKitEngine — watchdog expiries", .serialized, .scaledTimeLimit())
-@MainActor
-struct AVKitWatchdogExpiryTests {
-
-    /// A load that never produced a frame is not a decode failure. Borrowing
-    /// `.assetNotPlayable` put "Couldn't decode this file" on a server that was merely slow —
-    /// the one message that sends the user looking at the file instead of the link.
-    @Test("the load watchdog surfaces its own failure, not a decode failure")
-    func loadTimeoutIsItsOwnFailure() async throws {
-        let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
-        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-
-        engine.handleLoadTimeout(from: session)
-
-        var reported: PlaybackError?
-        while let beat = await iterator.next() {
-            if case .failed(let error) = beat.state { reported = error; break }
-        }
-        #expect(reported == .loadTimedOut)
-        await engine.teardown()
-    }
-
-    /// The control: a mid-playback stall keeps its own case, which the app already maps to
-    /// the "stream stalled and didn't recover" scrim.
-    @Test("the stall watchdog still surfaces networkStalled")
-    func stallTimeoutKeepsItsCase() async throws {
-        let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
-        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-
-        engine.handleStallTimeout(from: session)
-
-        var reported: PlaybackError?
-        while let beat = await iterator.next() {
-            if case .failed(let error) = beat.state { reported = error; break }
-        }
-        #expect(reported == .networkStalled)
-        await engine.teardown()
-    }
-
-    /// The diagnosis has to be captured BEFORE the failure is published. The `.failed` beat is
-    /// what tears the engine down, so a snapshot deferred into a `Task` was read after `currentItem`
-    /// had been nil'd and logged a line of dashes, empty in exactly the case it was written
-    /// for. The teardown here stands in for that: same turn, straight after the expiry.
-    @Test("the watchdog's diagnosis survives a teardown in the same turn")
-    func watchdogSnapshotIsTakenBeforeTheFailure() async throws {
-        let engine = AVKitEngine()
-        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-        try #require(await engine.firstBeat(where: \.isReadyOrFailed) != nil, "the engine never settled")
-
-        let snapshot = engine.handleLoadTimeout(from: session)
-        await engine.teardown()
-
-        let info = try #require(snapshot, "the watchdog logged nothing at all")
-        #expect(info.itemStatus == "ready", "the snapshot never named the item's status")
-        #expect(info.transportState != nil)
-        #expect(info.logSummary.contains("item=ready"))
-    }
-
-    /// The item's OWN failure is the one the device keeps hitting (`CoreMediaErrorDomain
-    /// -19602` after a transcode re-anchor) and the one the engine used to report the least
-    /// about: `item.error` names a CoreMedia code, never the HTTP request behind it. That
-    /// request lives in the access/error logs, which the engine already reads for a watchdog
-    /// expiry — so a `.failed` must produce the same diagnosis, captured on the spot.
-    ///
-    /// `errorLogTail` is deliberately NOT asserted: AVFoundation files a refused MASTER
-    /// playlist as `item.error` and leaves `errorLog()` empty (verified here — a closed
-    /// loopback port, played, still logs nothing), and only fills it for a variant playlist or
-    /// a segment. What the summary always carries is enough to tell those apart.
-    ///
-    /// The teardown in the same turn is the point: `.failed` is what tears the engine down, so
-    /// a snapshot deferred past this line would read a nil'd `currentItem` and log dashes —
-    /// empty in exactly the case it exists for (same trap as `logWatchdogExpiry`).
-    @Test("an item's own failure is diagnosed like a watchdog expiry, before the teardown")
-    func itemFailureCarriesTheSameDiagnosis() async throws {
-        let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
-        // Nothing stubs `status` — AVFoundation owns it, so the failure has to be real, and
-        // it has to be an HTTP one: `AVPlayerItem.errorLog()` is the HTTP-streaming log, and a
-        // file:// failure leaves it empty. A closed loopback port refuses the connection
-        // immediately, so this needs no server and no network.
-        let session = try await engine.load(
-            .fixture(url: try #require(URL(string: "http://127.0.0.1:1/not-a-stream.m3u8")))
-        )
-        // The HTTP-streaming log only fills once AVPlayer actually tries to stream; a loaded
-        // but never-played item fails with an empty one.
+        try await engine.load(.fixture(url: AVKitFixtures.subtitled))
         await engine.play()
-        while let beat = await iterator.next() {
-            if case .failed = beat.state { break }
-        }
-        let item = try #require(engine.currentItem)
-
-        let snapshot = engine.handleStatusChange(item, from: session)
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && !$0.isBuffering && $0.seconds > 0.5 } },
+                                    "the stream never published an observed beat", timeout: CITimeScale.seconds(10))
+        #expect(log.beats.allSatisfy { $0.seconds < 4.5 }, "the seek before the load moved the stream: \(log.beats)")
+        log.stop()
         await engine.teardown()
-
-        let info = try #require(snapshot, "the item's failure was diagnosed with nothing at all")
-        #expect(info.itemStatus == "failed", "the snapshot never named the item's status")
-        #expect(info.transportState != nil)
-        // The fields that discriminate WHERE it died, which `item.error` alone never says:
-        // nothing transferred means the playlist itself never arrived; bytes with no loaded
-        // range means the playlist was fine and the segments were not.
-        #expect(info.logSummary.contains("item=failed"))
-        #expect(info.logSummary.contains("bytes="))
-        #expect(info.logSummary.contains("ranges="))
-        // A refused connection has no HTTP transaction to report, and the diagnosis says so
-        // rather than printing an empty field: "none" on device means the socket never got
-        // far enough to log, which is itself the answer.
-        #expect(info.accessLogDetail == "none")
-        #expect(info.errorLogDetail == "none")
     }
 
-    /// The device case the previous test cannot reach. `item.error` said `-19602`, the summary
-    /// said `bytes=— ranges=[]`, and the error log said `NSURLErrorDomain -1005` **with no URI**
-    /// — so the log named the failure and never named the request, which is the one thing that
-    /// separates "the player asked for the resume segment and the server dropped it" from "the
-    /// player asked for something else entirely". A server that answers the master playlist and
-    /// then hangs up on the variant produces exactly that pair of logs for real, and the
-    /// diagnosis has to carry both, in order.
-    @Test("the failure diagnosis carries the request sequence, not just the failure")
-    func itemFailureCarriesTheRequestSequence() async throws {
-        let server = try HLSLoopbackServer.servingOnlyTheMasterPlaylist()
+    /// The same overlap, seen from the stream: the newest target is observed, the superseded
+    /// one never is, and once both have returned the clock is observed again.
+    @Test("overlapping seeks: the newest target is observed, the superseded one never is, and playback after them is observed")
+    func overlappingSeeksSettleOnTheNewest() async throws {
+        let engine = try await readyEngine()
+        await engine.pause()
+        let log = PositionBeatLog(engine)
+
+        let first = Task { @MainActor in
+            await engine.seek(to: CMTime(seconds: 2.5, preferredTimescale: 600))
+        }
+        let second = Task { @MainActor in
+            await engine.seek(to: CMTime(seconds: 1, preferredTimescale: 600))
+        }
+        await second.value
+        try await requireEventually({
+            log.beats.contains { $0.provenance == .observed && abs($0.seconds - 1) < 0.5 }
+        }, "the engine never observed the newest target")
+        await first.value
+        let settled = log.beats
+        #expect(settled.contains { $0.provenance == .observed && abs($0.seconds - 2.5) < 0.5 } == false,
+                "the superseded seek published an observed beat: \(settled)")
+        await engine.play()
+        try await requireEventually({
+            log.beats.dropFirst(settled.count).contains { $0.provenance == .observed && !$0.isBuffering && $0.seconds > 1.2 }
+        }, "playback after the seeks was never observed")
+        log.stop()
+        await engine.teardown()
+    }
+
+    @Test("no beat of a resumed HLS stream escapes before its resume lands")
+    func resumeOnAStreamPublishesNothingBeforeItLands() async throws {
+        let server = try HLSLoopbackServer.serving(
+            directory: AVKitFixtures.longGOPStream, withholding: [], until: ResponseGate())
         defer { server.stop() }
-        let master = try await server.baseURL().appending(path: "master.m3u8")
-
-        let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
-        let session = try await engine.load(.fixture(url: master))
+        let engine = AVKitEngine(clock: TestClock())
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture(url: try await server.baseURL().appending(path: "main.m3u8"),
+                                       startTime: CMTime(seconds: 30, preferredTimescale: 600)))
         await engine.play()
-        while let beat = await iterator.next() {
-            if case .failed = beat.state { break }
-        }
-        let item = try #require(engine.currentItem)
 
-        let info = try #require(engine.handleStatusChange(item, from: session))
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && !$0.isBuffering } },
+                                    "the resume never resolved", timeout: CITimeScale.seconds(10))
+        // The resume lands on its segment's first frame, at 26 s.
+        let early = log.beats.filter { $0.provenance == .observed && $0.seconds < 25.9 }
+        #expect(early.isEmpty, "an observed beat escaped the resume window: \(early)")
+        log.stop()
         await engine.teardown()
-
-        // The server's own record: the master was served, the variant was asked for and
-        // dropped. Everything below is the engine's report of that same sequence.
-        #expect(server.pathsRequested.contains("/master.m3u8"))
-
-        // The access log is EMPTY here, and that is a fact about AVFoundation worth pinning:
-        // an `AVPlayerItemAccessLogEvent` is a *playback* session record, so it is only filed
-        // once media starts flowing — a master playlist that transferred fine still logs
-        // nothing when the variant behind it never arrives. So on device `hlsRequests=none`
-        // does not mean "nothing was requested"; it means playback never began, and the error
-        // log below is the only account of the requests. (If this ever starts reporting
-        // events, the assertion flips and the extra fields are already formatted for it.)
-        #expect(info.accessLogDetail == "none")
-        // The error log — WHICH request failed. The URI is the field the device log was
-        // missing, and it is present here, so a nil URI on device is AVFoundation declining to
-        // attribute the failure rather than the engine dropping it.
-        #expect(info.errorLogDetail != "none", "the diagnosis reported no HLS errors at all")
-        #expect(info.errorLogDetail.contains("main.m3u8"), "the failing request went unnamed")
-        #expect(info.errorLogDetail.contains("status="))
-        // The log may never carry a query — that is where the ApiKey rides.
-        #expect(!info.errorLogDetail.contains("?"))
-    }
-
-    /// Both expiries are a no-op once the item is gone — the guard that stops a teardown
-    /// racing a fired timer into a phantom failure.
-    @Test("a watchdog that fires after teardown publishes nothing")
-    func expiryAfterTeardownIsANoOp() async throws {
-        let engine = AVKitEngine()
-        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-        await engine.teardown()
-
-        engine.handleLoadTimeout(from: session)
-        engine.handleStallTimeout(from: session)
-
-        // The stream is finished, so a beat published here could only arrive as a buffered
-        // leftover ahead of the terminal nil.
-        var iterator = engine.state.makeAsyncIterator()
-        while let beat = await iterator.next() {
-            if case .failed(let error) = beat.state {
-                Issue.record("a torn-down engine published \(error)")
-                break
-            }
-        }
     }
 }
 
@@ -808,7 +688,7 @@ struct AVKitSupersededSessionTests {
     @Test("no callback of a superseded session reaches the stream",
           arguments: SupersededCallback.allCases)
     func supersededSessionPublishesNothing(callback: SupersededCallback) async throws {
-        let engine = AVKitEngine()
+        let engine = AVKitEngine(clock: TestClock())
 
         // Session A, driven to the state this callback needs. `.statusKVO` wants an item that
         // really failed — nothing here stubs `status`, AVFoundation owns it.
@@ -867,86 +747,6 @@ struct AVKitSupersededSessionTests {
     }
 }
 
-/// The engine-side ways a session ends while the item underneath it is still alive.
-enum TerminalPath: String, CaseIterable, CustomTestStringConvertible {
-    case loadTimeout
-    case stallTimeout
-    case end
-
-    var testDescription: String { rawValue }
-
-    @MainActor
-    func fire(on engine: AVKitEngine, session: PlaybackSessionID) {
-        switch self {
-        case .loadTimeout: engine.handleLoadTimeout(from: session)
-        case .stallTimeout: engine.handleStallTimeout(from: session)
-        case .end: engine.handleEnded(from: session)
-        }
-    }
-}
-
-/// A terminal beat is the last word on its session. The app does not tear the engine down on
-/// `.failed` (the user's retry or exit does), so the item, its observers and the player stay
-/// mounted under the error scrim, and AVPlayer is free to recover: a link that comes back after
-/// the stall deadline flips `timeControlStatus` to `.playing`, a slow HLS item turns ready after
-/// the load deadline. A beat published from that recovery reaches `PlayerViewModel` as a live
-/// beat and puts playback back over the error. Only the next `load()` opens a session again.
-///
-/// The recovery is real: the fixture is played past two periodic ticks, so the item's status
-/// KVO, the `timeControlStatus` KVO and the periodic observer all fire after the terminal beat.
-@Suite("AVKitEngine — a terminal beat ends the session", .serialized, .scaledTimeLimit())
-@MainActor
-struct AVKitTerminalSessionTests {
-
-    /// The app keeps the engine through `.failed`, so a session that ended must also stop the
-    /// player: an item left playing under the error scrim is audio nobody can pause.
-    @Test("a terminal beat stops the player and nothing follows it",
-          arguments: TerminalPath.allCases)
-    func nothingFollowsATerminalBeat(path: TerminalPath) async throws {
-        let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
-        let session = try await engine.load(.fixture(url: AVKitFixtures.subtitled))
-        await engine.play()
-
-        path.fire(on: engine, session: session)
-
-        try await Task.sleep(for: .seconds(1.5))
-        #expect(engine.avPlayer.rate == 0, "the player kept playing after the terminal beat")
-        #expect(CMTimeGetSeconds(engine.currentTime) < 0.5,
-                "the item played on to \(CMTimeGetSeconds(engine.currentTime))s under the terminal beat")
-        await engine.teardown()
-        var states: [PlaybackState] = []
-        while let beat = await iterator.next() { states.append(beat.state) }
-        let terminal = try #require(states.firstIndex { $0.isTerminal }, "no terminal beat in \(states)")
-        let after = Array(states[(terminal + 1)...])
-        #expect(after.isEmpty, "the session kept publishing after \(states[terminal]): \(after)")
-    }
-
-    /// The control: the latch is the session's, so the next `load()` publishes as usual.
-    @Test("the next load publishes again")
-    func nextLoadPublishesAgain() async throws {
-        let engine = AVKitEngine()
-        let ended = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-        engine.handleStallTimeout(from: ended)
-
-        let live = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-        let ready = await engine.firstBeat { beat in
-            if case .ready = beat.state, beat.session == live { true } else { false }
-        }
-        #expect(ready != nil, "the reload after a terminal beat never reached .ready")
-        await engine.teardown()
-    }
-}
-
-extension PlaybackState {
-    fileprivate var isTerminal: Bool {
-        switch self {
-        case .ended, .failed: true
-        default: false
-        }
-    }
-}
-
 /// An Apple TV that switches frame rate while AVPlayer chooses a variant fails the item with
 /// `AVErrorNoCompatibleAlternatesForExternalDisplay`, so the display is asked before the item
 /// reaches the player.
@@ -962,7 +762,7 @@ struct AVKitDisplayPreparationTests {
     }
 
     private static func engine(_ preparations: Preparations) -> AVKitEngine {
-        let engine = AVKitEngine(prepareDisplay: { [preparations] asset in
+        let engine = AVKitEngine(clock: TestClock(), prepareDisplay: { [preparations] asset in
             preparations.playerHadItem.append(preparations.engine?.avPlayer.currentItem != nil)
             if let url = (asset as? AVURLAsset)?.url { preparations.preparedURLs.append(url) }
             if preparations.tearsDown { await preparations.engine?.teardown() }
@@ -1008,24 +808,4 @@ struct AVKitDisplayPreparationTests {
         }
         #expect(engine.avPlayer.currentItem == nil)
     }
-}
-
-// Pending: the behaviors docs/superpowers/plans/2026-11-25-playback-tests-at-the-ends.md adds at the engine.
-@Suite("AVKitEngine — playing what the app plays", .serialized, .scaledTimeLimit())
-@MainActor
-struct AVKitEngineEndTests {
-    @Test("a file that never becomes ready fails at 30 s, and playback that stalls for 45 s fails as a stall",
-          .disabled("pending"))
-    func watchdogsFireOnARealStall() async throws {}
-
-    @Test("a frame captured while a file plays is the picture on screen, for a file played directly and for a bridged one",
-          .disabled("pending"))
-    func capturedFrameIsThePictureOnScreen() async throws {}
-
-    @Test("choosing a Jellyfin subtitle shows that subtitle, a forced-only track is offered only as forced, and the option index never shifts by one",
-          .disabled("pending"))
-    func jellyfinSubtitleChoice() async throws {}
-
-    @Test("a bridged file plays through the app's engine", .disabled("pending"))
-    func bridgedFilePlays() async throws {}
 }
