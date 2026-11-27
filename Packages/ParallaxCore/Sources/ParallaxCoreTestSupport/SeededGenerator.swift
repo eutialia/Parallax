@@ -1,5 +1,5 @@
 /// SplitMix64: the same inputs for a property on every run of one seed.
-public struct SeededGenerator: RandomNumberGenerator {
+public struct SeededGenerator: RandomNumberGenerator, Sendable {
     private var state: UInt64
 
     public init(seed: UInt64) { state = seed }

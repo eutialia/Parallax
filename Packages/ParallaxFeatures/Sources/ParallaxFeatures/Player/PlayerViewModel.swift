@@ -677,8 +677,7 @@ public final class PlayerViewModel {
 
     private let deviceProfileBuilder: DeviceProfileBuilder
     /// Every timer the player runs: the stall debounce, the keepalive, the delivery probe, the
-    /// thumbnail backfill, the reload's resolve deadline, the seek-hold watchdog and the SMB
-    /// resume throttle.
+    /// reload's resolve deadline, the seek-hold watchdog and the SMB resume throttle.
     private let clock: any Clock<Duration>
     /// `clock` read as time since this view model was built.
     private let elapsed: @Sendable () -> Duration
@@ -908,13 +907,6 @@ public final class PlayerViewModel {
     /// previous item's stream, picks and sidecar into the session that replaced it.
     private var sessionGeneration = 0
 
-    /// Low-priority SMB thumbnail backfill — waits past startup churn, then grabs one
-    /// frame from the live engine. Cancelled on session teardown (`stop()` / deinit) so a
-    /// dismissed player never pays for a capture that will never be stored. Kept once it has
-    /// run, because it is also the once-per-session gate: a resume-from-pause or post-stall
-    /// `.playing` beat never schedules a second one.
-    private var thumbnailBackfillTask: Task<Void, Never>?
-
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors
     /// PlaybackInfoService.resolve(item:capabilities:startTime:selection:).
@@ -927,13 +919,6 @@ public final class PlayerViewModel {
     /// the engine's load and stall deadlines only arm from `engine.play()` — so an unbounded
     /// resolve left the scrim up forever (tvOS field report, 2026-07-20).
     static let reloadResolveDeadline: Duration = .seconds(15)
-
-    /// SMB only: hands `MediaArtworkProvider` a frame grabbed from the live session, with the
-    /// duration sampled at call time. A no-op on Jellyfin.
-    private let backfillThumbnail: @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void
-
-    /// Delay before the SMB thumbnail backfill grabs its frame — see `scheduleThumbnailBackfill()`.
-    static let backfillDelay: Duration = .seconds(8)
 
     public init(
         deviceProfileBuilder: DeviceProfileBuilder,
@@ -952,7 +937,6 @@ public final class PlayerViewModel {
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
         smbResumeStore: SMBResumeStore,
-        backfillThumbnail: @escaping @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void = { _, _ in },
         fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -971,7 +955,6 @@ public final class PlayerViewModel {
         self.reporter = SessionReporter(playbackInfo: playbackInfo, clock: clock)
         self.diagnostics = SessionDiagnostics(clock: clock, fetchDelivery: fetchDelivery)
         self.smbResumeStore = smbResumeStore
-        self.backfillThumbnail = backfillThumbnail
         self.accent = PlayerAccent(fetchArtwork: fetchArtwork)
         sidecar.onFailed = { [weak self] streamIndex in
             self?.sidecarFailed(streamIndex: streamIndex)
@@ -1021,7 +1004,6 @@ public final class PlayerViewModel {
         // stop()); cancelling here makes teardown immediate if stop() was
         // never reached.
         stateTask?.cancel()
-        thumbnailBackfillTask?.cancel()
         seekHoldWatchdogTask?.cancel()
     }
 
@@ -1399,36 +1381,7 @@ public final class PlayerViewModel {
     private func clearSMBSession() async {
         guard let session = smbSession else { return }
         smbSession = nil
-        // Session-scoped one-shot: a fresh SMB session (retry, next file) must not find the
-        // previous one's backfill already scheduled — and that still-sleeping task must not
-        // wake up against the new session either.
-        thumbnailBackfillTask?.cancel()
-        thumbnailBackfillTask = nil
         await session.resumeSaveTask?.value
-    }
-
-    /// Best-effort SMB thumbnail backfill: waits past playback startup churn (~8s — first frames
-    /// are often black / fade-in, and the engine is still settling decode + buffer), then — if the
-    /// session is still the active one and no thumbnail already exists for this file — grabs a
-    /// frame from the live engine and stores it into the SMB thumbnail cache, healing a
-    /// previously-failed or never-attempted thumbnail just by being watched. Low priority: must
-    /// never affect playback. Cancelled on session teardown (`stop()`, `tearDownEngine()`, deinit).
-    private func scheduleThumbnailBackfill() {
-        thumbnailBackfillTask?.cancel()
-        // `self` is only reached after the sleep: holding a strong `self` across an 8s sleep
-        // pins the whole view model for the length of the delay and puts the `isolated deinit`'s
-        // cancel out of reach. Same shape as the stall debounce / the delivery probe.
-        thumbnailBackfillTask = Task(priority: .low) { [weak self, clock] in
-            try? await clock.sleep(for: Self.backfillDelay)
-            guard !Task.isCancelled, let self else { return }
-            guard let session = self.smbSession, let engine = self.engine else { return }
-            let duration: Duration? = self.hasKnownDuration
-                ? .seconds(CMTimeGetSeconds(self.currentDuration))
-                : nil
-            await self.backfillThumbnail(duration) { [weak engine] in
-                await engine?.captureFrame()
-            }
-        }
     }
 
     /// Resolve + load + play. Shared by first play (`start`) and a transcode
@@ -1679,19 +1632,9 @@ public final class PlayerViewModel {
 
     /// Cancels the engine's state subscription and tears the engine down, clearing
     /// the reference. The teardown with no session report and no UI reset: a load failure's,
-    /// and the first half of `stop()`'s. The session's keepalive and encoding die here too:
-    /// with no engine left to consume the stream, pinging the session would keep an orphaned
-    /// ffmpeg job transcoding flat-out for as long as the user sits on the failure overlay —
-    /// the exact contention `stopEncoding` exists to prevent — and a session that wedged
-    /// before its first `.playing` beat never reports a stop that would end the job either.
-    /// Idempotent vs a racing `stop()`.
+    /// and the first half of `stop()`'s. Idempotent vs a racing `stop()`.
     private func tearDownEngine() async {
         diagnostics.reset()
-        // The backfill is a ONE-SHOT per SMB session, armed on the first `.playing` beat and
-        // sitting on a multi-second delay. Left armed, it would fire against an engine being
-        // torn down and burn the session's only attempt.
-        thumbnailBackfillTask?.cancel()
-        thumbnailBackfillTask = nil
         stateTask?.cancel()
         stateTask = nil
         // No engine, no session: a beat that survives the cancellation below belongs to media
@@ -3113,13 +3056,6 @@ public final class PlayerViewModel {
             // Jellyfin: report to the server session. SMB: persist the position locally —
             // same beat, same ~10s throttle discipline as the progress report.
             await reportLiveBeat(position: position, isPaused: false, opensSession: true)
-            // One-shot SMB thumbnail backfill: first `.playing` only (the task is the gate;
-            // resume-from-pause / post-stall beats skip it). Schedules an 8s-delayed
-            // low-priority capture so startup churn and an often-black first frame don't
-            // poison the cache — see `scheduleThumbnailBackfill()`.
-            if smbSession != nil, thumbnailBackfillTask == nil {
-                scheduleThumbnailBackfill()
-            }
         case .paused(let position, let duration, let buffered, let provenance):
             // A LIVE beat like `.playing`: a paused AVPlayer still renders the frame it seeked
             // to, so this releases the held frame — and when it is the reload's first live
@@ -3214,6 +3150,8 @@ public final class PlayerViewModel {
             // this session's.
             unfreezeVideoSurface()
             surface = .failed(Self.map(error))
+            // Nothing plays this stream again: a retry resolves a new session.
+            await reporter.stopEncodingIfNeeded()
         }
     }
 

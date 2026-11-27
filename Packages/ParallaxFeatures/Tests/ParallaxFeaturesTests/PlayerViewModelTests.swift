@@ -3689,7 +3689,6 @@ struct PlayerViewModelTests {
     func loadFailureTearsDownSessionLifecycle() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine()
-        engine.loadError = AppError.playback(.unsupportedFormat(reason: nil))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let clock = TestClock()
         let vm = makePlayerVM(
@@ -3699,6 +3698,9 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
+        // The engine's load returns, and the stream it opened cannot play.
+        engine.push(.failed(.assetNotPlayable))
+        try await engine.settle()
         // The keepalive arms at resolve time (the job exists from then on), so a
         // load failure must tear BOTH down: without the explicit kill + ping
         // cancel, the pings keep an orphaned ffmpeg job transcoding flat-out for
@@ -4299,196 +4301,6 @@ struct PlayerViewModelTests {
             #expect(nowPlaying.clearCount == 0)
             await vm.stop()
             #expect(nowPlaying.clearCount == 1)
-        }
-    }
-
-    /// The SMB thumbnail backfill seam (`scheduleThumbnailBackfill()`, `backfillThumbnail`):
-    /// a session's first `.playing` beat schedules a low-priority frame capture,
-    /// `PlayerViewModel.backfillDelay` later, that lands in the app's `MediaArtworkProvider`
-    /// sink. These tests drive the seam directly (never a real `MediaArtworkProvider`) and run
-    /// the delay out on a `TestClock`.
-    @Suite("SMB thumbnail backfill", .scaledTimeLimit())
-    @MainActor
-    struct SMBThumbnailBackfillTests {
-        /// The backfill's delay runs on this; nothing else parks on an SMB session's clock.
-        private let clock = TestClock()
-
-        /// Lets the backfill's delay run out.
-        private func runOutBackfillDelay() async throws {
-            try await clock.waitForSleep(dueIn: PlayerViewModel.backfillDelay)
-            clock.advance(by: PlayerViewModel.backfillDelay)
-        }
-
-        /// Records every `backfillThumbnail` invocation the VM drives — the `duration`
-        /// argument, plus whatever the test's own closure got back from calling
-        /// the injected `captureFrame`. Actor-isolated: the VM calls in from its own low-priority
-        /// backfill `Task`, off the MainActor test body.
-        private actor BackfillRecorder {
-            typealias Invocation = (duration: Duration?, data: Data?)
-
-            private(set) var invocations: [Invocation] = []
-            private var awaitingFirst: [CheckedContinuation<Invocation, Never>] = []
-
-            func record(duration: Duration?, data: Data?) {
-                invocations.append((duration, data))
-                awaitingFirst.forEach { $0.resume(returning: invocations[0]) }
-                awaitingFirst = []
-            }
-
-            /// The first invocation, whenever it lands. No ceiling of its own: the backfill runs
-            /// on a low-priority task that a loaded machine can starve for seconds, and the
-            /// suite's time limit is the anti-hang bound.
-            func first() async -> Invocation {
-                if let first = invocations.first { return first }
-                return await withCheckedContinuation { awaitingFirst.append($0) }
-            }
-        }
-
-        /// The one `backfillThumbnail` sink these tests install: forwards the arguments the VM
-        /// passed, plus whatever the VM's own capture closure returns, into `recorder`.
-        private func recordingSink(
-            into recorder: BackfillRecorder
-        ) -> @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void {
-            { duration, captureFrame in
-                await recorder.record(duration: duration, data: await captureFrame())
-            }
-        }
-
-        /// `makeVM` with the shared recording sink already wired — what every SMB case here wants.
-        private func makeVM(engine: FakePlaybackEngine, recorder: BackfillRecorder) -> PlayerViewModel {
-            makeVM(engine: engine, backfillThumbnail: recordingSink(into: recorder))
-        }
-
-        /// A `PlayerViewModel` on the SMB path with the backfill sink injectable — mirrors
-        /// `SMBPlaybackStartTests.makeVM` but exposes `backfillThumbnail`, which that suite
-        /// predates.
-        private func makeVM(
-            engine: FakePlaybackEngine,
-            backfillThumbnail: @escaping @Sendable (Duration?, @escaping @Sendable () async -> Data?) async -> Void = { _, _ in }
-        ) -> PlayerViewModel {
-            PlayerViewModel(
-                deviceProfileBuilder: makeTestDeviceProfileBuilder(),
-                clock: clock,
-                playbackInfo: StubPlaybackReporting(),
-                resolve: { _, _, _, _ in
-                    Issue.record("SMB playback must not call the Jellyfin resolve")
-                    throw AppError.playback(.unsupportedFormat(reason: nil))
-                },
-                engineFactory: { engine },
-                audioSession: NoopAudioSession(),
-                nowPlaying: SpyNowPlaying(),
-                subtitleFetch: { _ in .rejected },
-                smbResumeStore: SMBTestFixtures.inertResumeStore(),
-                backfillThumbnail: backfillThumbnail
-            )
-        }
-
-        private func smbItem() -> SMBPlaybackItem {
-            SMBPlaybackItem(
-                itemID: ItemID(rawValue: "smb-backfill-item"),
-                url: URL(string: "http://127.0.0.1:8080/token/Backfill.mp4")!,
-                title: "Backfill"
-            )
-        }
-
-        @Test("an SMB session's first .playing beat schedules exactly one backfill; a second .playing beat schedules none")
-        func firstPlayingBeatSchedulesExactlyOneBackfill() async throws {
-            let engine = FakePlaybackEngine()
-            let recorder = BackfillRecorder()
-            let vm = makeVM(engine: engine, recorder: recorder)
-
-            await vm.start(smbItem: smbItem())
-            engine.push(.playing(1, duration: .seconds(6000)))
-            engine.push(.playing(2, duration: .seconds(6000)))
-            try await engine.settle()
-
-            try await runOutBackfillDelay()
-            _ = await recorder.first()
-
-            let invocations = await recorder.invocations
-            #expect(invocations.count == 1)
-        }
-
-        @Test("the engine's captured frame reaches the backfill sink's capture closure after the injected delay")
-        func capturedFrameReachesSinkAfterDelay() async throws {
-            let engine = FakePlaybackEngine()
-            let frame = Data([0xAA, 0xBB, 0xCC])
-            engine.captureFrameResult = frame
-            let recorder = BackfillRecorder()
-            let vm = makeVM(engine: engine, recorder: recorder)
-
-            await vm.start(smbItem: smbItem())
-            engine.push(.playing(1, duration: .seconds(6000)))
-            try await engine.settle()
-
-            try await runOutBackfillDelay()
-
-            #expect(await recorder.first().data == frame)
-            #expect(engine.calls.contains("captureFrame"))
-        }
-
-        /// Two independent protections, either of which alone would hold: `stop()` cancels the
-        /// pending backfill `Task` outright, and it also nils the SMB session — which the task
-        /// re-reads AFTER its sleep, so even a cancel that lost the race finds nothing to capture
-        /// for.
-        @Test("stop() before the backfill delay fires prevents any store")
-        func stopBeforeDelayPreventsStore() async throws {
-            let engine = FakePlaybackEngine()
-            let recorder = BackfillRecorder()
-            let vm = makeVM(engine: engine, recorder: recorder)
-
-            await vm.start(smbItem: smbItem())
-            engine.push(.playing(1, duration: .seconds(6000)))
-            try await engine.settle()
-            try await clock.waitForSleep(dueIn: PlayerViewModel.backfillDelay)
-
-            // Well within the delay — the pending backfill Task must not survive this.
-            await vm.stop()
-
-            #expect(clock.pendingSleeps == [], "the backfill delay outlived stop()")
-            #expect(await recorder.invocations.isEmpty)
-        }
-
-        @Test("a non-SMB (Jellyfin) session never invokes the backfill sink")
-        func nonSMBSessionNeverInvokesBackfill() async throws {
-            let engine = FakePlaybackEngine()
-            let resolved = PlayerFixtures.resolved()
-            let recorder = BackfillRecorder()
-            let vm = PlayerViewModel(
-                deviceProfileBuilder: makeTestDeviceProfileBuilder(),
-                clock: clock,
-                playbackInfo: StubPlaybackReporting(),
-                resolve: { _, _, _, _ in resolved },
-                engineFactory: { engine },
-                audioSession: NoopAudioSession(),
-                nowPlaying: SpyNowPlaying(),
-                subtitleFetch: { _ in .rejected },
-                smbResumeStore: SMBTestFixtures.inertResumeStore(),
-                backfillThumbnail: recordingSink(into: recorder)
-            )
-
-            await vm.start(item: PlayerFixtures.movieDetail())
-            engine.push(.playing(10, duration: resolved.runtime!))
-            try await engine.settle()
-
-            // The gate is `smbSession != nil`, which a Jellyfin session never sets.
-            #expect(!clock.pendingSleeps.contains(PlayerViewModel.backfillDelay), "a Jellyfin session armed the backfill")
-            #expect(await recorder.invocations.isEmpty)
-        }
-
-        @Test("an unknown duration is never carried into the backfill sink")
-        func unknownDurationStoresNilDuration() async throws {
-            let engine = FakePlaybackEngine()
-            let recorder = BackfillRecorder()
-            let vm = makeVM(engine: engine, recorder: recorder)
-
-            await vm.start(smbItem: smbItem())
-            engine.push(.playing(1, duration: .indefinite))
-            try await engine.settle()
-
-            try await runOutBackfillDelay()
-
-            #expect(await recorder.first().duration == nil)
         }
     }
 }

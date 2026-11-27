@@ -283,31 +283,6 @@ public actor MediaArtworkProvider {
         )
     }
 
-    /// SMB playback-session thumbnail backfill entry point. Called from `PlayerViewModel` a few
-    /// seconds into an SMB session that has no thumbnail yet. Checks the cache first so a file that
-    /// already has one never pays for a frame capture; `captureFrame` is only invoked on a real
-    /// miss. Best-effort throughout: any nil from `captureFrame`, or a storage failure, is a silent
-    /// no-op — this must never surface an error to playback. A successful store also clears any
-    /// persistent failure marker (see `SMBThumbnailCache.store`), so a previously-failed file heals
-    /// itself just by being watched. The movie→key recipe lives only here (via `thumbnailKey`) so
-    /// the player never reimplements it.
-    ///
-    /// Skipped off a LAN link: the capture's range reads queue on the same serialized reader
-    /// playback pulls its next chunk from, and the player needs that bandwidth more.
-    public func backfillThumbnail(
-        item: Item,
-        ref: SMBServerRef,
-        duration: Duration?,
-        captureFrame: @Sendable () async -> Data?
-    ) async {
-        guard let key = thumbnailKey(for: item, ref: ref) else { return }
-        // Cross-actor call into `SMBThumbnailCache` — needs await even from this actor.
-        guard await cache.existing(for: key) == nil else { return }
-        guard await connections.linkClass(ref.data.host) == .lan else { return }
-        guard let data = await captureFrame() else { return }
-        _ = await cache.store(data, duration: duration, for: key)
-    }
-
     /// One-time link classification for `ref`'s host, run before a prefetch batch schedules. Skips
     /// instantly once the pool knows the class; otherwise pays one Keychain read + one probe
     /// checkout (which the pool keeps warm for the first real fetch). Non-movie items can't build a

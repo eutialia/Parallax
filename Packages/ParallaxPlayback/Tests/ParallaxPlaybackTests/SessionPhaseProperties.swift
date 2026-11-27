@@ -18,7 +18,7 @@ struct SessionPhaseProperties {
     ]
     private static let terminal: [PlaybackState] = [.ended, .failed(.assetNotPlayable), .failed(.networkStalled)]
 
-    private static func events(using random: inout SplitMix) -> [Event] {
+    private static func events(using random: inout SeededGenerator) -> [Event] {
         (0..<Int.random(in: 0...40, using: &random)).map { _ in
             guard Int.random(in: 0..<6, using: &random) > 0 else { return .load }
             let states = Int.random(in: 0..<5, using: &random) == 0 ? terminal : ongoing
@@ -29,7 +29,7 @@ struct SessionPhaseProperties {
     @Test("only the live session publishes, its terminal beat ends it, and only the next load opens another")
     func onlyTheLiveSessionPublishes() {
         let seed = UInt64(0x7068_6173_6573)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<500 {
             let events = Self.events(using: &random)
             var phase = SessionPhase.live(.none)

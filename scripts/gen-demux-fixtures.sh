@@ -734,9 +734,6 @@ for turn in 90 180 270; do
     ffmpeg -v error -y -display_rotation "$turn" -i "$OUT/numbered-h264-silent.mkv" -map 0:v -c copy \
         -movflags +faststart -bitexact -fflags +bitexact "$OUT/numbered-h264-rotated-$turn.mp4"
 done
-# The numbered picture in an MP4 AVPlayer plays as it is stored, so the engine's capture of a
-# file played directly has the same picture as one of a bridged file.
-numbered numbered-h264.mp4 12 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -movflags +faststart
 # An HLS presentation as a Jellyfin transcode serves it: the video, and a WebVTT rendition for
 # each of three subtitle streams, the second of them forced only. Each cue names its own track.
 # The renditions are named "Unknown", as a transcode manifest that dropped the names reads, so

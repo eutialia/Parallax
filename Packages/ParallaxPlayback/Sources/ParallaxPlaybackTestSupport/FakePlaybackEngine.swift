@@ -90,14 +90,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// contract also allows: suites that script a seek's settle beat by beat need it silent.
     public nonisolated(unsafe) var landsSeeks = false
 
-    /// Set to make every `load` throw after recording — a failed stream load.
-    public nonisolated(unsafe) var loadError: Error? = nil
-
-    /// Returned by `captureFrame()`. `nil` (default) matches the protocol default; a test that
-    /// wants to prove a captured frame flows through to a store sets this before pushing the
-    /// beat that schedules the capture.
-    public nonisolated(unsafe) var captureFrameResult: Data? = nil
-
     private let continuation: AsyncStream<PlaybackBeat>.Continuation
     /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
     private let barrier: DrainBarrier
@@ -211,7 +203,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
         session = opened
         push(.loading, from: opened)
         await gates[.load]!.park()
-        if let loadError { throw loadError }
         guard session == opened, !recordedState.read({ $0.isTornDown }) else { throw CancellationError() }
         recordedState.withLock { $0.hasLoaded = true }
         return opened
@@ -325,11 +316,6 @@ public final class FakePlaybackEngine: PlaybackEngine {
         }
         await gates[.teardown]!.park()
         finish()
-    }
-
-    public func captureFrame() async -> Data? {
-        recordedState.withLock { $0.calls.append("captureFrame") }
-        return captureFrameResult
     }
 }
 

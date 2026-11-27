@@ -171,10 +171,6 @@ struct AVKitEngineEndTests {
         await engine.teardown()
     }
 
-    @Test("a frame captured while a file plays is the picture on screen, for a file played directly and for a bridged one",
-          .disabled("pending"))
-    func capturedFrameIsThePictureOnScreen() async throws {}
-
     /// The streams a Jellyfin server lists for the subtitled stream, numbered as Jellyfin numbers
     /// them: the video first.
     private static let subtitledStreams = [
