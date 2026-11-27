@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxCoreTestSupport
 import ParallaxCore
 import ParallaxTestScaling
 @testable import ParallaxPlayback
@@ -7,9 +8,54 @@ import ParallaxTestScaling
 @Suite("SessionBlockCache", .scaledTimeLimit())
 struct SessionBlockCacheTests {
 
+    /// A file's blocks, some kept or on their way, and one asked for.
+    private struct Asked: CustomStringConvertible {
+        let index: Int64
+        let last: Int64
+        let perRead: Int
+        let present: Set<Int64>
+
+        static func random(using generator: inout SeededGenerator) -> Asked {
+            let last = Int64.random(in: 0...40, using: &generator)
+            let index = Int64.random(in: 0...last, using: &generator)
+            let density = Double.random(in: 0...1, using: &generator)
+            let present = Set((0...last).filter { $0 != index && Double.random(in: 0...1, using: &generator) < density })
+            return Asked(index: index, last: last, perRead: Int.random(in: 1...12, using: &generator), present: present)
+        }
+
+        var count: Int64 {
+            SessionBlockCache.blocksRead(for: index, last: last, perRead: perRead, isPresent: present.contains)
+        }
+
+        var description: String { "block \(index) of 0...\(last), \(perRead) a read, present \(present.sorted())" }
+    }
+
+    private static let cases = 400
+
+    @Test("a read takes the block asked for and, reading on from the block before, the blocks after it up to the first one kept or on its way, the file's end, or a read's worth")
+    func aReadTakesTheBlocksAfterOnlyReadingOn() {
+        let seed = UInt64.random(in: .min ... .max)
+        var generator = SeededGenerator(seed: seed)
+        for _ in 0..<Self.cases {
+            let asked = Asked.random(using: &generator)
+            let count = asked.count
+            let taken = asked.index..<asked.index + count
+            let readingOn = asked.present.contains(asked.index - 1)
+            let following = asked.index + count
+            let endsWhereItMust = count == Int64(asked.perRead) || following > asked.last
+                || asked.present.contains(following)
+
+            #expect(count >= 1 && count <= Int64(asked.perRead), "seed \(seed): \(asked) read \(count)")
+            #expect(taken.upperBound - 1 <= asked.last, "seed \(seed): \(asked) read \(count)")
+            #expect(!taken.contains { asked.present.contains($0) }, "seed \(seed): \(asked) read \(count)")
+            #expect(readingOn || count == 1, "seed \(seed): \(asked) read \(count)")
+            #expect(!readingOn || endsWhereItMust, "seed \(seed): \(asked) read \(count)")
+        }
+    }
+
     /// Holds every read until `open()`, and keeps what was asked.
     private actor GatedReader: RandomAccessReading {
-        private let backing = InMemoryRandomAccessReader(data: Data(count: 1 << 20))
+        private let backing = InMemoryRandomAccessReader(data: Data(count: 16 << 20))
         private var isOpen = false
         private var held: [CheckedContinuation<Void, Never>] = []
         private var arrivalWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -48,26 +94,13 @@ struct SessionBlockCacheTests {
         }
     }
 
-    @Test("a block asked for while it is being read is not read again")
-    func blockAskedForDuringItsReadIsReadOnce() async throws {
-        let reader = GatedReader()
-        let cache = SessionBlockCache(reader: reader, size: 1 << 20, blockSize: 4096)
-
-        async let first = Self.block(0, of: cache)
-        await reader.waitForReads(1)
-        async let second = Self.block(0, of: cache)
-        // Time for the second ask to reach the reader, were it going to.
-        try await Task.sleep(for: .milliseconds(50))
-        await reader.open()
-
-        #expect(try await first.get() == second.get())
-        #expect(await reader.asked.count == 1)
-    }
-
+    /// What this saves is a round trip to the share for each block, which a delivery's ends see
+    /// only as time.
     @Test("a block read right after one still being read is read with the blocks after it, as reading on in order")
     func blockAfterOneInFlightReadsAhead() async throws {
         let reader = GatedReader()
-        let cache = SessionBlockCache(reader: reader, size: 1 << 20, blockSize: 4096, blocksPerRead: 8)
+        let cache = SessionBlockCache(reader: reader, size: 16 << 20)
+        let block = UInt64(SessionBlockCache.blockSize)
 
         async let first = Self.block(0, of: cache)
         await reader.waitForReads(1)
@@ -76,6 +109,7 @@ struct SessionBlockCacheTests {
         await reader.open()
         _ = try await (first.get(), second.get())
 
-        #expect(await reader.asked.map { [$0.offset, UInt64($0.length)] } == [[0, 4096], [4096, 8 * 4096]])
+        #expect(await reader.asked.map { [$0.offset, UInt64($0.length)] }
+            == [[0, block], [block, UInt64(SessionBlockCache.blocksPerRead) * block]])
     }
 }

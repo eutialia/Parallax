@@ -17,7 +17,7 @@ struct MediaDeliveryLargeFileTests {
     @MainActor
     @Test("a file over 256 MB starts playing before all its keyframes are listed", arguments: [false, true])
     func largeFileStartsBeforeItsKeyframesAreListed(timeRunsOut: Bool) async throws {
-        let reader = try PaddedTransportStream()
+        let reader = try PaddedRecording()
         let clock = TestClock()
         let opening = Task { try await DeliveredFile.start(reading: reader, named: "recording.ts", clock: clock) }
         if timeRunsOut {
@@ -48,7 +48,7 @@ struct MediaDeliveryLargeFileTests {
     @Test("stopping a bridged delivery while a read is stuck returns within 2 s, and stopping it again does nothing")
     func stopWhileAReadIsStuck() async throws {
         let clock = TestClock()
-        let reader = try PaddedTransportStream()
+        let reader = try PaddedRecording()
         let file = try await DeliveredFile.start(reading: reader, named: "recording.ts", clock: clock)
         let segments = try await file.segmentSeconds(of: "v.m3u8")
         reader.wedgeReads()
@@ -71,14 +71,14 @@ struct MediaDeliveryLargeFileTests {
     @Test("when a segment's read fails partway, AVPlayer gets a response it cannot mistake for a whole segment",
           arguments: [(4 << 20, "HTTP/1.1 500 Internal Server Error"), (12 << 20, "HTTP/1.1 200 OK")])
     func segmentReadFailingPartway(failingAfter bytes: Int, startsAs status: String) async throws {
-        let reader = try PaddedTransportStream()
+        let reader = try PaddedRecording()
         let file = try await DeliveredFile.start(reading: reader, named: "recording.ts", clock: TestClock())
         // The first segment past the opening read, in the part of the file 16 MB a keyframe.
         let path = "v-2.m4s"
         let whole = try await file.bytes(path)
         await file.stop()
 
-        let failing = try PaddedTransportStream()
+        let failing = try PaddedRecording()
         let delivery = try await DeliveredFile.start(reading: failing, named: "recording.ts", clock: TestClock())
         failing.failReads(after: bytes)
         let url = delivery.url(of: path)
@@ -91,139 +91,68 @@ struct MediaDeliveryLargeFileTests {
         #expect(response.count < whole.count, "\(response.count) bytes of a \(whole.count)-byte segment")
         #expect(!response.suffix(5).elementsEqual(Data("0\r\n\r\n".utf8)), "the response ended as a whole one")
     }
-}
-
-/// `ts-h264-open-gop.ts`, sixty numbered seconds with a keyframe every two, padded with null
-/// packets to 270 MB without storing them: its first half to 16 MB a keyframe, its second to
-/// 2 MB. A recording with a varying bitrate, too large to read whole and sampled for its
-/// keyframes, which the sampler lists only every 8 MB.
-private final class PaddedTransportStream: RandomAccessReading, Sendable {
-    private static let packet = 188
-    private let source: Data
-    /// Null packets after each source packet, in the first half and the second.
-    private let padding = (first: 686, second: 85)
-    private let half: Int
-    let size: Int
-
-    private let state = Mutex(State())
-    private struct State {
-        var bytesRead = 0
-        var wedged = false
-        var wedgedReads: [CheckedContinuation<Void, Never>] = []
-        var arrivals: [CheckedContinuation<Void, Never>] = []
-        var failingPast: Int?
-        var bytesSinceArmed = 0
-        var reads = 0
-        var readWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    /// What a fresh delivery of `reader` reads to serve `path`: how many bytes, and how far into
+    /// the file.
+    private static func reads(fetching path: String, from reader: PaddedRecording) async throws -> (bytes: Int, furthest: Int) {
+        let file = try await DeliveredFile.start(reading: reader, named: "recording.ts", clock: TestClock())
+        let before = reader.bytesRead
+        _ = reader.takeFurthest()
+        _ = try await file.bytes(path)
+        let read = (reader.bytesRead - before, reader.takeFurthest())
+        await file.stop()
+        return read
     }
 
-    init() throws {
-        source = try BridgeFixture.data("ts-h264-open-gop.ts")
-        let packets = source.count / Self.packet
-        half = packets / 2
-        size = (half * (padding.first + 1) + (packets - half) * (padding.second + 1)) * Self.packet
+    /// A delivery of the padded recording whose reads past the last 4 MB of `v-2` wait, and a
+    /// client asking for that segment.
+    private static func segmentRequestHeldShortOfItsEnd() async throws -> (DeliveredFile, PaddedRecording, SocketClient) {
+        let end = try await reads(fetching: "v-2.m4s", from: PaddedRecording()).furthest
+        let reader = try PaddedRecording()
+        let file = try await DeliveredFile.start(reading: reader, named: "recording.ts", clock: TestClock())
+        reader.wedgeReads(reachingPast: end - (4 << 20))
+        let url = file.url(of: "v-2.m4s")
+        let client = try SocketClient(url)
+        client.send("GET \(url.path) HTTP/1.1\r\nHost: x\r\n\r\n")
+        return (file, reader, client)
     }
 
-    var bytesRead: Int { state.withLock { $0.bytesRead } }
+    private static func hasAFragment(_ data: Data) -> Bool { WireResponse.all(in: data).first?.chunks.isEmpty == false }
 
-    func awaitReads(_ count: Int) async {
-        await withCheckedContinuation { continuation in
-            let reached = state.withLock { state in
-                if state.reads >= count { return true }
-                state.readWaiters.append((count, continuation))
-                return false
-            }
-            if reached { continuation.resume() }
-        }
+    /// `v-2` is 16 MB of the file, and a fragment holds a second of it.
+    @Test("the first fragment of a segment is handed over before the segment's last packet is read")
+    func firstFragmentComesBeforeTheSegmentIsRead() async throws {
+        let (file, reader, client) = try await Self.segmentRequestHeldShortOfItsEnd()
+        let received = await client.receive(timeout: CITimeScale.seconds(10), until: Self.hasAFragment)
+        reader.release()
+        await file.stop()
+
+        #expect(Self.hasAFragment(received.data), "no fragment came before the segment's last 4 MB were read")
     }
 
-    /// Every read from now on waits until `release`, cancellation included, as a read stuck in
-    /// a socket does.
-    func wedgeReads() { state.withLock { $0.wedged = true } }
+    @Test("a segment read cancelled after its first fragment fetches at most one more read, and returns")
+    func cancelledSegmentStopsItsRead() async throws {
+        let (file, reader, client) = try await Self.segmentRequestHeldShortOfItsEnd()
+        try #require(Self.hasAFragment(await client.receive(timeout: CITimeScale.seconds(10), until: Self.hasAFragment).data))
+        await reader.awaitWedgedRead()
+        client.closeSending()
+        try #require(await client.receive(timeout: CITimeScale.seconds(5)).closed)
+        let readsWhenLetGo = reader.readsStarted
+        reader.release()
+        await file.stop()
 
-    func awaitWedgedRead() async {
-        await withCheckedContinuation { continuation in
-            let arrived = state.withLock { state in
-                if !state.wedgedReads.isEmpty { return true }
-                state.arrivals.append(continuation)
-                return false
-            }
-            if arrived { continuation.resume() }
-        }
+        #expect(reader.readsStarted == readsWhenLetGo, "\(reader.readsStarted - readsWhenLetGo) reads after the client went")
     }
 
-    func release() {
-        let parked = state.withLock { state in
-            defer { state.wedged = false; state.wedgedReads = [] }
-            return state.wedgedReads
+    /// Sixty numbered seconds with a keyframe every ten and MP2 audio, which is converted, padded
+    /// to 20 MB a keyframe. A span's audio and its video come from the same stretch of the file.
+    @Test("a converted audio segment reads half a second ahead of its span, not the whole span before it")
+    func convertedAudioReadsLittleBeforeItsSpan() async throws {
+        func recording() throws -> PaddedRecording {
+            try PaddedRecording(transportStream: BridgeFixture.data("numbered-mp2-long-gop.ts"), packetSize: 188, padding: .halves(170, 170))
         }
-        parked.forEach { $0.resume() }
-    }
+        let video = try await Self.reads(fetching: "v-2.m4s", from: recording()).bytes
+        let audio = try await Self.reads(fetching: "a0-2.m4s", from: recording()).bytes
 
-    /// Reads fail once `bytes` more have been read, as a share does when its connection drops.
-    func failReads(after bytes: Int) { state.withLock { $0.failingPast = bytes; $0.bytesSinceArmed = 0 } }
-
-    var fileSize: UInt64 { get async throws { UInt64(size) } }
-
-    func read(offset: UInt64, length: Int) async throws -> Data {
-        let (wedged, reached) = state.withLock { state in
-            state.reads += 1
-            let reads = state.reads
-            defer { state.readWaiters.removeAll { $0.count <= reads } }
-            return (state.wedged, state.readWaiters.filter { $0.count <= reads }.map(\.continuation))
-        }
-        reached.forEach { $0.resume() }
-        if wedged {
-            await withCheckedContinuation { continuation in
-                let arrivals = state.withLock { state in
-                    state.wedgedReads.append(continuation)
-                    defer { state.arrivals = [] }
-                    return state.arrivals
-                }
-                arrivals.forEach { $0.resume() }
-            }
-        }
-        let end = min(Int(offset) + length, size)
-        guard Int(offset) < end else { return Data() }
-        let failed = state.withLock { state -> Bool in
-            if let limit = state.failingPast {
-                guard state.bytesSinceArmed < limit else { return true }
-                state.bytesSinceArmed += end - Int(offset)
-            }
-            state.bytesRead += end - Int(offset)
-            return false
-        }
-        if failed { throw ShareGone() }
-        return bytes(Int(offset)..<end)
-    }
-
-    struct ShareGone: Error {}
-
-    private static let null = Data([0x47, 0x1F, 0xFF, 0x10]) + Data(repeating: 0xFF, count: packet - 4)
-
-    /// The padded file's bytes in `range`, packet by packet.
-    private func bytes(_ range: Range<Int>) -> Data {
-        var data = Data(capacity: range.count)
-        var packetIndex = range.lowerBound / Self.packet
-        while packetIndex * Self.packet < range.upperBound {
-            let packetStart = packetIndex * Self.packet
-            let content = sourcePacket(at: packetIndex).map { source[source.startIndex + $0 * Self.packet..<source.startIndex + ($0 + 1) * Self.packet] }
-                ?? Self.null[...]
-            let lower = max(range.lowerBound, packetStart) - packetStart
-            let upper = min(range.upperBound, packetStart + Self.packet) - packetStart
-            data.append(content[content.startIndex + lower..<content.startIndex + upper])
-            packetIndex += 1
-        }
-        return data
-    }
-
-    /// The source packet at the padded file's packet `index`, or nil for a null one.
-    private func sourcePacket(at index: Int) -> Int? {
-        let firstSpan = half * (padding.first + 1)
-        if index < firstSpan {
-            return index.isMultiple(of: padding.first + 1) ? index / (padding.first + 1) : nil
-        }
-        let place = index - firstSpan
-        return place.isMultiple(of: padding.second + 1) ? half + place / (padding.second + 1) : nil
+        #expect(audio < video + video / 2, "\(audio >> 20) MB read for the audio, \(video >> 20) MB for the video")
     }
 }

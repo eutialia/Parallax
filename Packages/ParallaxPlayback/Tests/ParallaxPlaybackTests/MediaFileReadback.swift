@@ -11,6 +11,9 @@ struct ReadbackSample: Equatable {
     /// In `timescale` ticks.
     let presentation: Int64
     let decode: Int64
+    /// In `timescale` ticks: until the next sample of its stream, or for the last, as long as
+    /// the file says.
+    let duration: Int64
     let timescale: Int64
     let isKeyframe: Bool
     let md5: String
@@ -42,7 +45,7 @@ func readBackSamples(of bytes: Data, pathExtension: String) throws -> [ReadbackS
         else { continue }
         samples.append(ReadbackSample(
             stream: Int(packet.pointee.stream_index),
-            presentation: packet.pointee.pts, decode: packet.pointee.dts,
+            presentation: packet.pointee.pts, decode: packet.pointee.dts, duration: packet.pointee.duration,
             timescale: Int64(stream.pointee.time_base.den) / Int64(stream.pointee.time_base.num),
             isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0,
             md5: Insecure.MD5.hash(data: Data(bytes: data, count: Int(packet.pointee.size)))

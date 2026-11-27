@@ -79,20 +79,14 @@ struct IndexedKeyframe: Sendable, Equatable {
 struct KeyframeListing: Sendable {
     /// A file this size or smaller is read whole, which lists every keyframe. A 138 MB
     /// recording took 2.2 s that way; samples 8 MB apart would have left it 17 keyframes.
-    let wholeReadSize: Int64
-    let sampling: KeyframeSampler.Limits
+    static let wholeReadSize: Int64 = 256 << 20
     /// Told of each packet the listing reads.
     let progress: ListingProgress?
     /// Whether the time for sampling is up. Sampling then goes on only where a segment would
     /// be larger than the largest one.
     let timeIsUp: @Sendable () -> Bool
 
-    init(
-        wholeReadSize: Int64 = 256 << 20, sampling: KeyframeSampler.Limits = .standard,
-        progress: ListingProgress? = nil, timeIsUp: @escaping @Sendable () -> Bool = { false }
-    ) {
-        self.wholeReadSize = wholeReadSize
-        self.sampling = sampling
+    init(progress: ListingProgress? = nil, timeIsUp: @escaping @Sendable () -> Bool = { false }) {
         self.progress = progress
         self.timeIsUp = timeIsUp
     }
@@ -239,7 +233,7 @@ actor MediaDemuxer {
         if let listed { return listed }
         let made = switch container.spanStart {
         case .indexEntry: try indexedKeyframes()
-        case .packet where fileSize > listing.wholeReadSize: try sampledKeyframes().listed()
+        case .packet where fileSize > KeyframeListing.wholeReadSize: try sampledKeyframes().listed()
         case .packet, .packetReadFromTheStart: try everyKeyframe().listed()
         }
         listed = made
@@ -277,7 +271,7 @@ actor MediaDemuxer {
     }
 
     private func sampledKeyframes() throws -> [IndexedKeyframe] {
-        let sampler = KeyframeSampler(fileSize: fileSize, limits: listing.sampling)
+        let sampler = KeyframeSampler(fileSize: fileSize, limits: .standard)
         var samples: [KeyframeSampler.Sample] = []
         while let range = sampler.nextRange(after: samples, timeIsUp: listing.timeIsUp()) {
             try seek(toByte: range.lowerBound)
@@ -368,18 +362,18 @@ actor MediaDemuxer {
         // The search goes back from the span's own keyframe, and by the warm-up's share of the
         // bytes before it: the listed keyframe before may be a segment of 256 MB away.
         var back = lower == 0 ? 0
-            : audioLookback(search, before: keyframes[lower], after: keyframes[lower - 1])
+            : Self.audioLookback(search, before: keyframes[lower], after: keyframes[lower - 1])
                 + Self.bytes(lasting: warmUp, before: keyframes[lower], after: keyframes[lower - 1])
+        let nanoseconds = { self.nanoseconds($0, of: self.videoStream) }
         while true {
-            let from = keyframes[lower].position - back
-            let start = from <= floor ? nil
-                : try audioReadStart(search, from: from, before: keyframes[lower], after: keyframes[max(first - 1, 0)])
-            // A cluster may run 32 s: with none this close, one further back is still nearer
-            // than the floor.
-            if start == nil, from > floor {
-                back *= 2
-                continue
+            let (start, looked) = try Self.audioReadPlace(
+                lookingBack: back, before: keyframes[lower].position, floor: floor
+            ) {
+                try Self.audioReadStart(
+                    search, from: $0, before: keyframes[lower], after: keyframes[max(first - 1, 0)],
+                    nanoseconds: nanoseconds, bytes: bytes(at:length:))
             }
+            back = looked
             try seek(toByte: start ?? floor)
             let tookItAll = try readAudio(
                 stream, from: earliest, to: audioUpperTime, videoEnd: upperTime, clock: clock,
@@ -390,23 +384,10 @@ actor MediaDemuxer {
     }
 
     /// `read`'s packets, collected.
-    func packets(
-        _ stream: Int, from lower: Int, to upper: Int, takingLaterAudio: Bool = false, clock: MediaClock? = nil,
-        warmUp: Int64 = 0
-    ) throws -> [MediaPacket] {
+    func packets(_ stream: Int, from lower: Int, to upper: Int) throws -> [MediaPacket] {
         let collected = CollectingSink()
-        try read(
-            stream, from: lower, to: upper, takingLaterAudio: takingLaterAudio, clock: clock, warmUp: warmUp,
-            into: collected)
+        try read(stream, from: lower, to: upper, into: collected)
         return collected.packets
-    }
-
-    /// Every packet of every audio and video stream of span `lower..<upper`, the video first.
-    /// For tests and the library sweep, which compare a span with its source.
-    func packets(from lower: Int, to upper: Int, takingLaterAudio: Bool = false) throws -> [MediaPacket] {
-        try ([videoStream] + streams.filter { $0.kind == .audio }.map(\.index)).flatMap {
-            try packets($0, from: lower, to: upper, takingLaterAudio: takingLaterAudio)
-        }
     }
 
     /// The first span's video and audio packets, in file order, up to the first of: `videoPackets`
@@ -543,37 +524,58 @@ actor MediaDemuxer {
     }
 
     /// How far before `keyframe` an audio read first starts, or first looks for a place to.
-    private func audioLookback(
+    static func audioLookback(
         _ search: BridgedContainer.AudioSearch, before keyframe: IndexedKeyframe, after previous: IndexedKeyframe
     ) -> Int64 {
         switch search {
-        case .matroskaClusters: Self.audioLookback(before: keyframe, after: previous)
+        case .matroskaClusters: audioLookback(before: keyframe, after: previous)
         case .bytesBefore(let bytes), .flashVideoTags(let bytes): bytes
         }
     }
 
-    /// Where a read from `offset` or later can begin. Nil when it can begin nowhere before
+    /// Where an audio read before the keyframe at `position` starts: the place `start` gives
+    /// from `back` bytes before it, or from twice as far back while it gives none, as long as
+    /// that is after `floor`; nil once the look reaches `floor`. With how far back it looked.
+    static func audioReadPlace(
+        lookingBack back: Int64, before position: Int64, floor: Int64, start: (Int64) throws -> Int64?
+    ) rethrows -> (start: Int64?, back: Int64) {
+        var back = back
+        while true {
+            let from = position - back
+            guard from > floor else { return (nil, back) }
+            if let found = try start(from) { return (found, back) }
+            // A cluster may run 32 s: with none this close, one further back is still nearer
+            // than the floor.
+            back *= 2
+        }
+    }
+
+    /// Where a read from `offset` or later can begin, `bytes` being the file's and `nanoseconds`
+    /// turning a Matroska timestamp into nanoseconds. Nil when it can begin nowhere before
     /// `keyframe`.
-    private func audioReadStart(
+    static func audioReadStart(
         _ search: BridgedContainer.AudioSearch, from offset: Int64, before keyframe: IndexedKeyframe,
-        after previous: IndexedKeyframe
-    ) throws -> Int64? {
+        after previous: IndexedKeyframe, nanoseconds: (Int64) -> Int64, bytes: (Int64, Int) throws -> Data
+    ) rethrows -> Int64? {
         switch search {
-        case .matroskaClusters: try clusterStart(from: offset, before: keyframe, after: previous.time)
+        case .matroskaClusters:
+            try clusterStart(from: offset, before: keyframe, after: previous.time, nanoseconds: nanoseconds, bytes: bytes)
         case .bytesBefore: offset
-        case .flashVideoTags: try tagStart(atOrBefore: offset, before: keyframe)
+        case .flashVideoTags: try tagStart(atOrBefore: offset, before: keyframe, bytes: bytes)
         }
     }
 
     /// The start of the last tag at or before `offset`, found by stepping back from
     /// `keyframe`'s: the four bytes before a tag are the size of the one before it. Nil when
     /// a size is not one a tag can have, as in a file written without them.
-    func tagStart(atOrBefore offset: Int64, before keyframe: IndexedKeyframe) throws -> Int64? {
+    private static func tagStart(
+        atOrBefore offset: Int64, before keyframe: IndexedKeyframe, bytes: (Int64, Int) throws -> Data
+    ) rethrows -> Int64? {
         // A file starts with nine bytes of header and a size of zero, and a tag with eleven.
         let firstTag: Int64 = 13
         var at = keyframe.position
         while at > offset, at > firstTag {
-            let size = try bytes(at: at - 4, length: 4).reduce(Int64(0)) { $0 << 8 | Int64($1) }
+            let size = try bytes(at - 4, 4).reduce(Int64(0)) { $0 << 8 | Int64($1) }
             guard size >= 11, at - 4 - size >= firstTag else { return nil }
             at -= 4 + size
         }
@@ -601,20 +603,23 @@ actor MediaDemuxer {
     /// `previousTime` and the keyframe's. Nil when there is none. A byte seek resyncs on any
     /// four bytes that match a top-level ID, and media payload holds such bytes, so a read never
     /// starts at an offset this has not checked.
-    func clusterStart(from offset: Int64, before keyframe: IndexedKeyframe, after previousTime: Int64) throws -> Int64? {
+    private static func clusterStart(
+        from offset: Int64, before keyframe: IndexedKeyframe, after previousTime: Int64,
+        nanoseconds: (Int64) -> Int64, bytes: (Int64, Int) throws -> Data
+    ) rethrows -> Int64? {
         let clusterID: [UInt8] = [0x1F, 0x43, 0xB6, 0x75]
         // Windows overlap by more than a cluster's ID, size, CRC-32 and Timestamp take, so a
         // cluster cut off at one window's end is read whole in the next.
         let overlap = 32
         var at = offset
         while at < keyframe.position {
-            let window = try bytes(at: at, length: Int(min(Int64(1 << 16), keyframe.position - at + Int64(overlap))))
+            let window = try bytes(at, Int(min(Int64(1 << 16), keyframe.position - at + Int64(overlap))))
             guard window.count > overlap else { return nil }
             var index = window.startIndex
             while let found = window[index...].firstRange(of: clusterID) {
                 let position = at + Int64(found.lowerBound - window.startIndex)
                 if position >= keyframe.position { return nil }
-                if let time = clusterTime(in: window[found.upperBound...]).map({ nanoseconds($0, of: videoStream) }),
+                if let time = clusterTime(in: window[found.upperBound...]).map(nanoseconds),
                    time >= previousTime, time <= keyframe.time {
                     return position
                 }
@@ -628,7 +633,7 @@ actor MediaDemuxer {
     /// The Timestamp a cluster starts with, read from the bytes after its ID: a size, then the
     /// Timestamp element (`E7`), which mkvmerge writes first and ffmpeg writes after a CRC-32
     /// (`BF`). In the stream's ticks.
-    private func clusterTime(in bytes: Data.SubSequence) -> Int64? {
+    private static func clusterTime(in bytes: Data.SubSequence) -> Int64? {
         // An EBML size is as many bytes long as its first byte has leading zeros, plus one.
         guard let first = bytes.first, first != 0, case let sizeLength = first.leadingZeroBitCount + 1,
               bytes.count > sizeLength + 8 else { return nil }

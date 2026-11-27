@@ -63,8 +63,8 @@ final class DemuxerSource {
     private func read(into buffer: UnsafeMutablePointer<UInt8>, length: Int) -> Int32 {
         guard failure == nil else { return Code.ioError }
         guard position < cache.size, length > 0 else { return Code.endOfFile }
-        let index = position / Int64(cache.blockSize)
-        let start = Int(position - index * Int64(cache.blockSize))
+        let index = position / Int64(SessionBlockCache.blockSize)
+        let start = Int(position - index * Int64(SessionBlockCache.blockSize))
         // A reader may answer with less than was asked. The block then stops before `position`,
         // and what is there is still to be read.
         let read = cache.block(index, fetched: &bytesFetched).flatMap { block in
@@ -92,8 +92,8 @@ final class DemuxerSource {
         var collected = Data()
         var at = offset
         while at < end {
-            let index = at / Int64(cache.blockSize)
-            let start = Int(at - index * Int64(cache.blockSize))
+            let index = at / Int64(SessionBlockCache.blockSize)
+            let start = Int(at - index * Int64(SessionBlockCache.blockSize))
             switch cache.block(index, fetched: &bytesFetched) {
             case .failure(let error):
                 return .failure(error)

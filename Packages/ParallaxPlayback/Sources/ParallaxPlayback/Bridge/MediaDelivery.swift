@@ -9,7 +9,7 @@ public struct MediaDelivery: Sendable {
     private let bridge: BridgeSession?
     private let clock: any Clock<Duration>
 
-    public static let defaultProbeDeadline: Duration = .seconds(4)
+    private static let probeDeadline: Duration = .seconds(4)
 
     /// Reading the file produced no verdict, so nothing is known about its format.
     public enum ProbeFailure: Error {
@@ -34,8 +34,6 @@ public struct MediaDelivery: Sendable {
         fileName: String,
         support: AVPlayerSupport,
         showsHDR: Bool = true,
-        scope: LocalMediaServer.AddressScope = .lan,
-        probeDeadline: Duration = defaultProbeDeadline,
         clock: any Clock<Duration>
     ) async throws -> MediaDelivery {
         let progress = ListingProgress()
@@ -56,7 +54,7 @@ public struct MediaDelivery: Sendable {
         let server = LocalMediaServer(responder: responder, clock: clock)
         do {
             return MediaDelivery(
-                url: try await server.start(scope: scope), server: server, bridge: responder as? BridgeSession,
+                url: try await server.start(), server: server, bridge: responder as? BridgeSession,
                 clock: clock)
         } catch {
             await server.stop()

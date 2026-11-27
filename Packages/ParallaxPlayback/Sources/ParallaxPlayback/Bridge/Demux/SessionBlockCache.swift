@@ -10,19 +10,16 @@ import Synchronization
 /// libavformat calls back synchronously, on each demuxer's queue, so a read here blocks its
 /// thread until the block is in. Two demuxers asking for one block share one fetch.
 final class SessionBlockCache: @unchecked Sendable {
-    static let defaultBlockSize = 1 << 18
+    static let blockSize = 1 << 18
     /// A segment and the one before it took 13 to 21 MB together in the 4K files measured.
-    static let defaultBytesKept = 64 << 20
+    private static let blocksKept = (64 << 20) / blockSize
     /// 2 MB, what direct play asks for at a time. Each request to an SMB share opens and closes
     /// the file, so a segment read 256 KB at a time took longer than AVPlayer waits for one.
-    static let defaultBlocksPerRead = 8
+    static let blocksPerRead = 8
 
     let size: Int64
-    let blockSize: Int
 
     private let reader: any RandomAccessReading
-    private let blocksKept: Int
-    private let blocksPerRead: Int
     /// Guards everything below. A waiter releases it while it waits, so the fetch it waits for
     /// can publish.
     private let condition = NSCondition()
@@ -38,15 +35,17 @@ final class SessionBlockCache: @unchecked Sendable {
         var result: Result<[Int64: Data], any Error>?
     }
 
-    init(
-        reader: any RandomAccessReading, size: UInt64, blockSize: Int = defaultBlockSize,
-        bytesKept: Int = defaultBytesKept, blocksPerRead: Int = defaultBlocksPerRead
-    ) {
+    init(reader: any RandomAccessReading, size: UInt64) {
         self.reader = reader
         self.size = Int64(clamping: size)
-        self.blockSize = blockSize
-        blocksKept = max(bytesKept / blockSize, 1)
-        self.blocksPerRead = blocksPerRead
+    }
+
+    /// How many blocks a read for block `index` takes, `last` being the file's last block.
+    /// Reading on from the block before, it takes the blocks after too, up to one that
+    /// `isPresent`, kept or on its way.
+    static func blocksRead(for index: Int64, last: Int64, perRead: Int, isPresent: (Int64) -> Bool) -> Int64 {
+        guard isPresent(index - 1) else { return 1 }
+        return (1..<Int64(perRead)).first { index + $0 > last || isPresent(index + $0) } ?? Int64(perRead)
     }
 
     /// What the blocks kept hold now, and every byte fetched from the reader so far.
@@ -81,22 +80,17 @@ final class SessionBlockCache: @unchecked Sendable {
             // The reader answered short of this block: it is asked for again.
         }
 
-        // Reading on from the block before, the read takes the blocks after too, up to one
-        // that is kept or on its way.
-        let present = { (index: Int64) in self.kept[index] != nil || self.fetching[index] != nil }
-        let last = (size - 1) / Int64(blockSize)
-        var count: Int64 = 1
-        if present(index - 1) {
-            while count < blocksPerRead, index + count <= last, !present(index + count) { count += 1 }
+        let count = Self.blocksRead(for: index, last: (size - 1) / Int64(Self.blockSize), perRead: Self.blocksPerRead) {
+            self.kept[$0] != nil || self.fetching[$0] != nil
         }
         let fetch = Fetch()
         for asked in index..<index + count { fetching[asked] = fetch }
         condition.unlock()
 
-        let result = uncached(at: index * Int64(blockSize), length: Int(count) * blockSize).map { data in
-            Dictionary(uniqueKeysWithValues: stride(from: 0, to: data.count, by: blockSize).map { start in
-                (index + Int64(start / blockSize),
-                 data.subdata(in: data.startIndex + start..<data.startIndex + min(start + blockSize, data.count)))
+        let result = uncached(at: index * Int64(Self.blockSize), length: Int(count) * Self.blockSize).map { data in
+            Dictionary(uniqueKeysWithValues: stride(from: 0, to: data.count, by: Self.blockSize).map { start in
+                (index + Int64(start / Self.blockSize),
+                 data.subdata(in: data.startIndex + start..<data.startIndex + min(start + Self.blockSize, data.count)))
             })
         }
 
@@ -110,12 +104,12 @@ final class SessionBlockCache: @unchecked Sendable {
             // A block that came back short is kept only where the file ends: elsewhere the next
             // read asks for it again.
             for (read, data) in blocks
-            where Int64(data.count) == min(Int64(blockSize), size - read * Int64(blockSize)) {
+            where Int64(data.count) == min(Int64(Self.blockSize), size - read * Int64(Self.blockSize)) {
                 uses += 1
                 keptBytes += data.count - (kept[read]?.data.count ?? 0)
                 kept[read] = (data, uses)
             }
-            while kept.count > blocksKept, let oldest = kept.min(by: { $0.value.used < $1.value.used }) {
+            while kept.count > Self.blocksKept, let oldest = kept.min(by: { $0.value.used < $1.value.used }) {
                 keptBytes -= oldest.value.data.count
                 kept[oldest.key] = nil
             }

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxCoreTestSupport
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
 
@@ -49,7 +50,7 @@ struct MediaDeliverySampleRangeTests {
 
     /// Up to 40 chunks in up to five runs, some of them of empty chunks, and a size table a
     /// few samples longer or shorter than the chunks hold.
-    private static func table(using random: inout SplitMixRandom, offsetsBelow limit: UInt64) -> Table {
+    private static func table(using random: inout SeededGenerator, offsetsBelow limit: UInt64) -> Table {
         let chunkCount = Int.random(in: 1...40, using: &random)
         let laterRuns = chunkCount == 1 ? [] : (2...chunkCount).shuffled(using: &random)
             .prefix(Int.random(in: 0...4, using: &random)).sorted()
@@ -82,7 +83,7 @@ struct MediaDeliverySampleRangeTests {
     @Test("the ranges are where each chunk's samples sit, one after another from the chunk's offset")
     func rangesFollowTheChunks() throws {
         let seed: UInt64 = 0x5A3B_0001
-        var random = SplitMixRandom(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for index in 0..<300 {
             let wide = Bool.random(using: &random)
             let table = Self.table(using: &random, offsetsBelow: wide ? 1 << 40 : 1 << 31)
@@ -98,7 +99,7 @@ struct MediaDeliverySampleRangeTests {
     @Test("a fixed sample size gives the ranges a table of that size for every sample gives")
     func fixedSizeIsATableOfOneSize() throws {
         let seed: UInt64 = 0x5A3B_0002
-        var random = SplitMixRandom(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for index in 0..<300 {
             let table = Self.table(using: &random, offsetsBelow: 1 << 31)
             let size = UInt32.random(in: 1...5000, using: &random)
@@ -116,7 +117,7 @@ struct MediaDeliverySampleRangeTests {
     @Test("32-bit chunk offsets give the ranges the same offsets in 64 bits give")
     func stcoIsCo64() throws {
         let seed: UInt64 = 0x5A3B_0003
-        var random = SplitMixRandom(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for index in 0..<300 {
             let table = Self.table(using: &random, offsetsBelow: 1 << 32 - 1 << 20)
             let first = Int.random(in: 0...(table.sizes.count + 2), using: &random)
@@ -128,20 +129,5 @@ struct MediaDeliverySampleRangeTests {
                     == Self.ranges(samples + Self.co64(table.offsets), from: first, count: count),
                 "table \(index), seed \(seed)")
         }
-    }
-}
-
-/// A seeded generator, so a property's inputs are the same on every run.
-private struct SplitMixRandom: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var mixed = state
-        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
-        return mixed ^ (mixed >> 31)
     }
 }

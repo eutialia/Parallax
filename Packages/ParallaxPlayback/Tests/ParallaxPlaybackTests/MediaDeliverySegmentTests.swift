@@ -148,6 +148,27 @@ struct MediaDeliverySegmentTests {
         #expect((offsets.max() ?? 0) - (offsets.min() ?? 0) <= 0.001)
     }
 
+    /// A copied segment's last picture has no next one in its segment to last until. At 24 a
+    /// second it lasts one step of the rate; at 7, which no whole number of ticks spaces, it
+    /// lasts as long as its packet says. Each segment is read back on its own, where that
+    /// picture is the last one.
+    @Test("the last picture of each copied video segment lasts as long as the file says it does",
+          arguments: ["h264-mkvmerge", "odd-rate-h264"])
+    func lastPictureOfACopiedSegmentLastsItsOwnLength(name: String) async throws {
+        let source = try readBackSamples(of: BridgeFixture.data(name), pathExtension: "mkv").filter { $0.stream == 0 }
+        let lengths = Dictionary(source.map { ($0.md5, Double($0.duration) / Double($0.timescale)) }) { first, _ in first }
+        let file = try await DeliveredFile.start(name)
+        let lasts = try await MediaDeliveryContainerTests.segments("v", of: file).compactMap(\.last)
+        await file.stop()
+
+        #expect(lasts.count > 1)
+        for last in lasts {
+            let length = Double(last.duration) / Double(last.timescale)
+            let stored = try #require(lengths[last.md5])
+            #expect(stored > 0 && abs(length - stored) < 0.001, "\(length) s for a picture of \(stored) s at \(last.presentation)")
+        }
+    }
+
     /// AVPlayer keeps playing video over audio it cannot decode and reports nothing, so the
     /// frame cases cannot vouch for audio. This one hands the rendition to Apple's decoder
     /// directly. Every fixture's audio is a tone, at an eighth of full scale.
