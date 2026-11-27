@@ -1,4 +1,5 @@
 import Testing
+import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
 /// `MediaClock` over generated clocks and source times, against a naive conversion written with
@@ -37,7 +38,7 @@ struct MediaClockProperties {
     /// A video clock at a broadcast or film rate, or an audio clock at a sample rate with a
     /// codec's frame length.
     private static func clock(
-        _ random: inout SplitMix, tolerance: Tolerance, framesPerSample: Int64 = 1
+        _ random: inout SeededGenerator, tolerance: Tolerance, framesPerSample: Int64 = 1
     ) -> (MediaClock, MediaClock.Grid) {
         let (timescale, step): (Int64, Int64) = Bool.random(using: &random)
             ? (120_000, [5005, 5000, 4800, 4004, 4000, 2400, 2002, 2000].randomElement(using: &random)!)
@@ -58,7 +59,7 @@ struct MediaClockProperties {
 
     /// A source time up to ten seconds either side of the anchor, where slots below zero are,
     /// or anywhere in a long file.
-    private static func source(around grid: MediaClock.Grid, _ random: inout SplitMix) -> Int64 {
+    private static func source(around grid: MediaClock.Grid, _ random: inout SeededGenerator) -> Int64 {
         Bool.random(using: &random)
             ? grid.anchor + Int64.random(in: -10_000_000_000...10_000_000_000, using: &random)
             : Int64.random(in: -5_000_000_000...20_000_000_000_000, using: &random)
@@ -67,7 +68,7 @@ struct MediaClockProperties {
     @Test("without a grid a time is the source time plus the origin, in ticks to the nearest")
     func noGridIsPlainConversion() {
         let seed = UInt64(0x6E6F_6772_6964)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let clock = MediaClock(
                 timescale: [1000, 8000, 44_100, 48_000, 90_000, 120_000].randomElement(using: &random)!,
@@ -83,7 +84,7 @@ struct MediaClockProperties {
     @Test("a frame within the tolerance of a slot lands exactly on it, and a slot's own time comes back as that slot")
     func frameNearItsSlotTakesIt() {
         let seed = UInt64(0x736C_6F74_7300)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let (clock, grid) = Self.clock(&random, tolerance: .belowHalfASlot)
             let slot = Int64.random(in: -1000...200_000, using: &random)
@@ -101,7 +102,7 @@ struct MediaClockProperties {
     @Test("a frame more than the tolerance from every slot keeps its own time")
     func offGridFrameKeepsItsTime() {
         let seed = UInt64(0x6F66_6667_7269)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let (clock, grid) = Self.clock(&random, tolerance: .belowHalfASlot)
             let slot = Int64.random(in: -1000...200_000, using: &random)
@@ -117,7 +118,7 @@ struct MediaClockProperties {
     @Test("an audio frame takes the nearest slot however far the stored time drifted, below zero too")
     func audioAlwaysTakesTheNearestSlot() throws {
         let seed = UInt64(0x6E65_6172_6573)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let (clock, grid) = Self.clock(&random, tolerance: .nearest)
             let source = Self.source(around: grid, &random)
@@ -132,7 +133,7 @@ struct MediaClockProperties {
     @Test("a joined MP4 sample starts on a slot the join counts from the anchor, the frame's own or up to the join's length before it, and its start is its own")
     func sampleStartIsTheJoinsFirstFrame() {
         let seed = UInt64(0x6A6F_696E_6564)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<Self.cases {
             let joined = Int64.random(in: 1...4, using: &random)
             let (clock, grid) = Self.clock(&random, tolerance: .nearest, framesPerSample: joined)
@@ -145,20 +146,5 @@ struct MediaClockProperties {
             #expect((0..<joined).contains(slot(source) - slot(start)), "seed \(seed): \(clock) at \(source)")
             #expect(clock.sampleStart(at: start) == start, "seed \(seed): \(clock) at \(source)")
         }
-    }
-}
-
-/// A seeded generator, so a property test's inputs are the same on every run.
-private struct SplitMix: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var mixed = state
-        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
-        return mixed ^ (mixed >> 31)
     }
 }

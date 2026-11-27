@@ -37,7 +37,7 @@ struct MediaDeliveryProbeTests {
         let delivery: MediaDelivery
         do {
             delivery = try await MediaDelivery.start(
-                reading: reader, fileName: "clip.mp4", support: support, scope: .loopback, clock: TestClock())
+                reading: reader, fileName: "clip.mp4", support: support, clock: TestClock())
         } catch Unplayable.refused {
             return .refusedByTheBridge
         } catch let reason as Unplayable {
@@ -421,7 +421,7 @@ struct MediaDeliveryProbeTests {
         let reader = RecordingReader(file)
 
         let delivery = try await MediaDelivery.start(
-            reading: reader, fileName: "clip.mp4", support: .baseline, scope: .loopback, clock: TestClock())
+            reading: reader, fileName: "clip.mp4", support: .baseline, clock: TestClock())
         let reads = reader.reads
         await delivery.stop()
 
@@ -498,7 +498,7 @@ struct MediaDeliveryProbeTests {
         let reader = RecordingReader(file)
 
         let delivery = try await MediaDelivery.start(
-            reading: reader, fileName: "clip.mp4", support: .baseline, scope: .loopback, clock: TestClock())
+            reading: reader, fileName: "clip.mp4", support: .baseline, clock: TestClock())
         let reads = reader.reads
         await delivery.stop()
 
@@ -586,7 +586,7 @@ struct MediaDeliveryProbeTests {
           ])
     func everyCutIsIncomplete(file name: String) async throws {
         let seed: UInt64 = 0x5EED_0001
-        var random = SplitMixRandom(seed: seed)
+        var random = SeededGenerator(seed: seed)
         let file = try Self.fixture(name)
         let boxes = Self.topLevelBoxes(of: file)
         let cuts = (0..<8) + (0..<150).map { _ -> Int in
@@ -612,7 +612,7 @@ struct MediaDeliveryProbeTests {
         ("numbered-h264-fragmented-no-show-times.mp4", "moov", 0x5EED_0005),
     ])
     func hostileBoxNeverTraps(file name: String, box type: String, seed: UInt64) async throws {
-        var random = SplitMixRandom(seed: seed)
+        var random = SeededGenerator(seed: seed)
         let file = try Self.fixture(name)
         let box = try #require(Self.topLevelBoxes(of: file).first {
             file[(file.startIndex + $0.lowerBound + 4)..<(file.startIndex + $0.lowerBound + 8)] == Data(type.utf8)
@@ -638,20 +638,5 @@ struct MediaDeliveryProbeTests {
                 _ = try await Self.route(of: mutated)
             }
         }
-    }
-}
-
-/// A seeded generator, so a property's inputs are the same on every run.
-private struct SplitMixRandom: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var mixed = state
-        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
-        return mixed ^ (mixed >> 31)
     }
 }

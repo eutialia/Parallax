@@ -498,63 +498,6 @@ private func boxTypes(in data: Data) -> [String]? {
     return types
 }
 
-/// One response as it came off a connection.
-private struct WireResponse {
-    let head: String
-    let body: Data
-    /// A chunked body's chunks, in order.
-    let chunks: [Data]
-    /// The body's last chunk came, or all of its Content-Length.
-    let isWhole: Bool
-
-    var status: Int? { head.split(separator: " ").dropFirst().first.flatMap { Int($0) } }
-
-    func field(_ name: String) -> String? {
-        head.components(separatedBy: "\r\n").dropFirst().lazy.compactMap { line -> String? in
-            let parts = line.split(separator: ":", maxSplits: 1)
-            guard parts.count == 2, parts[0].lowercased() == name.lowercased() else { return nil }
-            return parts[1].trimmingCharacters(in: .whitespaces)
-        }.first
-    }
-
-    /// The responses `data` holds, in order, up to the first that was cut off. None answers a HEAD.
-    static func all(in data: Data) -> [WireResponse] {
-        let lineEnd = Data("\r\n".utf8)
-        var rest = data
-        var responses: [WireResponse] = []
-        while let headEnd = rest.range(of: lineEnd + lineEnd) {
-            let head = String(decoding: rest[..<headEnd.lowerBound], as: UTF8.self)
-            rest = rest[headEnd.upperBound...]
-            let partial = WireResponse(head: head, body: Data(), chunks: [], isWhole: false)
-            if partial.field("Transfer-Encoding") == "chunked" {
-                var chunks: [Data] = []
-                var isWhole = false
-                while let sizeEnd = rest.range(of: lineEnd),
-                      let size = Int(String(decoding: rest[..<sizeEnd.lowerBound], as: UTF8.self), radix: 16),
-                      rest.endIndex - sizeEnd.upperBound >= size + 2 {
-                    let start = sizeEnd.upperBound
-                    let chunk = Data(rest[start..<start + size])
-                    rest = rest[(start + size + 2)...]
-                    if size == 0 {
-                        isWhole = true
-                        break
-                    }
-                    chunks.append(chunk)
-                }
-                responses.append(WireResponse(head: head, body: Data(chunks.joined()), chunks: chunks, isWhole: isWhole))
-                if !isWhole { break }
-            } else {
-                let length = partial.field("Content-Length").flatMap { Int($0) } ?? 0
-                let body = Data(rest.prefix(length))
-                rest = rest.dropFirst(length)
-                responses.append(WireResponse(head: head, body: body, chunks: [], isWhole: body.count == length))
-                if body.count < length { break }
-            }
-        }
-        return responses
-    }
-}
-
 /// Serves `data`, holding every read that starts in `held` until released.
 private actor HoldingReader: RandomAccessReading {
     private let backing: InMemoryRandomAccessReader
@@ -590,69 +533,6 @@ private actor HoldingReader: RandomAccessReading {
         released = true
         held.forEach { $0.resume() }
         held = []
-    }
-}
-
-/// A client on a socket of its own that reads a response as it arrives, and can close its
-/// sending side partway: to the server, a player closing the connection.
-private final class SocketClient: @unchecked Sendable {
-    private let fd: Int32
-    private let received = Mutex(Data())
-    private let closed = Atomic(false)
-
-    init(_ url: URL) throws {
-        guard let host = url.host, let port = url.port else { throw RawClientError.missingURLComponent }
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw RawClientError.connectFailed }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = UInt16(port).bigEndian
-        guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else {
-            Darwin.close(fd)
-            throw RawClientError.missingURLComponent
-        }
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard connected == 0 else {
-            Darwin.close(fd)
-            throw RawClientError.connectFailed
-        }
-        self.fd = fd
-    }
-
-    deinit { Darwin.close(fd) }
-
-    func send(_ text: String) {
-        let bytes = Array(text.utf8)
-        _ = write(fd, bytes, bytes.count)
-    }
-
-    func closeSending() { shutdown(fd, SHUT_WR) }
-
-    /// Everything received so far, once `enough` holds of it, the server has closed, or
-    /// `timeout` has passed; and whether the server has closed.
-    func receive(timeout: Duration, until enough: @escaping @Sendable (Data) -> Bool = { _ in false }) async -> (data: Data, closed: Bool) {
-        let deadline = ContinuousClock.now + timeout
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global().async { [self] in
-                var buffer = [UInt8](repeating: 0, count: 1 << 16)
-                while !closed.load(ordering: .relaxed), !enough(received.withLock { $0 }), ContinuousClock.now < deadline {
-                    var ready = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                    guard poll(&ready, 1, 20) > 0 else { continue }
-                    let count = read(fd, &buffer, buffer.count)
-                    if count <= 0 {
-                        closed.store(true, ordering: .relaxed)
-                    } else {
-                        received.withLock { $0.append(contentsOf: buffer[..<count]) }
-                    }
-                }
-                continuation.resume(returning: (received.withLock { $0 }, closed.load(ordering: .relaxed)))
-            }
-        }
     }
 }
 

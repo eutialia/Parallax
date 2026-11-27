@@ -22,7 +22,7 @@ struct DeliveredFile: Sendable {
         support: AVPlayerSupport = BridgeFixture.everyDecoder, clock: any Clock<Duration> = ContinuousClock()
     ) async throws -> DeliveredFile {
         DeliveredFile(delivery: try await MediaDelivery.start(
-            reading: reader, fileName: file, support: support, scope: .loopback, clock: clock))
+            reading: reader, fileName: file, support: support, clock: clock))
     }
 
     struct NotServed: Error {
@@ -83,7 +83,7 @@ struct PlayedFile {
         do {
             let relay = try RecordingRelay(forwardingTo: file.delivery.url)
             self.relay = relay
-            ready = try await ReadyPlayer(playing: try await relay.url(for: file.delivery.url)) { "\(relay.pathsRequested)" }
+            ready = try await ReadyPlayer(playing: try await relay.url(for: file.delivery.url)) { relay.summary }
         } catch {
             await file.stop()
             throw error
@@ -109,6 +109,14 @@ final class RecordingRelay: Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "RecordingRelay")
     private let requested = Mutex<[String]>([])
+    /// Each connection's bytes each way, and what closed it, for a failure's message.
+    private let traffic = Mutex<[Traffic]>([])
+
+    struct Traffic: CustomStringConvertible {
+        var toServer = 0, toClient = 0
+        var closed: String?
+        var description: String { "↑\(toServer) ↓\(toClient) \(closed ?? "open")" }
+    }
 
     init(forwardingTo url: URL) throws {
         let target = NWEndpoint.hostPort(
@@ -121,21 +129,29 @@ final class RecordingRelay: Sendable {
             guard let self else { return client.cancel() }
             let server = NWConnection(to: target, using: .tcp)
             let requests = RequestLines { path in self.requested.withLock { $0.append(path) } }
+            let place = self.traffic.withLock { $0.append(Traffic()); return $0.count - 1 }
+            let count = { @Sendable (toServer: Bool, bytes: Int, closed: String?) in
+                self.traffic.withLock {
+                    if toServer { $0[place].toServer += bytes } else { $0[place].toClient += bytes }
+                    if let closed, $0[place].closed == nil { $0[place].closed = closed }
+                }
+            }
             client.start(queue: queue)
             server.start(queue: queue)
-            Self.pipe(from: client, to: server, observing: requests.take)
-            Self.pipe(from: server, to: client, observing: nil)
+            Self.pipe(from: client, to: server, observing: requests.take) { count(true, $0, $1.map { "client \($0)" }) }
+            Self.pipe(from: server, to: client, observing: nil) { count(false, $0, $1.map { "server \($0)" }) }
         }
         listener.start(queue: queue)
     }
 
-    /// `url` with the relay's address in place of the server's.
+    /// `url` with the relay's loopback address in place of the server's.
     func url(for url: URL) async throws -> URL {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(5)
         while clock.now < deadline {
             if listener.state == .ready, let port = listener.port?.rawValue,
                var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                parts.host = "127.0.0.1"
                 parts.port = Int(port)
                 return try #require(parts.url)
             }
@@ -147,21 +163,32 @@ final class RecordingRelay: Sendable {
 
     var pathsRequested: [String] { requested.withLock { $0 } }
 
+    /// The paths asked for and each connection's traffic, for a failure's message.
+    var summary: String { "\(pathsRequested), connections \(traffic.withLock { $0 })" }
+
     func stop() { listener.cancel() }
 
     /// Sends what `source` receives on to `sink`, one receive at a time, so a slow reader on
     /// one side slows the other as it would on a direct connection.
-    private static func pipe(from source: NWConnection, to sink: NWConnection, observing observe: (@Sendable (Data) -> Void)?) {
+    private static func pipe(
+        from source: NWConnection, to sink: NWConnection, observing observe: (@Sendable (Data) -> Void)?,
+        counting count: @escaping @Sendable (Int, String?) -> Void
+    ) {
         source.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, isComplete, error in
             guard let data, !data.isEmpty else {
-                if isComplete || error != nil { closeBoth(source, sink) }
-                else { pipe(from: source, to: sink, observing: observe) }
+                if isComplete || error != nil {
+                    count(0, error.map { "\($0)" } ?? "ended")
+                    closeBoth(source, sink)
+                } else {
+                    pipe(from: source, to: sink, observing: observe, counting: count)
+                }
                 return
             }
             observe?(data)
             sink.send(content: data, completion: .contentProcessed { sendError in
+                count(data.count, (sendError ?? error).map { "\($0)" } ?? (isComplete ? "ended" : nil))
                 if sendError != nil || isComplete || error != nil { closeBoth(source, sink) }
-                else { pipe(from: source, to: sink, observing: observe) }
+                else { pipe(from: source, to: sink, observing: observe, counting: count) }
             })
         }
     }

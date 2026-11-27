@@ -24,12 +24,11 @@ nonisolated struct SMBDelivery: Sendable {
         fileName: String,
         support: AVPlayerSupport,
         showsHDR: Bool = true,
-        scope: LocalMediaServer.AddressScope = .lan,
         clock: any Clock<Duration>
     ) async throws -> SMBDelivery {
         do {
             let delivery = try await MediaDelivery.start(
-                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR, scope: scope,
+                reading: reader, fileName: fileName, support: support, showsHDR: showsHDR,
                 clock: clock)
             return SMBDelivery(reader: reader, delivery: delivery)
         } catch MediaDelivery.ProbeFailure.timedOut {

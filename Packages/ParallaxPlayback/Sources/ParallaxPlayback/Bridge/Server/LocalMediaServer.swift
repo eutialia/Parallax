@@ -82,30 +82,17 @@ public actor LocalMediaServer {
 
     // MARK: - Lifecycle
 
-    /// Which address the returned URL advertises. The listener itself binds every interface
-    /// either way — the scope only decides what the CLIENT connects to.
-    public enum AddressScope: Sendable {
-        /// The primary LAN IPv4 (fallback loopback). Required when an AirPlay receiver must
-        /// fetch the URL itself — a loopback URL black-screens the receiver.
-        case lan
-        /// `127.0.0.1`. For strictly on-device clients: a VPN's policy
-        /// layer (NECP) can RESET self-connections to LAN/link-local addresses ("connection
-        /// reset by peer" on every transfer, observed on-device), but loopback is exempt
-        /// from tunnel enforcement. Never AirPlay-able.
-        case loopback
-    }
-
     /// Binds an `NWListener` on an ephemeral TCP port and returns the URL the client should open.
     ///
-    /// The `.lan` host is the primary LAN IPv4, falling back to `127.0.0.1`. **The LAN
-    /// address is deliberate for playback:** when AVPlayer hands off to AirPlay external
-    /// playback, the receiver (Apple TV) fetches this URL *itself* — a loopback-only URL
-    /// black-screens the receiver. On-device local playback works over the LAN address too, so
-    /// one URL serves both. Pass `.loopback` for on-device-only clients (see `AddressScope`).
+    /// The host is the primary LAN IPv4, falling back to `127.0.0.1`, and the listener binds
+    /// every interface. **The LAN address is deliberate:** when AVPlayer hands off to AirPlay
+    /// external playback, the receiver (Apple TV) fetches this URL *itself*, and a loopback URL
+    /// black-screens the receiver. On-device playback works over the LAN address too, so one
+    /// URL serves both.
     ///
     /// Called once, by the delivery that made the server, which calls `stop()` only after this
     /// returns or throws. A throw leaves the listener for `stop()` to cancel.
-    func start(scope: AddressScope) async throws -> URL {
+    func start() async throws -> URL {
         let queue = self.queue
         let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
             queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
@@ -139,11 +126,8 @@ public actor LocalMediaServer {
         }
 
         guard let port = listener.port else { throw ServerError.noPort }
-        let host: String = switch scope {
         // `getifaddrs` is another syscall that stays off the cooperative pool.
-        case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
-        case .loopback: "127.0.0.1"
-        }
+        let host = await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
         guard let url = URL(string: "http://\(host):\(port.rawValue)\(root)\(responder.entryPath)") else {
             throw ServerError.noPort
         }

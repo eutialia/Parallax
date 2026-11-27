@@ -17,19 +17,15 @@ struct BridgeSession: MediaResponder {
     private let stopwatch: @Sendable () -> @Sendable () -> Duration
     private let cache: SessionBlockCache
     private let demuxers: DemuxerPool
-    private let fragmentLimits: FragmentLimits
 
     /// Reads the file's headers, keyframe list and opening. Throws a `BridgeRefusal` for a file the
     /// bridge cannot deliver, and the reader's own error when a read fails.
     static func open(
-        _ reader: any RandomAccessReading, support: AVPlayerSupport, showsHDR: Bool,
-        blockSize: Int = SessionBlockCache.defaultBlockSize, bytesKept: Int = SessionBlockCache.defaultBytesKept,
-        fragmentLimits: FragmentLimits = .standard, listing: KeyframeListing = .init(),
-        clock: any Clock<Duration> = ContinuousClock()
+        _ reader: any RandomAccessReading, support: AVPlayerSupport, showsHDR: Bool, listing: KeyframeListing,
+        clock: any Clock<Duration>
     ) async throws -> BridgeSession {
         do {
-            let cache = SessionBlockCache(
-                reader: reader, size: try await reader.fileSize, blockSize: blockSize, bytesKept: bytesKept)
+            let cache = SessionBlockCache(reader: reader, size: try await reader.fileSize)
             let demuxer = try await MediaDemuxer.open(cache, listing: listing)
             let plan = try await BridgePlan(reading: demuxer, support: support, showsHDR: showsHDR)
             if !plan.omittedAudio.isEmpty {
@@ -38,8 +34,7 @@ struct BridgeSession: MediaResponder {
             let keyframes = try await demuxer.keyframes()
             return BridgeSession(
                 plan: plan, keyframes: keyframes, stopwatch: LocalMediaServer.stopwatch(on: clock), cache: cache,
-                demuxers: DemuxerPool(first: demuxer, cache: cache, keyframes: keyframes),
-                fragmentLimits: fragmentLimits)
+                demuxers: DemuxerPool(first: demuxer, cache: cache, keyframes: keyframes))
         } catch let failure
             where failure is MediaDemuxer.OpenFailure || failure is MediaDemuxer.ReadFailure
             || failure is SegmentWriter.Failure {
@@ -76,7 +71,7 @@ struct BridgeSession: MediaResponder {
             let segment = track.segments[index]
             let rendition = track.rendition
             let takingLaterAudio = id != .video && index == track.segments.count - 1
-            let (demuxers, limits, reads, memory, cache) = (demuxers, fragmentLimits, reads, memory, cache)
+            let (demuxers, reads, memory, cache) = (demuxers, reads, memory, cache)
             let (stopwatch, conversions, videoConversions) = (stopwatch, conversions, videoConversions)
             return .init(contentType: "video/mp4") {
                 let channel = FragmentChannel(heldChanged: memory.channelsHold)
@@ -86,7 +81,7 @@ struct BridgeSession: MediaResponder {
                         let write = {
                             try await demuxers.using {
                                 try await $0.write(
-                                    segment, of: rendition, takingLaterAudio: takingLaterAudio, limits: limits,
+                                    segment, of: rendition, takingLaterAudio: takingLaterAudio,
                                     into: channel, handedOver: handedOver, stopwatch: stopwatch,
                                     converted: conversions.add)
                             }
@@ -115,12 +110,12 @@ extension MediaDemuxer {
     /// Reads, writes and hands over one segment as one call on the demuxer's queue, which
     /// blocks while `channel` is full. Packets of other streams are dropped as they are read.
     fileprivate func write(
-        _ segment: BridgePlan.Segment, of rendition: Rendition, takingLaterAudio: Bool, limits: FragmentLimits,
+        _ segment: BridgePlan.Segment, of rendition: Rendition, takingLaterAudio: Bool,
         into channel: FragmentChannel, handedOver: @escaping @Sendable () -> Void,
         stopwatch: @escaping @Sendable () -> @Sendable () -> Duration, converted: (Double) -> Void
     ) throws {
         let isCopiedVideo = if case .copy = rendition.delivery { rendition.stream.kind == .video } else { false }
-        let writer = try FragmentWriter(rendition, lastingUntil: isCopiedVideo ? nil : segment.end, limits: limits)
+        let writer = try FragmentWriter(rendition, lastingUntil: isCopiedVideo ? nil : segment.end, limits: .standard)
         let before = bytesFetched
         let sink = SegmentSink(
             writer: writer, channel: channel, fetched: { self.bytesFetched - before }, handedOver: handedOver)

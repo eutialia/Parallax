@@ -37,7 +37,7 @@ struct MediaDeliveryTests {
     func directFileIsServed(bytes: Data, contentType: String) async throws {
         let delivery = try await MediaDelivery.start(
             reading: InMemoryRandomAccessReader(data: bytes), fileName: "clip.mp4",
-            support: .baseline, scope: .loopback, clock: TestClock())
+            support: .baseline, clock: TestClock())
 
         let (body, response) = try await ephemeralHTTPSession().data(from: delivery.url)
         await delivery.stop()
@@ -58,7 +58,7 @@ struct MediaDeliveryTests {
     func matroskaFileIsBridged() async throws {
         let delivery = try await MediaDelivery.start(
             reading: try Self.fixture("h264-mkvmerge"), fileName: "clip.mkv",
-            support: .baseline, scope: .loopback, clock: TestClock())
+            support: .baseline, clock: TestClock())
 
         let master = try await Self.text(at: delivery.url)
         let video = try await Self.text(at: delivery.url.deletingLastPathComponent().appendingPathComponent("v.m3u8"))
@@ -74,7 +74,7 @@ struct MediaDeliveryTests {
     func transportStreamIsBridged(file: String) async throws {
         let delivery = try await MediaDelivery.start(
             reading: try Self.fixture(file), fileName: "clip.bin",
-            support: .baseline, scope: .loopback, clock: TestClock())
+            support: .baseline, clock: TestClock())
 
         let master = try await Self.text(at: delivery.url)
         await delivery.stop()
@@ -88,7 +88,7 @@ struct MediaDeliveryTests {
     func flashVideoAndAVIAreBridged(file: String, codecs: String) async throws {
         let delivery = try await MediaDelivery.start(
             reading: try Self.fixture(file), fileName: "clip.bin",
-            support: .baseline, scope: .loopback, clock: TestClock())
+            support: .baseline, clock: TestClock())
 
         let master = try await Self.text(at: delivery.url)
         await delivery.stop()
@@ -105,7 +105,7 @@ struct MediaDeliveryTests {
         await #expect(throws: Unplayable.directHazards([hazard])) {
             _ = try await MediaDelivery.start(
                 reading: InMemoryRandomAccessReader(data: bytes), fileName: "clip.mp4",
-                support: .baseline, scope: .loopback, clock: TestClock())
+                support: .baseline, clock: TestClock())
         }
     }
 
@@ -119,7 +119,7 @@ struct MediaDeliveryTests {
         let reader = try Self.fixture(name)
         await #expect(throws: Unplayable.refused(reason)) {
             _ = try await MediaDelivery.start(
-                reading: reader, fileName: "clip.mkv", support: .baseline, scope: .loopback, clock: TestClock())
+                reading: reader, fileName: "clip.mkv", support: .baseline, clock: TestClock())
         }
     }
 
@@ -130,7 +130,7 @@ struct MediaDeliveryTests {
         await #expect {
             _ = try await MediaDelivery.start(
                 reading: InMemoryRandomAccessReader(data: matroska), fileName: "clip.mkv",
-                support: .baseline, scope: .loopback, clock: TestClock())
+                support: .baseline, clock: TestClock())
         } throws: {
             if case Unplayable.refused(.unreadable) = $0 { true } else { false }
         }
@@ -150,7 +150,7 @@ struct MediaDeliveryTests {
         let reader = try Self.fixture(name)
         await #expect {
             _ = try await MediaDelivery.start(
-                reading: reader, fileName: "clip.mkv", support: .baseline, scope: .loopback, clock: TestClock())
+                reading: reader, fileName: "clip.mkv", support: .baseline, clock: TestClock())
         } throws: { "\($0)" == line }
     }
 
@@ -159,13 +159,11 @@ struct MediaDeliveryTests {
         let reader = try Self.fixture("hdr-pq")
         await #expect {
             _ = try await MediaDelivery.start(
-                reading: reader, fileName: "clip.mkv", support: .baseline, showsHDR: false, scope: .loopback,
-                clock: TestClock())
+                reading: reader, fileName: "clip.mkv", support: .baseline, showsHDR: false, clock: TestClock())
         } throws: { "\($0)" == "video: PQ, and this display shows no HDR" }
 
         let delivery = try await MediaDelivery.start(
-            reading: reader, fileName: "clip.mkv", support: .baseline, showsHDR: true, scope: .loopback,
-            clock: TestClock())
+            reading: reader, fileName: "clip.mkv", support: .baseline, showsHDR: true, clock: TestClock())
         let master = try await Self.text(at: delivery.url)
         await delivery.stop()
         #expect(master.contains("VIDEO-RANGE=PQ"))
@@ -173,7 +171,7 @@ struct MediaDeliveryTests {
         // AVPlayer plays HLG where HDR does not show, measured on a Mac with an SDR display.
         let hlg = try await MediaDelivery.start(
             reading: try Self.fixture("hdr-hlg"), fileName: "clip.mkv", support: .baseline, showsHDR: false,
-            scope: .loopback, clock: TestClock())
+            clock: TestClock())
         let hlgMaster = try await Self.text(at: hlg.url)
         await hlg.stop()
         #expect(hlgMaster.contains("VIDEO-RANGE=HLG"))
@@ -206,7 +204,7 @@ struct MediaDeliveryTests {
         let file = try Self.fixture("h264-mkvmerge")
         let counting = FailingReader(file)
         let delivery = try await MediaDelivery.start(
-            reading: counting, fileName: "clip.mkv", support: .baseline, scope: .loopback, clock: TestClock())
+            reading: counting, fileName: "clip.mkv", support: .baseline, clock: TestClock())
         await delivery.stop()
         let readsToOpen = await counting.reads
         try #require(readsToOpen > 3)
@@ -215,7 +213,7 @@ struct MediaDeliveryTests {
             await #expect("read \(failing) of \(readsToOpen)") {
                 let delivery = try await MediaDelivery.start(
                     reading: FailingReader(file, failingFromRead: failing), fileName: "clip.mkv",
-                    support: .baseline, scope: .loopback, clock: TestClock())
+                    support: .baseline, clock: TestClock())
                 await delivery.stop()
             } throws: {
                 guard case MediaDelivery.ProbeFailure.unreadable(let underlying) = $0 else { return false }
@@ -229,8 +227,7 @@ struct MediaDeliveryTests {
         let clock = TestClock()
         let start = Task {
             try await MediaDelivery.start(
-                reading: HangingReader(), fileName: "clip.mp4", support: .baseline,
-                scope: .loopback, probeDeadline: .seconds(4), clock: clock)
+                reading: HangingReader(), fileName: "clip.mp4", support: .baseline, clock: clock)
         }
         try await clock.waitForSleep(dueIn: .seconds(4))
         clock.advance(by: .seconds(4))
@@ -299,8 +296,7 @@ struct MediaDeliveryTests {
         let reader = try Self.transportStreamHeldWhileItsKeyframesAreListed()
         let start = Task {
             try await MediaDelivery.start(
-                reading: reader, fileName: "clip.ts", support: .baseline,
-                scope: .loopback, probeDeadline: .seconds(4), clock: clock)
+                reading: reader, fileName: "clip.ts", support: .baseline, clock: clock)
         }
         await reader.waitForHeldRead()
         try await clock.waitForSleep(dueIn: .seconds(4))
@@ -318,8 +314,7 @@ struct MediaDeliveryTests {
         let reader = try Self.transportStreamHeldWhileItsKeyframesAreListed()
         let start = Task {
             try await MediaDelivery.start(
-                reading: reader, fileName: "clip.ts", support: .baseline,
-                scope: .loopback, probeDeadline: .seconds(4), clock: clock)
+                reading: reader, fileName: "clip.ts", support: .baseline, clock: clock)
         }
         await reader.waitForHeldRead()
         try await clock.waitForSleep(dueIn: .seconds(4))
@@ -343,7 +338,7 @@ struct MediaDeliveryTests {
         await #expect {
             _ = try await MediaDelivery.start(
                 reading: RefusingReader(), fileName: "clip.mp4", support: .baseline,
-                scope: .loopback, clock: TestClock())
+                clock: TestClock())
         } throws: {
             guard case MediaDelivery.ProbeFailure.unreadable(let underlying) = $0 else { return false }
             return (underlying as? POSIXError)?.code == .ENOENT
@@ -355,7 +350,7 @@ struct MediaDeliveryTests {
     @MainActor
     private static func played(_ file: String) async throws -> (delivery: MediaDelivery, master: String, ready: ReadyPlayer) {
         let delivery = try await MediaDelivery.start(
-            reading: try fixture(file), fileName: file, support: .baseline, scope: .loopback, clock: ContinuousClock())
+            reading: try fixture(file), fileName: file, support: .baseline, clock: ContinuousClock())
         do {
             let master = try await text(at: delivery.url)
             return (delivery, master, try await ReadyPlayer(playing: delivery.url) { master })
@@ -431,9 +426,4 @@ struct MediaDeliveryTests {
         }
         #expect(misplaced.isEmpty, "\(misplaced)")
     }
-
-    // Pending: the behaviors docs/superpowers/plans/2026-11-25-playback-tests-at-the-ends.md adds at this end.
-
-    @Test("a fragmented MP4 whose timing would judder is bridged, not played directly", .disabled("pending"))
-    func judderingFragmentedMP4IsBridged() async throws {}
 }

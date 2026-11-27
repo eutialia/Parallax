@@ -26,6 +26,13 @@ ffmpeg -v error -y "${noisy_h264[@]}" -t 12 "$OUT/h264-ffmpeg.mkv"
 # The same streams as mkvmerge lays them out: different clusters, cue placement and lacing.
 mkvmerge --quiet --deterministic 0 -o "$OUT/h264-mkvmerge.mkv" "$OUT/h264-ffmpeg.mkv"
 
+# Seven pictures a second, a rate no whole number of the bridge's 120,000 ticks spaces, so a
+# copied picture lasts as long as its packet says, and B-frames, whose decode times run ahead
+# by as many packets' lengths as they are deep.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=7,noise=alls=40:allf=t" \
+    -c:v libx264 -preset veryfast -bf 2 -g 7 -keyint_min 7 -sc_threshold 0 -b:v 300k -pix_fmt yuv420p \
+    -bitexact -fflags +bitexact -t 12 "$OUT/odd-rate-h264.mkv"
+
 # ffprobe's packets, the demuxer tests' oracle, timed in whole milliseconds.
 packet_list() {
     ffprobe -v error -show_packets -show_data_hash md5 -of json "$OUT/$1.${2:-mkv}" \
@@ -544,6 +551,10 @@ numbered numbered-av1.mkv 60 -c:v libsvtav1 -preset 10 -g 48 -svtav1-params "lp=
 # MPEG-2 as its encoder writes it: every group of pictures open, so the two pictures shown
 # before each keyframe are stored after it and need the group before to decode.
 numbered numbered-mpeg2-open-gop.ts 60 -c:v mpeg2video -bf 2 -g 48 -sc_threshold 0 -b:v 60k -pix_fmt yuv420p -muxrate 0 -f mpegts
+# A keyframe every ten seconds, and MP2 audio, which the bridge converts: an audio segment
+# whose read could start a whole span early.
+numbered numbered-mp2-long-gop.ts 60 -c:v libx264 -preset veryfast -bf 2 -g 240 -keyint_min 240 -sc_threshold 0 -pix_fmt yuv420p \
+    -c:a mp2 -b:a 32k -ac 1 -muxrate 0 -f mpegts
 numbered numbered-vp9.mkv 12 -c:v libvpx-vp9 -g 48 -keyint_min 48 -b:v 100k -deadline realtime -pix_fmt yuv420p
 numbered numbered-vp8.mkv 12 -c:v libvpx -g 48 -keyint_min 48 -b:v 100k -deadline realtime -auto-alt-ref 0 -pix_fmt yuv420p
 numbered numbered-mpeg4.mkv 12 -c:v mpeg4 -bf 2 -g 48 -sc_threshold 0 -b:v 100k

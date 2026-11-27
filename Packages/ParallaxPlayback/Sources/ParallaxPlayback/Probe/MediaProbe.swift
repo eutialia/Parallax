@@ -171,8 +171,7 @@ enum MediaProbe {
     /// Walks top-level boxes from offset 0. Records the first `moov` and `moof` boxes' ranges
     /// (does not stop there — a later box can still overrun EOF and the whole
     /// file must be walked to know that). `incomplete` is true when any box's
-    /// declared extent overruns `fileSize`, or the walk reaches EOF without ever
-    /// having seen `moov`.
+    /// declared extent overruns `fileSize`.
     private static func walkTopLevel(
         reader: any RandomAccessReading,
         fileSize: UInt64
@@ -218,7 +217,6 @@ enum MediaProbe {
             offset = extent
         }
 
-        if moovRange == nil { incomplete = true }
         return (moovRange, firstFragment, incomplete)
     }
 

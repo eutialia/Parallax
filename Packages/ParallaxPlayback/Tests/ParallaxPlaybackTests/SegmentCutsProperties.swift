@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import Testing
+import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
 /// Where a bridged file is cut into segments, over keyframe lists shaped like real indexes:
@@ -14,7 +15,7 @@ struct SegmentCutsProperties {
         let fileEnd: Int64
     }
 
-    private static func index(_ random: inout SplitMix) -> Index {
+    private static func index(_ random: inout SeededGenerator) -> Index {
         let second: Int64 = 1_000_000_000
         var time = Int64.random(in: -2 * second...5 * second, using: &random)
         var position = Int64.random(in: 0...(1 << 20), using: &random)
@@ -42,7 +43,7 @@ struct SegmentCutsProperties {
 
     @Test("the segments tile the keyframes, each at least two seconds but the last, and none longer than it must be")
     func segmentsTileTheIndex() throws {
-        var random = SplitMix(seed: 0x6375_7473)
+        var random = SeededGenerator(seed: 0x6375_7473)
         for run in 0..<Self.cases {
             let index = Self.index(&random)
             let keyframes = index.keyframes
@@ -62,7 +63,7 @@ struct SegmentCutsProperties {
 
     @Test("cutting the segments' first keyframes again gives each its own segment")
     func cuttingAgainChangesNothing() throws {
-        var random = SplitMix(seed: 0x6167_6169_6E)
+        var random = SeededGenerator(seed: 0x6167_6169_6E)
         for run in 0..<Self.cases {
             let index = Self.index(&random)
             guard let cuts = try? SegmentCuts(at: index.keyframes, fileSize: index.fileSize, end: { _ in index.fileEnd }),
@@ -80,7 +81,7 @@ struct SegmentCutsProperties {
 
     @Test("the segments' bytes add up to the file from its first keyframe, and their times run from it to the file's end")
     func bytesAndTimesTelescope() throws {
-        var random = SplitMix(seed: 0x7465_6C65)
+        var random = SeededGenerator(seed: 0x7465_6C65)
         let clock = MediaClock(timescale: BridgePlan.videoTimescale, origin: 0, grid: nil)
         for run in 0..<Self.cases {
             let index = Self.index(&random)
@@ -109,7 +110,7 @@ struct SegmentCutsProperties {
 
     @Test("a file that runs more than ten minutes past its last keyframe is refused, naming where the index stops")
     func indexThatStopsIsRefused() {
-        var random = SplitMix(seed: 0x6761_70)
+        var random = SeededGenerator(seed: 0x6761_70)
         for run in 0..<Self.cases {
             let index = Self.index(&random)
             let first = index.keyframes[0].time, last = index.keyframes[index.keyframes.count - 1].time
@@ -128,7 +129,7 @@ struct SegmentCutsProperties {
 
     @Test("a refusal names a time as hours, minutes and seconds that read back as the same time")
     func refusalTimeReadsBack() throws {
-        var random = SplitMix(seed: 0x636C_6F63)
+        var random = SeededGenerator(seed: 0x636C_6F63)
         for _ in 0..<Self.cases {
             let seconds = Int.random(in: 0...400_000, using: &random)
             let line = "\(BridgeRefusal.indexGap(after: seconds))"
@@ -142,7 +143,7 @@ struct SegmentCutsProperties {
 
     @Test("the last index a track holds audio at is the one a scan from the start finds, and a track that lasts costs one question")
     func lastIndexMatchesAScan() async throws {
-        var random = SplitMix(seed: 0x6C61_7374)
+        var random = SeededGenerator(seed: 0x6C61_7374)
         for _ in 0..<Self.cases {
             let count = Int.random(in: 1...300, using: &random)
             let lastWith = Int.random(in: 0..<count, using: &random)
@@ -159,20 +160,5 @@ struct SegmentCutsProperties {
             #expect(questions.count <= 2 * (Int.bitWidth - count.leadingZeroBitCount) + 1, "\(questions.count) for \(count)")
             if lastWith == count - 1, count > 1 { #expect(questions.count == 1, "\(questions)") }
         }
-    }
-}
-
-/// A seeded generator, so a property test's inputs are the same on every run.
-private struct SplitMix: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var mixed = state
-        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
-        return mixed ^ (mixed >> 31)
     }
 }

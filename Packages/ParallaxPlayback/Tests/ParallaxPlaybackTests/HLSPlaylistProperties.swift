@@ -1,4 +1,5 @@
 import Testing
+import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
 /// `HLSPlaylist.distinct` over generated track names, drawn from a few that repeat and that
@@ -10,7 +11,7 @@ struct HLSPlaylistProperties {
     @Test("a repeated track name gets the lowest number no other track's name already has, and no other name changes")
     func repeatedNamesAreNumbered() {
         let seed = UInt64(0x6469_7374_696E)
-        var random = SplitMix(seed: seed)
+        var random = SeededGenerator(seed: seed)
         for _ in 0..<500 {
             let names = (0..<Int.random(in: 0...10, using: &random)).map { _ in Self.pool.randomElement(using: &random)! }
             let distinct = HLSPlaylist.distinct(names)
@@ -32,20 +33,5 @@ struct HLSPlaylistProperties {
             }
             #expect(HLSPlaylist.distinct(distinct) == distinct, "\(context)")
         }
-    }
-}
-
-/// A seeded generator, so a property test's inputs are the same on every run.
-private struct SplitMix: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var mixed = state
-        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
-        return mixed ^ (mixed >> 31)
     }
 }

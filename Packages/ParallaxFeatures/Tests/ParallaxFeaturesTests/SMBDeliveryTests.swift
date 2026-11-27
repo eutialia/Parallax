@@ -61,7 +61,7 @@ struct SMBDeliveryTests {
     func stopClosesTheURLBeforeDrainingTheReader() async throws {
         let reader = FakeReader(data: AppWorld.mp4Bytes)
         let delivery = try await SMBDelivery.start(
-            reader: reader, fileName: "clip.mp4", support: .baseline, scope: .loopback, clock: TestClock())
+            reader: reader, fileName: "clip.mp4", support: .baseline, clock: TestClock())
         #expect(await Self.fetch(delivery.url))
 
         let servedAtDrain = OSAllocatedUnfairLock<Bool?>(initialState: nil)
@@ -82,7 +82,7 @@ struct SMBDeliveryTests {
 
         await #expect {
             _ = try await SMBDelivery.start(
-                reader: reader, fileName: "clip.mkv", support: .baseline, scope: .loopback, clock: TestClock())
+                reader: reader, fileName: "clip.mkv", support: .baseline, clock: TestClock())
         } throws: {
             if case Unplayable.refused(.unreadable) = $0 { true } else { false }
         }
@@ -96,10 +96,10 @@ struct SMBDeliveryTests {
         let clock = TestClock()
         let start = Task {
             try await SMBDelivery.start(
-                reader: reader, fileName: "clip.mp4", support: .baseline, scope: .loopback, clock: clock)
+                reader: reader, fileName: "clip.mp4", support: .baseline, clock: clock)
         }
-        try await clock.waitForSleep(dueIn: MediaDelivery.defaultProbeDeadline)
-        clock.advance(by: MediaDelivery.defaultProbeDeadline)
+        try await clock.waitForSleep(dueIn: .seconds(4))
+        clock.advance(by: .seconds(4))
 
         await #expect { _ = try await start.value } throws: {
             if case SMBDelivery.ProbeFailure.timedOut = $0 { true } else { false }

@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Synchronization
 import Testing
+import ParallaxCoreTestSupport
 import ParallaxTestScaling
 import ParallaxCore
 import ParallaxPlaybackTestSupport
@@ -159,7 +160,7 @@ struct MediaThumbnailerTests {
 
     @Test("a thumbnail is as tall as its source is shown, up to 320, and keeps the shape it is shown at, upright")
     func thumbnailSizeKeepsTheShownShape() {
-        var random = SplitMix(seed: 0x7468_756D_6273)
+        var random = SeededGenerator(seed: 0x7468_756D_6273)
         for _ in 0..<2_000 {
             let width = Int.random(in: 2...8_192, using: &random)
             let height = Int.random(in: 2...4_320, using: &random)
@@ -179,7 +180,7 @@ struct MediaThumbnailerTests {
 
     @Test("a thumbnail is taken at or after the file's start and before its end")
     func thumbnailTimeIsInsideTheFile() {
-        var random = SplitMix(seed: 0x706F_7369_7469)
+        var random = SeededGenerator(seed: 0x706F_7369_7469)
         for _ in 0..<2_000 {
             let start = Int64.random(in: -10_000_000_000...100_000_000_000_000, using: &random)
             let duration = Int64.random(in: 1...1_000_000_000_000_000, using: &random)
@@ -291,17 +292,3 @@ private final class ParkedReader: RandomAccessReading {
     func answer() { answered.continuation.yield() }
 }
 
-/// A seeded generator, so a property test's inputs are the same on every run.
-private struct SplitMix: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var mixed = state
-        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
-        return mixed ^ (mixed >> 31)
-    }
-}
