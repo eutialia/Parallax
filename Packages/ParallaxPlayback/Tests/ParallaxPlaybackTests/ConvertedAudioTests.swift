@@ -14,7 +14,8 @@ struct ConvertedAudioTests {
         let untimed = packets.enumerated().map { index, packet in
             MediaPacket(
                 stream: packet.stream, presentationTime: index == 0 ? 40_000_000 : nil, decodeTime: nil,
-                duration: packet.duration, isKeyframe: packet.isKeyframe, data: packet.data)
+                duration: packet.duration, isKeyframe: packet.isKeyframe, data: packet.data,
+                primingSamples: packet.primingSamples)
         }
 
         #expect(ConvertedAudio(stream, openingWith: untimed)?.start == 40_000_000)

@@ -117,6 +117,18 @@ struct MediaDeliverySegmentTests {
         #expect(readBack.map(\.presentation) == readBack.indices.map { first + Int64($0) * 768 })
     }
 
+    /// Frames of one block, six to an MP4 sample, as a short-frame encoder writes them. The
+    /// fixture's 375 frames make 62 samples and three left over. Its video has no B-frames, so
+    /// the file's opening reads one picture and no more audio than it asks for.
+    @Test("an E-AC-3 rendition of one-block frames holds every frame but an unfinished last sample's, evenly spaced")
+    func oneBlockEAC3FramesAreJoinedInSixes() async throws {
+        let readBack = try await Self.readBack("eac3-one-block", "a0", fetchedIn: Array.init)
+        let first = try #require(readBack.first?.presentation)
+
+        #expect(readBack.count == 372)
+        #expect(readBack.map(\.presentation) == readBack.indices.map { first + Int64($0) * 256 })
+    }
+
     /// The fixture's 126 frames end on a pair that starts before the segment boundary at 2 s and
     /// ends after it, so the track's audio ends in the first segment.
     @Test("an E-AC-3 track of three-block frames that ends on a pair across a segment boundary lists only segments that build")
@@ -194,6 +206,11 @@ struct MediaDeliverySegmentTests {
         ("numbered-wmv2.asf", "a0", 440, 5, 12.04),
         // AC-3 copied out of a program stream, where some frames carry the time of the frame after them.
         ("numbered-mpeg2.mpg", "a0", 440, 6, 12),
+        // Copied AAC, AAC behind ADTS headers, E-AC-3 and AC-3 that start 0.3 s after the first
+        // picture, led in by silence in their own codec from before it. The AC-3 family's first
+        // frame is at 294.7 ms, and ten frames of 32 ms start 25 ms before the picture.
+        ("numbered-h264-late-aac", "a0", 440, 6, 12), ("numbered-h264-late-aac.ts", "a0", 440, 6, 12),
+        ("numbered-h264-late-eac3", "a0", 440, 6, 12.025), ("numbered-h264-late-ac3.mpg", "a0", 440, 6, 12.025),
     ])
     func audioRenditionDecodesToTheSourceTone(
         name: String, rendition: String, hertz: Double, segmentCount: Int, seconds: Double

@@ -83,8 +83,19 @@ final class AudioDecoder {
         packet.pointee.pts = source.presentationTime ?? Self.noTime
         packet.pointee.dts = packet.pointee.pts
         if source.isKeyframe { packet.pointee.flags |= AV_PKT_FLAG_KEY }
+        if source.primingSamples > 0 { try Self.skip(source.primingSamples, of: packet) }
         guard avcodec_send_packet(context, packet) >= 0 else { return }
         try receive(into: take)
+    }
+
+    /// Has the decoder drop the first `samples` of what `packet` decodes to. The padding a
+    /// container marks at the end is kept, by decision: 5 to 11 ms.
+    private static func skip(_ samples: Int, of packet: UnsafeMutablePointer<AVPacket>) throws(Failure) {
+        // Samples skipped at the start, then padding discarded at the end, as little-endian
+        // 32-bit counts, then a byte of reason for each.
+        let side = withUnsafeBytes(of: UInt32(samples).littleEndian, Array.init) + [UInt8](repeating: 0, count: 6)
+        guard let data = av_packet_new_side_data(packet, AV_PKT_DATA_SKIP_SAMPLES, side.count) else { throw .outOfMemory }
+        data.update(from: side, count: side.count)
     }
 
     /// What the decoder still holds, when the stream has no more packets.

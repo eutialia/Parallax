@@ -62,7 +62,8 @@ struct ConvertedAudio: Sendable {
         firstFrame = [
             MediaPacket(
                 stream: stream.index, presentationTime: start, decodeTime: nil,
-                duration: flac.length * 1_000_000_000 / Int64(format.sampleRate), isKeyframe: true, data: flac.data)
+                duration: flac.length * 1_000_000_000 / Int64(format.sampleRate), isKeyframe: true, data: flac.data,
+                primingSamples: 0)
         ]
     }
 

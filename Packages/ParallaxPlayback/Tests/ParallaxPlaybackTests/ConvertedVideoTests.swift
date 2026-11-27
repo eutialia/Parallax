@@ -31,7 +31,7 @@ struct ConvertedVideoTests {
         let first = try #require(packets.first)
         let untimed = MediaPacket(
             stream: first.stream, presentationTime: nil, decodeTime: first.decodeTime, duration: first.duration,
-            isKeyframe: first.isKeyframe, data: first.data)
+            isKeyframe: first.isKeyframe, data: first.data, primingSamples: first.primingSamples)
 
         let decoder = try VideoDecoder(demuxer.streams[video].parameters, timedByDecodeOrder: false)
         var times: [Int64] = []

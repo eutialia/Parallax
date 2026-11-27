@@ -83,7 +83,8 @@ struct ConvertedVideo: Sendable {
         self.frameRate = frameRate
         firstPicture = [
             MediaPacket(
-                stream: stream.index, presentationTime: start, decodeTime: nil, duration: nil, isKeyframe: true, data: made.picture.data)
+                stream: stream.index, presentationTime: start, decodeTime: nil, duration: nil, isKeyframe: true, data: made.picture.data,
+                primingSamples: 0)
         ]
     }
 

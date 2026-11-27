@@ -248,7 +248,8 @@ ffmpeg -v error -y \
 # frames: its last pair, frames 124 and 125, starts before the boundary at 2 s and ends after it.
 ffmpeg -v error -y -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 12 \
     -c:a eac3 -b:a 96k -ac 2 -bitexact -fflags +bitexact -f eac3 "$OUT/eac3-six-blocks.eac3"
-python3 - "$OUT/eac3-six-blocks.eac3" "$OUT/eac3-three-blocks.eac3" "$OUT/eac3-three-blocks-ends-early.eac3" <<'PYTHON'
+python3 - "$OUT/eac3-six-blocks.eac3" "$OUT/eac3-three-blocks.eac3" "$OUT/eac3-three-blocks-ends-early.eac3" \
+    "$OUT/eac3-one-block.eac3" <<'PYTHON'
 import sys
 
 def crc16(bytes):
@@ -259,20 +260,27 @@ def crc16(bytes):
             crc = (crc << 1 ^ 0x8005 if crc & 0x8000 else crc << 1) & 0xFFFF
     return crc
 
-data = bytearray(open(sys.argv[1], "rb").read())
-at = 0
-ends = []
-while at < len(data):
-    assert data[at:at + 2] == b"\x0b\x77"
-    size = (((data[at + 2] & 0x07) << 8 | data[at + 3]) + 1) * 2
-    # numblkscod, after fscod in the fifth byte: 2 is three blocks, 3 is six.
-    data[at + 4] = data[at + 4] & 0xCF | 0x20
-    # The last two bytes make the frame after its syncword CRC to zero.
-    data[at + size - 2:at + size] = crc16(data[at + 2:at + size - 2]).to_bytes(2, "big")
-    at += size
-    ends.append(at)
-open(sys.argv[2], "wb").write(data)
-open(sys.argv[3], "wb").write(data[:ends[125]])
+# Each frame relabeled as `code`, and where each one ends.
+def relabeled(source, code):
+    data = bytearray(source)
+    at = 0
+    ends = []
+    while at < len(data):
+        assert data[at:at + 2] == b"\x0b\x77"
+        size = (((data[at + 2] & 0x07) << 8 | data[at + 3]) + 1) * 2
+        # numblkscod, after fscod in the fifth byte: 0 is one block, 2 three, 3 six.
+        data[at + 4] = data[at + 4] & 0xCF | code << 4
+        # The last two bytes make the frame after its syncword CRC to zero.
+        data[at + size - 2:at + size] = crc16(data[at + 2:at + size - 2]).to_bytes(2, "big")
+        at += size
+        ends.append(at)
+    return data, ends
+
+source = open(sys.argv[1], "rb").read()
+three, ends = relabeled(source, 2)
+open(sys.argv[2], "wb").write(three)
+open(sys.argv[3], "wb").write(three[:ends[125]])
+open(sys.argv[4], "wb").write(relabeled(source, 0)[0])
 PYTHON
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -t 6 \
     "${x264[@]}" -bitexact -fflags +bitexact "$OUT/eac3-three-blocks-video.mkv"
@@ -280,8 +288,14 @@ mkvmerge --quiet --deterministic 0 -o "$OUT/eac3-three-blocks.mkv" \
     "$OUT/eac3-three-blocks-video.mkv" "$OUT/eac3-three-blocks.eac3"
 mkvmerge --quiet --deterministic 0 -o "$OUT/eac3-three-blocks-ends-early.mkv" \
     "$OUT/eac3-three-blocks-video.mkv" "$OUT/eac3-three-blocks-ends-early.eac3"
+# E-AC-3 of one block a frame, six to an MP4 sample: the same 375 frames, two seconds of them,
+# with video of no B-frames, whose keyframe alone is all the file's opening needs of it.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=160x90:rate=24" -t 2 \
+    "${x264[@]}" -bf 0 -bitexact -fflags +bitexact "$OUT/eac3-one-block-video.mkv"
+mkvmerge --quiet --deterministic 0 -o "$OUT/eac3-one-block.mkv" \
+    "$OUT/eac3-one-block-video.mkv" "$OUT/eac3-one-block.eac3"
 rm "$OUT/eac3-six-blocks.eac3" "$OUT/eac3-three-blocks.eac3" "$OUT/eac3-three-blocks-ends-early.eac3" \
-    "$OUT/eac3-three-blocks-video.mkv"
+    "$OUT/eac3-one-block.eac3" "$OUT/eac3-three-blocks-video.mkv" "$OUT/eac3-one-block-video.mkv"
 ffmpeg -v error -y \
     -f lavfi -i "testsrc2=size=160x90:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
     -t 4 -map 0:v -map 1:a -c:v libsvtav1 -preset 10 -g 12 -svtav1-params "lp=1" -pix_fmt yuv420p \
@@ -641,6 +655,20 @@ numbered numbered-h264-dts-flat-show-times.mp4 12 -c:v libx264 -preset veryfast 
 numbered numbered-mpeg4-b.asf 12 -c:v mpeg4 -bf 2 -flags +cgop -g 48 -sc_threshold 1000000000 -b:v 200k -c:a wmav2 -b:a 32k -ac 2
 # WMV with WMA is what an ASF holds.
 numbered numbered-wmv2.asf 12 -c:v wmv2 -g 48 -sc_threshold 0 -b:v 100k -c:a wmav2 -b:a 32k -ac 2
+# Audio a recorder started 0.3 s after the picture, in codecs the bridge copies: pictures 0 to 7
+# come before the first sound.
+late_audio() {
+    local file=$1; shift
+    ffmpeg -v error -y \
+        -f lavfi -i "color=black:size=160x90:rate=24,format=gray,geq=lum='if(mod(floor(N/pow(2\,floor(X/10)))\,2)\,235\,16)',format=yuv420p" \
+        -itsoffset 0.3 -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+        -t 12 -map 0:v -map 1:a -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p \
+        "$@" -bitexact -fflags +bitexact "$OUT/$file"
+}
+late_audio numbered-h264-late-aac.mkv -c:a aac -b:a 24k -ac 1
+late_audio numbered-h264-late-eac3.mkv -c:a eac3 -b:a 96k -ac 2
+late_audio numbered-h264-late-aac.ts -c:a aac -b:a 24k -ac 1 -muxrate 0 -f mpegts
+late_audio numbered-h264-late-ac3.mpg -b:v 600k -minrate 600k -maxrate 600k -bufsize 150k -x264-params nal-hrd=cbr -c:a ac3 -b:a 64k -ac 2 -f vob
 # The numbered picture over silence, with a 10 ms burst of 1 kHz centred on pictures 60 and
 # 204, in audio the bridge converts: where the bursts land against the pictures shows whether
 # converted audio kept its place.

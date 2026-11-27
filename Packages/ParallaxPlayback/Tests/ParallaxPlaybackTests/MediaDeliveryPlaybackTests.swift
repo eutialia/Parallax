@@ -55,7 +55,20 @@ struct MediaDeliveryPlaybackTests {
             "numbered-wmv2.asf", "numbered-h264.mpg",
           ])
     func everyBridgedContainerPlays(name: String) async throws {
-        let played = try await PlayedFile(name)
+        try await Self.expectFirstFrameAndSeek(from: PlayedFile(name))
+    }
+
+    /// AVPlayer opens an HLS presentation where its audio starts, past the pictures before it.
+    @Test("an MKV, a TS and an MPG whose copied audio starts 0.3 s after the first picture each play from their first frame, every frame at its own time, and from a seek",
+          arguments: [
+            "numbered-h264-late-aac", "numbered-h264-late-eac3", "numbered-h264-late-aac.ts", "numbered-h264-late-ac3.mpg",
+          ])
+    func lateAudioPlaysFromTheFirstFrame(name: String) async throws {
+        try await Self.expectFirstFrameAndSeek(from: PlayedFile(name))
+    }
+
+    /// Plays a numbered fixture from the start, then from 8.5 s, and stops it.
+    private static func expectFirstFrameAndSeek(from played: PlayedFile) async throws {
         let fromStart = await played.framesShown(for: .seconds(3))
         let afterSeek = await played.framesShown(from: 8.5, for: .seconds(2))
         await played.stop()
