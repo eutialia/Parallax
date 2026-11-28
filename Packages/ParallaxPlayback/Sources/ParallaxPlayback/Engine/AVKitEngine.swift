@@ -1046,8 +1046,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private func subtitleTracks(from group: AVMediaSelectionGroup?) -> [SubtitleTrack] {
         guard let group else { return [] }
+        // AVFoundation adds options of its own to a stream with audio: a transcription of the
+        // speech, and translations of the stream's subtitles. They are no part of the file.
         let displayed = group.options.enumerated().filter {
             !$0.element.hasMediaCharacteristic(.containsOnlyForcedSubtitles)
+                && !$0.element.hasMediaCharacteristic(.machineGenerated)
         }
         var result: [SubtitleTrack] = []
         var ordinal = 0
