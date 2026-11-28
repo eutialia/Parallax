@@ -212,11 +212,22 @@ enum AuthoredFontSubstitution {
         return ASSScriptScan.joinASSFields(prefix: prefix, fields: fields)
     }
 
-    /// Rewrites every `\fn<name>` argument. A bare `\fn` (the reset back to the
-    /// style's font) carries no name and is left bare.
+    /// Rewrites the `\fn<name>` arguments of the override blocks. A `\fn` outside a block is
+    /// text the author wants read, and stays as written.
     private static func substitutedInlineNames(in text: String, plan: SubtitleFontPlan) -> String {
+        SubtitleFontTagger.tokenize(text).reduce(into: "") { out, token in
+            switch token {
+            case .override(let block): out += substitutedNames(inBlock: block, plan: plan)
+            case .escaped(let literal), .lineBreak(let literal): out += literal
+            case .character(let character): out.append(character)
+            }
+        }
+    }
+
+    /// A bare `\fn` (the reset back to the style's font) carries no name and is left bare.
+    private static func substitutedNames(inBlock block: String, plan: SubtitleFontPlan) -> String {
         var out = ""
-        var rest = text[...]
+        var rest = block[...]
         while let marker = rest.range(of: "\\fn") {
             out += rest[..<marker.upperBound]
             let argument = rest[marker.upperBound...].prefix { $0 != "\\" && $0 != "}" }
