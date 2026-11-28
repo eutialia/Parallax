@@ -45,6 +45,8 @@ public final class FakeJellyfinServer: Observable, Sendable {
     public struct SubtitleTrack: Sendable {
         public enum Content: Sendable {
             case srt(String)
+            /// An authored ASS script, served as written. This server converts it to nothing else.
+            case ass(String)
             /// An SRT the server serves as bytes that aren't UTF-8 text: it answers, and nothing
             /// can draw what it sent.
             case garbledSRT
@@ -54,11 +56,36 @@ public final class FakeJellyfinServer: Observable, Sendable {
         public let language: String
         public let title: String
         public let content: Content
+        /// A stream inside the video file, which a player that opens the file also finds. The
+        /// server still serves a text one on request.
+        public let isEmbedded: Bool
+        /// The stream the server itself names as the one to show.
+        public let isServerDefault: Bool
 
-        public init(language: String, title: String, _ content: Content) {
+        public init(
+            language: String, title: String, _ content: Content, isEmbedded: Bool = false, isServerDefault: Bool = false
+        ) {
             self.language = language
             self.title = title
             self.content = content
+            self.isEmbedded = isEmbedded
+            self.isServerDefault = isServerDefault
+        }
+    }
+
+    /// One subtitle file the player asked for.
+    public struct SubtitleRequest: Equatable, Sendable {
+        public let item: String
+        public let streamIndex: Int
+        public let format: String
+        /// How many PlaybackInfo negotiations the server had seen when this arrived.
+        public let afterPlaybackRequests: Int
+
+        public init(item: String, streamIndex: Int, format: String, afterPlaybackRequests: Int) {
+            self.item = item
+            self.streamIndex = streamIndex
+            self.format = format
+            self.afterPlaybackRequests = afterPlaybackRequests
         }
     }
 
@@ -71,16 +98,23 @@ public final class FakeJellyfinServer: Observable, Sendable {
         /// Whether the device profile accepted bare Dolby Vision HEVC, which only a device that
         /// decodes it in hardware declares.
         public let acceptsDolbyVision: Bool
+        /// The media source a reload names, so the server reopens the one it already chose.
+        public let mediaSourceID: String?
+        /// Whether the server may pass the video through untouched. It can't when it has to
+        /// paint a subtitle into the picture.
+        public let allowsVideoStreamCopy: Bool
 
         public init(
             item: String, startSeconds: Int?, audioStreamIndex: Int? = nil, subtitleStreamIndex: Int? = nil,
-            acceptsDolbyVision: Bool = false
+            acceptsDolbyVision: Bool = false, mediaSourceID: String? = nil, allowsVideoStreamCopy: Bool = true
         ) {
             self.item = item
             self.startSeconds = startSeconds
             self.audioStreamIndex = audioStreamIndex
             self.subtitleStreamIndex = subtitleStreamIndex
             self.acceptsDolbyVision = acceptsDolbyVision
+            self.mediaSourceID = mediaSourceID
+            self.allowsVideoStreamCopy = allowsVideoStreamCopy
         }
     }
 
@@ -135,6 +169,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
         var delivery = Delivery.directPlay
         var audio = [AudioTrack(language: "eng", title: "English")]
         var subtitles: [SubtitleTrack] = []
+        var declinesBurnIn = false
         var intro: (start: Int, end: Int)?
     }
 
@@ -150,6 +185,8 @@ public final class FakeJellyfinServer: Observable, Sendable {
         var configurations: [String: UserConfiguration] = [:]
         var playSessions = 0
         var playbackRequests: [PlaybackRequest] = []
+        var subtitleRequests: [SubtitleRequest] = []
+        var failingPlaybackInfos = 0
         var playbackReports: [PlaybackReport] = []
     }
 
@@ -170,6 +207,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
             Task { @MainActor in
                 registrar.withMutation(of: self, keyPath: \.playbackReports) {}
                 registrar.withMutation(of: self, keyPath: \.playbackRequests) {}
+                registrar.withMutation(of: self, keyPath: \.subtitleRequests) {}
             }
             return reply
         }
@@ -333,6 +371,25 @@ public final class FakeJellyfinServer: Observable, Sendable {
         return state.withLock { $0.playbackRequests }
     }
 
+    /// Every subtitle file asked for so far, in order.
+    public var subtitleRequests: [SubtitleRequest] {
+        registrar.access(self, keyPath: \.subtitleRequests)
+        return state.withLock { $0.subtitleRequests }
+    }
+
+    /// The server takes a burn-in request for `title` and answers with a stream that has no
+    /// subtitle painted in, as Jellyfin does when it can't encode one.
+    @discardableResult
+    public func declineBurnIn(of title: String) -> Self {
+        mutate(title) { $0.declinesBurnIn = true }
+        return self
+    }
+
+    /// The next PlaybackInfo negotiation answers a server error.
+    public func failNextPlaybackInfo() {
+        state.withLock { $0.failingPlaybackInfos += 1 }
+    }
+
     /// Every playing, progress and stopped report so far, in order.
     public var playbackReports: [PlaybackReport] {
         registrar.access(self, keyPath: \.playbackReports)
@@ -391,6 +448,17 @@ public final class FakeJellyfinServer: Observable, Sendable {
 
     public func releaseResponses() {
         transport.releaseReplies()
+    }
+
+    /// Answers the held requests and keeps holding the ones that follow, so a request the
+    /// client sends in reaction to an answer is held too.
+    public func answerHeldResponses() {
+        transport.answerHeldReplies()
+    }
+
+    /// Ends the held requests as timed out, and keeps holding the ones that follow.
+    public func timeOutHeldResponses() {
+        transport.timeOutHeldReplies()
     }
 
     /// How many requests `holdResponses(to:)` has left unanswered so far.
@@ -729,7 +797,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
         let hevcRanges = body.deviceProfile?.codecProfiles?
             .first { $0.codec == "hevc" }?.conditions?
             .first { $0.property == .videoRangeType }?.value ?? ""
-        let answer = state.withLock { state -> (CatalogItem, String)? in
+        let answer = state.withLock { state -> (CatalogItem, String, fails: Bool)? in
             guard let item = state.catalog.first(where: { $0.id == itemID }) else { return nil }
             state.playSessions += 1
             state.playbackRequests.append(PlaybackRequest(
@@ -737,11 +805,16 @@ public final class FakeJellyfinServer: Observable, Sendable {
                 startSeconds: body.startTimeTicks.map { $0 / 10_000_000 },
                 audioStreamIndex: body.audioStreamIndex,
                 subtitleStreamIndex: body.subtitleStreamIndex,
-                acceptsDolbyVision: hevcRanges.split(separator: "|").contains("DOVI")
+                acceptsDolbyVision: hevcRanges.split(separator: "|").contains("DOVI"),
+                mediaSourceID: body.mediaSourceID,
+                allowsVideoStreamCopy: body.allowVideoStreamCopy ?? true
             ))
-            return (item, "play-session-\(state.playSessions)")
+            let fails = state.failingPlaybackInfos > 0
+            if fails { state.failingPlaybackInfos -= 1 }
+            return (item, "play-session-\(state.playSessions)", fails)
         }
-        guard let (item, playSessionID) = answer else { return StubHTTPTransport.Reply(status: 404) }
+        guard let (item, playSessionID, fails) = answer else { return StubHTTPTransport.Reply(status: 404) }
+        if fails { return StubHTTPTransport.Reply(status: 500) }
         let audioIndices = item.audio.indices.map { $0 + 1 }
         let streams = [MediaStream(codec: "h264", height: 1080, index: 0, type: .video, width: 1920)]
             + zip(audioIndices, item.audio).map { index, track in
@@ -750,17 +823,21 @@ public final class FakeJellyfinServer: Observable, Sendable {
             }
             + item.subtitles.enumerated().map { offset, track in
                 let isText = if case .image = track.content { false } else { true }
+                let isAuthored = if case .ass = track.content { true } else { false }
+                let index = 1 + item.audio.count + offset
+                let declined = item.declinesBurnIn && body.subtitleStreamIndex == index
                 return MediaStream(
-                    codec: isText ? "subrip" : "pgssub",
-                    deliveryMethod: isText ? .external : .encode,
-                    displayTitle: track.title, index: 1 + item.audio.count + offset, isDefault: false,
-                    isExternal: isText, isForced: false, isTextSubtitleStream: isText,
+                    codec: isAuthored ? "ass" : isText ? "subrip" : "pgssub",
+                    deliveryMethod: isText ? .external : declined ? .drop : .encode,
+                    displayTitle: track.title, index: index, isDefault: false,
+                    isExternal: isText && !track.isEmbedded, isForced: false, isTextSubtitleStream: isText,
                     language: track.language, type: .subtitle
                 )
             }
         let source = MediaSourceInfo(
             container: item.delivery == .directPlay ? "mp4" : "mkv",
             defaultAudioStreamIndex: body.audioStreamIndex ?? audioIndices.first,
+            defaultSubtitleStreamIndex: item.subtitles.firstIndex { $0.isServerDefault }.map { 1 + item.audio.count + $0 },
             id: "source-\(item.id)",
             mediaStreams: streams,
             runTimeTicks: item.minutes.map { $0 * 60 * 10_000_000 },
@@ -827,8 +904,12 @@ public final class FakeJellyfinServer: Observable, Sendable {
     private func subtitle(_ exchange: StubHTTPTransport.Exchange) -> StubHTTPTransport.Reply {
         let parts = exchange.path.split(separator: "/").map(String.init)
         guard parts.count == 6, let streamIndex = Int(parts[4]) else { return StubHTTPTransport.Reply(status: 400) }
+        let format = String(parts[5].dropFirst("Stream.".count))
         let content = state.withLock { state -> SubtitleTrack.Content? in
             guard let item = state.catalog.first(where: { $0.id == parts[1] }) else { return nil }
+            state.subtitleRequests.append(SubtitleRequest(
+                item: item.name, streamIndex: streamIndex, format: format,
+                afterPlaybackRequests: state.playbackRequests.count))
             let offset = streamIndex - 1 - item.audio.count
             return item.subtitles.indices.contains(offset) ? item.subtitles[offset].content : nil
         }
@@ -837,7 +918,9 @@ public final class FakeJellyfinServer: Observable, Sendable {
             return StubHTTPTransport.Reply(headers: ["Content-Type": "text/plain"], body: Data(srt.utf8))
         case .garbledSRT?:
             return StubHTTPTransport.Reply(headers: ["Content-Type": "text/plain"], body: Data([0xC3, 0x28, 0xA0, 0xA1]))
-        case .image?, nil:
+        case .ass(let script)? where format == "ass":
+            return StubHTTPTransport.Reply(headers: ["Content-Type": "text/plain"], body: Data(script.utf8))
+        case .ass?, .image?, nil:
             return StubHTTPTransport.Reply(status: 404)
         }
     }

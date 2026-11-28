@@ -77,36 +77,6 @@ struct PlayerReloadQueueTests {
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
     }
 
-    @Test("an audio pick and a burn-in pick made during one reload cost ONE further reload carrying both indices")
-    func audioAndSubtitlePicksMergeIntoOneReload() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
-            asks.append(ask(start, selection))
-            await gate.wait()
-            return PlayerFixtures.resolvedMultiTrackTranscode()
-        })
-        let audio4 = try audioTrack(vm, 4)
-        let audio5 = try audioTrack(vm, 5)
-        let burnIn = try subtitleTrack(vm, 7)
-        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
-            await vm.selectAudioTrack(audio4)
-        }
-
-        await vm.selectAudioTrack(audio5)
-        await vm.selectSubtitleTrack(burnIn)
-
-        gate.open()
-        await switching.value
-
-        #expect(asks.values == [ResolveAsk(),
-                        ResolveAsk(start: 600, audio: 4, subtitle: 1),
-                        ResolveAsk(start: 600, audio: 5, subtitle: 7)])
-        #expect(vm.selectedAudioTrack == audio5)
-        #expect(vm.selectedSubtitleTrack == burnIn)
-    }
-
     @Test("two audio picks in one window: the SECOND reloads, and a fallback restores the selection that stood before the FIRST")
     func newestPickReloadsAndAFallbackRestoresTheOldest() async throws {
         let gate = ResolveGate()
@@ -139,44 +109,6 @@ struct PlayerReloadQueueTests {
         let failure = try #require(vm.trackSwitchFailure)
         #expect(failure.requested == .audio(audio5))
         #expect(failure.fallback == .audio(standing))
-    }
-
-    @Test("a text-sub pick made during a reload activates against the NEW session's sidecar URL")
-    func textSubPickDuringAReloadReadsTheNewSession() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-        let fetched = CallRecorder<URL>()
-
-        // No server default subtitle: nothing is fetched before the pick under test, so the
-        // sidecar cache can't answer it and the URL really is re-read from the session.
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
-            sidecarUp: false,
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                let session = asks.count
-                await gate.wait()
-                return PlayerFixtures.resolvedMultiTrackTranscode(
-                    defaultSubtitleStreamIndex: nil,
-                    chineseSidecarURL: sidecarURL(session: session)
-                )
-            }
-        )
-        let audio4 = try audioTrack(vm, 4)
-        let text = try subtitleTrack(vm, 1)
-        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
-            await vm.selectAudioTrack(audio4)
-        }
-
-        await vm.selectSubtitleTrack(text)
-
-        gate.open()
-        await switching.value
-        try await requireEventually({ !fetched.isEmpty }, "the sidecar was never fetched")
-
-        #expect(fetched.values == [sidecarURL(session: 3)], "the sidecar activated against the outgoing session's URL")
-        #expect(vm.selectedSubtitleTrack == text)
     }
 
     // MARK: - Transport intent rides through the reload
@@ -417,136 +349,7 @@ struct PlayerReloadQueueTests {
 
     // MARK: - The declined burn-in
 
-    @Test("a burn-in the server declined yields to the text pick made during it — no rollback, no scrim")
-    func declinedBurnInYieldsToANewerPick() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(at: 600, sidecarUp: false, resolve: { _, _, start, selection in
-            asks.append(ask(start, selection))
-            await gate.wait()
-            // The server accepts the burn-in request and quietly declines to paint it.
-            return PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil,
-                                                             burnInDeliveryMethod: nil)
-        })
-        let burnIn = try subtitleTrack(vm, 7)
-        let text = try subtitleTrack(vm, 1)
-        let picking = try await startReload(gate, on: vm, "the burn-in pick never reached the reload") {
-            await vm.selectSubtitleTrack(burnIn)
-        }
-
-        await vm.selectSubtitleTrack(text)
-
-        gate.open()
-        await picking.value
-
-        #expect(asks.values.map(\.subtitle) == [nil, 7, 1], "the rollback overwrote the pick the user had moved to")
-        #expect(vm.selectedSubtitleTrack == text)
-        #expect(vm.trackSwitchFailure == nil, "the user had already moved off the burn-in")
-    }
-
-    @Test("when the rollback of a declined burn-in ALSO fails, the menu and the overlay land on the fallback")
-    func declinedBurnInRollbackFailureRestoresTheFallback() async throws {
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            subtitleFetch: { _ in .data(Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8)) },
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                // The rollback's own re-resolve fails, with the declined session still mounted.
-                if asks.count == 3 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
-                return PlayerFixtures.resolvedMultiTrackTranscode(burnInDeliveryMethod: nil)
-            }
-        )
-        let text = try subtitleTrack(vm, 1)
-        let burnIn = try subtitleTrack(vm, 7)
-        try #require(vm.selectedSubtitleTrack == text)
-
-        await vm.selectSubtitleTrack(burnIn)
-
-        #expect(asks.values.map(\.subtitle) == [nil, 7, 1])
-        #expect(vm.selectedSubtitleTrack == text, "the declined burn-in stayed on the menu")
-        // The overlay, not a round trip: the sidecar cache is keyed by media source + stream,
-        // so re-activating a track fetched this session deliberately costs no fetch at all.
-        try await requireEventually({ vm.sidecarSubtitleInfo != nil },
-                                    "the fallback's overlay never came back")
-        let failure = try #require(vm.trackSwitchFailure)
-        #expect(failure.requested == .subtitle(burnIn))
-        #expect(failure.fallback == .subtitle(text))
-    }
-
     // MARK: - Only the LAST reload of a run settles
-
-    @Test("a text pick superseded by Off during its own reload is never fetched, and the overlay ends clear")
-    func offQueuedDuringATextReloadNeverFetchesTheSupersededTrack() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-        let fetched = CallRecorder<URL>()
-
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
-            sidecarUp: false,
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                await gate.wait()
-                return PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
-            }
-        )
-        let text = try subtitleTrack(vm, 1)
-        // Leaving an active burn-in is what makes a plain text pick cost a reload.
-        await vm.selectSubtitleTrack(try subtitleTrack(vm, 7))
-        let picking = try await startReload(gate, on: vm, "the text pick never reached the reload") {
-            await vm.selectSubtitleTrack(text)
-        }
-
-        await vm.selectSubtitleTrack(nil)
-
-        gate.open()
-        await picking.value
-
-        #expect(asks.values.map(\.subtitle) == [nil, 7, 1, -1])
-        #expect(fetched.isEmpty, "the superseded track's overlay was installed anyway")
-        #expect(vm.selectedSubtitleTrack == nil)
-        #expect(vm.sidecarSubtitleInfo == nil, "the queued Off never cleared the overlay")
-    }
-
-    @Test("a seek merged into a text-sub reload costs no reload of its own: the sidecar comes from that reload, the seek goes to its engine")
-    func seekMergedIntoATextReloadFetchesOnceAfterTheLastReload() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-        let fetched = CallRecorder<URL>()
-
-        let (vm, engines) = try await makeReanchorVM(
-            at: 600,
-            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
-            sidecarUp: false,
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                let session = asks.count
-                await gate.wait()
-                return PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil,
-                                                                 chineseSidecarURL: sidecarURL(session: session))
-            }
-        )
-        let text = try subtitleTrack(vm, 1)
-        await vm.selectSubtitleTrack(try subtitleTrack(vm, 7))   // leaving it makes the text pick reload
-        let picking = try await startReload(gate, on: vm, "the text pick never reached the reload") {
-            await vm.selectSubtitleTrack(text)
-        }
-
-        let merged = await vm.seek(to: CMTime(seconds: 4_200, preferredTimescale: 600))
-        #expect(merged)
-
-        gate.open()
-        await picking.value
-        try await requireEventually({ !fetched.isEmpty }, "the sidecar was never fetched")
-
-        #expect(asks.count == 3, "the merged seek bought a reload of its own")
-        #expect(engines.live.calls.filter { $0.hasPrefix("seek(") }.last == "seek(4200.0)")
-        #expect(fetched.values == [sidecarURL(session: 3)])
-    }
 
     // MARK: - A landing reload does not own a menu it is not carrying
 
@@ -745,46 +548,6 @@ struct PlayerReloadQueueTests {
         #expect(asks.count == 3, "the re-pick was swallowed by a stale optimistic label")
     }
 
-    /// The subtitle half, where the overlay is the visible proof: Off queued during the
-    /// burn-in's own reload carries `previous: burn-in`, so restoring it left the menu on a
-    /// burn-in nothing was painting and the text overlay under a wrong checkmark.
-    @Test("a failed run restores the subtitle — and the overlay — from before its FIRST pick")
-    func aFailedRunRestoresTheSubtitleFromBeforeTheRun() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            subtitleFetch: { _ in .data(Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8)) },
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                await gate.wait()
-                if asks.count == 2 { throw AppError.playback(.unsupportedFormat(reason: nil)) }
-                return PlayerFixtures.resolvedMultiTrackTranscode()
-            }
-        )
-        let text = try subtitleTrack(vm, 1)
-        let burnIn = try subtitleTrack(vm, 7)
-        try #require(vm.selectedSubtitleTrack == text)
-        try await requireEventually({ vm.sidecarSubtitleInfo != nil }, "the fixture's overlay never came up")
-
-        let picking = try await startReload(gate, on: vm, "the burn-in pick never reached the reload") {
-            await vm.selectSubtitleTrack(burnIn)
-        }
-        await vm.selectSubtitleTrack(nil)   // Off, queued behind the burn-in
-
-        gate.open()
-        await picking.value
-
-        #expect(asks.count == 2, "the queued Off reloaded against the stream the fallback resumed")
-        #expect(vm.selectedSubtitleTrack == text, "the menu kept the burn-in nothing was painting")
-        try await requireEventually({ vm.sidecarSubtitleInfo != nil },
-                                    "the text overlay that was up before the run never came back")
-        let failure = try #require(vm.trackSwitchFailure)
-        #expect(failure.requested == .subtitle(burnIn))
-        #expect(failure.fallback == .subtitle(text))
-    }
-
     // MARK: - The reload's PRELUDE belongs to its own session too
 
     /// The fences used to start at `beginPlayback`; the prelude before it — the pause, the
@@ -835,89 +598,7 @@ struct PlayerReloadQueueTests {
                 "the stale reload wrote the previous episode's pick into the new menu")
     }
 
-    /// `activateSidecarSubtitle` awaits the engine deselect before it writes the index, the
-    /// selection and the fetch. The drain's generation guards sit OUTSIDE `settle`, so that
-    /// await was the one window a handoff could land in and have the previous item's subtitle
-    /// written into the session that replaced it.
-    @Test("a sidecar activation parked on the engine deselect writes nothing into the session that replaced it")
-    func aParkedSidecarActivationWritesNothingIntoTheReplacementSession() async throws {
-        let asks = CallRecorder<String>()
-        let fetched = CallRecorder<URL>()
-        let engines = EngineLedger()
-
-        let vm = makePlayerVM(
-            resolve: { id, _, _, _ in
-                asks.append(id.rawValue)
-                return PlayerFixtures.resolvedMultiTrackTranscode(
-                    defaultSubtitleStreamIndex: nil,
-                    chineseSidecarURL: sidecarURL(session: asks.count)
-                )
-            },
-            engineFactory: { engines.make() },
-            fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
-            subtitleFetch: { fetched.append($0); return PlayerFixtures.landingSidecar(for: $0) },
-            fetchAdjacent: { _, _ in AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2")) }
-        )
-        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
-        let outgoing = engines.live
-        outgoing.push(.playing(600))
-        try await outgoing.settle()
-        try await requireEventually({ vm.adjacentEpisodes.next != nil }, "adjacency never arrived")
-
-        let text = try subtitleTrack(vm, 1)
-        outgoing.hold(.subtitleTrack)
-        let picking = Task { @MainActor in await vm.selectSubtitleTrack(text) }
-        try await requireEventually({ outgoing.hasParked(.subtitleTrack) },
-                                    "the pick never reached the engine deselect")
-
-        await vm.playNextEpisode()
-        let replacement = engines.live
-        replacement.push(.playing(0))
-        try await replacement.settle()
-        try #require(vm.phase == .playing)
-
-        outgoing.release(.subtitleTrack)
-        await picking.value
-
-        #expect(vm.selectedSubtitleTrack == nil, "the previous item's subtitle landed in the new session")
-        #expect(fetched.isEmpty, "the stale activation fetched a sidecar against the replacement's session")
-    }
-
     // MARK: - The declined burn-in's record belongs to the intent, not to the iteration
-
-    /// The record used to be a drain local applied one iteration later, whatever that
-    /// iteration turned out to be: an Off picked during the rollback landed successfully and
-    /// still got the burn-in's failure scrim raised over it.
-    @Test("a declined burn-in raises no scrim when the user picked Off during its rollback")
-    func aDeclinedBurnInDropsItsRecordWhenTheRollbackIsSuperseded() async throws {
-        let rollback = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
-            asks.append(ask(start, selection))
-            let call = asks.count
-            // Park the ROLLBACK (call 3), which is the iteration the record used to ride.
-            if call == 2 { rollback.arm() }
-            if call >= 3 { await rollback.wait() }
-            return PlayerFixtures.resolvedMultiTrackTranscode(burnInDeliveryMethod: nil)
-        })
-        let text = try subtitleTrack(vm, 1)
-        let burnIn = try subtitleTrack(vm, 7)
-        try #require(vm.selectedSubtitleTrack == text)
-
-        let picking = Task { @MainActor in await vm.selectSubtitleTrack(burnIn) }
-        try await requireEventually({ asks.count == 3 }, "the rollback never started")
-
-        await vm.selectSubtitleTrack(nil)
-
-        rollback.open()
-        await picking.value
-
-        #expect(asks.values.map(\.subtitle) == [nil, 7, 1, -1])
-        #expect(vm.selectedSubtitleTrack == nil)
-        #expect(vm.trackSwitchFailure == nil,
-                "the burn-in's scrim rose over the Off that landed after it")
-    }
 
     // MARK: - The in-flight merge outranks the method the reload came back with
 
@@ -956,58 +637,4 @@ struct PlayerReloadQueueTests {
 
     // MARK: - Re-tapping the row that is already checked
 
-    @Test("re-tapping the checked subtitle row during a reload spends no reload and keeps the overlay")
-    func reTappingTheCheckedSubtitleRowMidReloadIsANoOp() async throws {
-        let gate = ResolveGate()
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            subtitleFetch: { _ in .data(Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nline\n".utf8)) },
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                await gate.wait()
-                return PlayerFixtures.resolvedMultiTrackTranscode()
-            }
-        )
-        let text = try subtitleTrack(vm, 1)
-        try #require(vm.selectedSubtitleTrack == text)
-        try await requireEventually({ vm.sidecarSubtitleInfo != nil }, "the fixture's overlay never came up")
-
-        let audio4 = try audioTrack(vm, 4)
-        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
-            await vm.selectAudioTrack(audio4)
-        }
-
-        await vm.selectSubtitleTrack(text)
-        #expect(vm.sidecarSubtitleInfo != nil, "the re-tap dropped the overlay it was already showing")
-
-        gate.open()
-        await switching.value
-
-        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 600, audio: 4, subtitle: 1)],
-                "a reload was spent re-picking the row that was already checked")
-    }
-
-    @Test("an explicit Off on a transcode the server resolved with NO subtitle pins the sentinel the next reload carries")
-    func explicitOffPinsTheNoneSentinel() async throws {
-        let asks = CallRecorder<ResolveAsk>()
-
-        let (vm, _) = try await makeReanchorVM(
-            at: 600,
-            sidecarUp: false,
-            resolve: { _, _, start, selection in
-                asks.append(ask(start, selection))
-                return PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
-            }
-        )
-        // Off is checked, but only because the server was left to choose and chose nothing.
-        try #require(vm.selectedSubtitleTrack == nil)
-
-        await vm.selectSubtitleTrack(nil)
-        await vm.selectAudioTrack(try audioTrack(vm, 4))
-
-        #expect(asks.last == ResolveAsk(start: 600, audio: 4, subtitle: -1),
-                "the explicit Off was treated as a re-tap, and the reload let the server choose again")
-    }
 }

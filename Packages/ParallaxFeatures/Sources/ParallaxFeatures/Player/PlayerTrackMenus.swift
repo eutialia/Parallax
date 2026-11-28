@@ -138,26 +138,16 @@ enum PlayerTrackMenus {
             .map(subtitleTrack(from:))
     }
 
-    /// Sidecar formats the client-side renderer (`ParallaxSubtitles`) ingests —
-    /// authored ASS/SSA verbatim, SRT/VTT via its converter. Case-insensitive
-    /// extension check.
-    static let renderableSidecarExtensions: Set<String> = ["srt", "vtt", "ass", "ssa"]
-
     /// SMB analog of `externalSubtitleTracks(from resolved:)` — there's no `resolved`
     /// stream list on the SMB path, only the filename-matched `[index: URL]` map + the
     /// resolver's `[index: label]`. Builds the same `.jellyfinStream`-id, client-rendered
     /// external tracks (so `selectSubtitleTrack` → `activateSidecarSubtitle` → the overlay
     /// path works identically) with the resolver's labels and the file extension as detail.
-    /// Ordered by index for a stable menu.
-    ///
-    /// Filtered to `renderableSidecarExtensions` so a matched sibling in a format the
-    /// renderer can't ingest (e.g. `.sub`/`.idx` image subs) never becomes a menu entry
-    /// that draws nothing; `subtitleURLs` itself stays unfiltered.
+    /// Ordered by index for a stable menu. `SMBSubtitleResolver` matches only the formats
+    /// the renderer can draw, so every URL here is a row.
     static func externalSubtitleTracks(urls: [Int: URL], labels: [Int: String]) -> [SubtitleTrack] {
         let built = urls.keys.sorted().compactMap { index -> (track: SubtitleTrack, raw: String)? in
-            guard let url = urls[index],
-                  renderableSidecarExtensions.contains(url.pathExtension.lowercased())
-            else { return nil }
+            guard let url = urls[index] else { return nil }
             let format = url.pathExtension.uppercased()
             let detail = format.isEmpty ? "External" : "\(format) · External"
             // Translate the filename-derived label ("zh.hi", "en.forced") into the

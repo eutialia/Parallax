@@ -54,7 +54,6 @@ public struct AppServices {
     let makeNowPlaying: @MainActor @Sendable () -> any NowPlayingUpdating
     /// Sidecar subtitle bytes travel over the same transport as every Jellyfin request.
     let urlSession: URLSession
-    let subtitleFetchTimeout: Duration
     public let smbDiscovery: SMBBonjourDiscovery
     /// Local resume positions for SMB playback: no server holds them.
     public let smbResumeStore: SMBResumeStore
@@ -156,7 +155,6 @@ public struct AppServices {
         audioSession = environment.audioSession
         makeNowPlaying = environment.makeNowPlaying
         urlSession = URLSession(configuration: environment.urlSessionConfiguration)
-        subtitleFetchTimeout = environment.subtitleFetchTimeout
         diagnostics = environment.diagnostics
 
         smbDiscovery = SMBBonjourDiscovery(browse: environment.browseSMBServices)

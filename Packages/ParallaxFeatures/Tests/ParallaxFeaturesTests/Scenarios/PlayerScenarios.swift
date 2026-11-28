@@ -521,7 +521,8 @@ struct PlayerScenarios {
 
         #expect(den.playbackRequests == [
             FakeJellyfinServer.PlaybackRequest(item: "Ran", startSeconds: nil),
-            FakeJellyfinServer.PlaybackRequest(item: "Ran", startSeconds: 600, audioStreamIndex: 2),
+            FakeJellyfinServer.PlaybackRequest(
+                item: "Ran", startSeconds: 600, audioStreamIndex: 2, mediaSourceID: "source-\(den.itemID(of: "Ran"))"),
         ])
         #expect(world.engines.count == 1)
         #expect(world.engine.loadedAssets.last?.startTime == .seconds(600))
@@ -651,8 +652,8 @@ struct PlayerScenarios {
     }
 
     /// The server answers a subtitle request only once it has extracted the stream, and for an
-    /// embedded track that reads the whole file, sending nothing meanwhile. The world's subtitle
-    /// fetch timeout is shrunk so the server's silence outlasts it in real time.
+    /// embedded track that reads the whole file, sending nothing meanwhile. The request ends the
+    /// way `URLSession` ends one that waited too long.
     @Test("a subtitle the server is still preparing puts the previous one back, and picking it again once ready puts it on screen")
     func subtitleStillPreparingRevertsThenLandsOnRepick() async throws {
         let english = "1\n00:00:01,000 --> 00:00:04,000\nThe heat is on.\n"
@@ -663,7 +664,7 @@ struct PlayerScenarios {
                 FakeJellyfinServer.SubtitleTrack(language: "eng", title: "English", .srt(english)),
                 FakeJellyfinServer.SubtitleTrack(language: "fre", title: "French", .srt(french)),
             ])
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")], subtitleFetchTimeout: .milliseconds(200))
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         let session = try await world.session(on: den)
         world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: session)
         let player = try await world.openPlayer()
@@ -676,6 +677,8 @@ struct PlayerScenarios {
 
         player.armSubtitleFetchIndicator(for: frenchRow)
         await player.selectSubtitleTrack(frenchRow)
+        try await world.until { den.heldResponseCount == 1 }
+        den.timeOutHeldResponses()
 
         try await world.until { player.selectedSubtitleTrack == englishRow && player.subtitleRenderer != nil }
         #expect(player.subtitleFetchFailureTick == 1)
@@ -697,8 +700,7 @@ struct PlayerScenarios {
     /// Heat with English and French text tracks on a transcode, for a user whose remembered
     /// subtitle language is English: English is on screen when the player opens.
     private func openHeatWithEnglishShowing(
-        french frenchContent: FakeJellyfinServer.SubtitleTrack.Content = .srt(PlayerScenarios.heatLine),
-        subtitleFetchTimeout: Duration = AppEnvironment.defaultSubtitleFetchTimeout
+        french frenchContent: FakeJellyfinServer.SubtitleTrack.Content = .srt(PlayerScenarios.heatLine)
     ) async throws -> (FakeJellyfinServer, AppWorld, PlayerViewModel, french: SubtitleTrack) {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
             .movie("Heat", in: "Films", minutes: 170)
@@ -707,7 +709,7 @@ struct PlayerScenarios {
                 FakeJellyfinServer.SubtitleTrack(language: "fra", title: "French", frenchContent),
             ])
             .subtitleLanguage("eng", for: "ana")
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")], subtitleFetchTimeout: subtitleFetchTimeout)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
         let player = try await world.openPlayer()
         try await world.streamPlays(at: .seconds(1), of: .seconds(170 * 60))
@@ -718,13 +720,34 @@ struct PlayerScenarios {
 
     @Test("a subtitle pick that times out leaves the remembered language as it was")
     func timedOutSubtitlePickKeepsThePreference() async throws {
-        let (den, world, player, french) = try await openHeatWithEnglishShowing(subtitleFetchTimeout: .milliseconds(200))
+        let (den, world, player, french) = try await openHeatWithEnglishShowing()
         den.holdResponses(to: .subtitles)
 
         await player.selectSubtitleTrack(french)
+        try await world.until { den.heldResponseCount == 1 }
+        den.timeOutHeldResponses()
         try await world.until { player.subtitleFetchFailureTick == 1 && player.subtitleRenderer != nil }
 
         #expect(den.subtitleLanguage(of: "ana") == "eng")
+    }
+
+    /// A script the server refuses is asked for again as WebVTT. One it is still extracting is
+    /// not: the second request would wait on the same work.
+    @Test("an authored subtitle the server is still preparing is given up on, not asked for again in another format")
+    func authoredSubtitleStillPreparingIsNotAskedForTwice() async throws {
+        let script = "[Script Info]\nScriptType: v4.00+\n\n[Events]\n"
+            + "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+            + "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,La chaleur monte.\n"
+        let (den, world, player, french) = try await openHeatWithEnglishShowing(french: .ass(script))
+        den.holdResponses(to: .subtitles)
+
+        await player.selectSubtitleTrack(french)
+        try await world.until { den.heldResponseCount == 1 }
+        den.timeOutHeldResponses()
+
+        try await world.until { player.subtitleFetchFailureTick == 1 && player.subtitleRenderer != nil }
+        #expect(player.selectedSubtitleTrack?.displayName == "English")
+        #expect(den.heldResponseCount == 0)
     }
 
     @Test("closing the player while a subtitle pick is fetching leaves the remembered language as it was")
@@ -767,7 +790,7 @@ struct PlayerScenarios {
             ])
             .subtitleLanguage("eng", for: "ana")
         den.holdResponses(to: .subtitles)
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")], subtitleFetchTimeout: .seconds(1))
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
         let player = try await world.openPlayer()
         try await world.streamPlays(at: .seconds(1), of: .seconds(170 * 60))
@@ -775,13 +798,16 @@ struct PlayerScenarios {
         let french = try #require(player.availableSubtitleTracks.first { $0.displayName == "French" })
 
         await player.selectSubtitleTrack(french)
+        try await world.until { den.heldResponseCount == 2 }
+        den.timeOutHeldResponses()
 
         try await world.until { player.subtitleFetchFailureTick == 1 }
         #expect(player.selectedSubtitleTrack == nil)
-        let requests = den.heldResponseCount
-        // Three timeouts' worth: a restore that kept retrying would ask again, and tick again, in it.
-        try await Task.sleep(for: .seconds(3))
-        #expect(den.heldResponseCount == requests)
+        // A restore that kept retrying would ask again, and tick again when that timed out too.
+        try await settleWrites()
+        #expect(den.heldResponseCount == 0)
+        den.timeOutHeldResponses()
+        try await settleWrites()
         #expect(player.subtitleFetchFailureTick == 1)
         #expect(player.selectedSubtitleTrack == nil)
         #expect(player.subtitleRenderer == nil)

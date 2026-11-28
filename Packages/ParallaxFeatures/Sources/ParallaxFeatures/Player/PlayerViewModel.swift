@@ -1972,7 +1972,7 @@ public final class PlayerViewModel {
     /// Nothing to show for Off, for a burn-in (a re-resolve, with its own scrim), or for
     /// a track already in the session cache — that pick is instant.
     public func armSubtitleFetchIndicator(for track: SubtitleTrack?) {
-        guard let track, !track.isBurnedIn, let document = subtitleDocument(for: track) else { return }
+        guard let document = subtitleDocument(for: track) else { return }
         subtitleDisplay.armFetchIndicator(for: document)
     }
 
@@ -3235,14 +3235,6 @@ extension PlayerViewModel {
     /// The resolved server-side playback metadata for the playing item.
     /// Debug HUD only — exposes the otherwise-private `resolved`.
     public var debugResolved: ResolvedPlayback? { resolved }
-
-    /// Awaits the in-flight sidecar fetch+load (`SubtitleDisplay.awaitFetch`) so a test can assert
-    /// `subtitleRenderer`/`sidecarSubtitleInfo` deterministically instead of sleeping past the Task hop. The
-    /// engine-beat analog is `FakePlaybackEngine.settle()`; this covers the ONE piece of
-    /// per-selection work the VM detaches from the awaited call. No-op when none is in flight.
-    func debugAwaitSubtitleFetch() async {
-        await subtitleDisplay.awaitFetch()
-    }
 
     /// Awaits the best-effort segments + adjacent-episode fetch (`EpisodeSuccession`) that the
     /// `start` path deliberately detaches, so a test can assert `segments`/`adjacentEpisodes`

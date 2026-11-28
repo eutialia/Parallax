@@ -17,11 +17,6 @@ public struct AppEnvironment {
     public let cachesDirectory: URL
     /// The transport every Jellyfin client runs on.
     public let urlSessionConfiguration: URLSessionConfiguration
-    /// How long a sidecar subtitle request waits for an answer before the pick rolls back. Jellyfin
-    /// sends nothing while it extracts an embedded track and keeps extracting after the client gives
-    /// up, so a short wait costs nothing: a later pick is served from its cache.
-    public let subtitleFetchTimeout: Duration
-    public static let defaultSubtitleFetchTimeout: Duration = .seconds(5)
     public let clock: any Clock<Duration>
     /// Wall time, for stamps that outlive the process (a thumbnail's persisted failure marker).
     /// Anything that only measures an interval uses `clock`.
@@ -58,7 +53,6 @@ public struct AppEnvironment {
         storageDirectory: URL,
         cachesDirectory: URL,
         urlSessionConfiguration: URLSessionConfiguration,
-        subtitleFetchTimeout: Duration = defaultSubtitleFetchTimeout,
         clock: any Clock<Duration>,
         now: @escaping @Sendable () -> Date,
         reachability: any ReachabilityMonitoring,
@@ -82,7 +76,6 @@ public struct AppEnvironment {
         self.storageDirectory = storageDirectory
         self.cachesDirectory = cachesDirectory
         self.urlSessionConfiguration = urlSessionConfiguration
-        self.subtitleFetchTimeout = subtitleFetchTimeout
         self.clock = clock
         self.now = now
         self.reachability = reachability

@@ -76,15 +76,12 @@ final class AppWorld {
     /// Launches the app the way a cold start does: `run()` and `bootstrap()`, as the app root's
     /// tasks call them. `signedIn` accounts and `savedSMB` servers (with their passwords) were saved
     /// by an earlier launch; `discovering` are the servers that answer a LAN discovery broadcast.
-    /// `subtitleFetchTimeout` is how long a subtitle request waits, in real time: a scenario about a
-    /// server that hasn't answered yet shortens it. Nothing else's timeout changes. `avPlayer` is
-    /// what the device's AVPlayer plays.
+    /// `avPlayer` is what the device's AVPlayer plays.
     static func launch(
         signedIn accounts: [(server: FakeJellyfinServer, user: String)] = [],
         savedSMB: [(server: SMBServerData, password: String)] = [],
         discovering lanServers: [FakeJellyfinServer] = [],
         launchReveal: LaunchRevealCoverage = .home,
-        subtitleFetchTimeout: Duration = AppEnvironment.defaultSubtitleFetchTimeout,
         avPlayer: AVPlayerSupport = .baseline
     ) async throws -> AppWorld {
         let suiteName = "AppWorld-\(UUID().uuidString)"
@@ -106,7 +103,6 @@ final class AppWorld {
             storageDirectory: storageDirectory,
             cachesDirectory: storageDirectory.appending(path: "Caches", directoryHint: .isDirectory),
             urlSessionConfiguration: StubHTTPTransport.configuration,
-            subtitleFetchTimeout: subtitleFetchTimeout,
             clock: clock,
             // The test clock's run, read as wall time: one time line across a relaunch.
             now: { Self.wallClockOrigin.addingTimeInterval(origin.duration(to: clock.now).fractionalSeconds) },
@@ -280,14 +276,20 @@ final class AppWorld {
         return level
     }
 
-    /// Lists one film with `contents` behind it on the share and taps it, leaving the
-    /// presenter holding its play request.
-    func playSMBFilm(named name: String = "Heat.mp4", contents: Data = AppWorld.mp4Bytes) async throws {
-        nas.setFolder([SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
+    /// Lists one film with `contents` behind it on the share, with the files in `beside` next to
+    /// it, and taps it, leaving the presenter holding its play request.
+    func playSMBFilm(
+        named name: String = "Heat.mp4", contents: Data = AppWorld.mp4Bytes, beside siblings: [String: Data] = [:]
+    ) async throws {
+        let names = [name] + siblings.keys.sorted()
+        nas.setFolder(
+            names.map { SMBDirectoryEntry(name: $0, isDirectory: false, size: 1, modifiedAt: nil) }, share: "Media")
         nas.setContents(contents)
+        siblings.forEach { nas.setContents($1, atPath: $0) }
         let folder = await openSMBFolder(Self.smbRef, share: "Media")
         try await until { !folder.isLoading }
-        folder.play(try #require(folder.media.first))
+        let title = String(name[..<(name.lastIndex(of: ".") ?? name.endIndex)])
+        folder.play(try #require(folder.media.first { $0.displayTitle == title }))
     }
 
     // MARK: - Player

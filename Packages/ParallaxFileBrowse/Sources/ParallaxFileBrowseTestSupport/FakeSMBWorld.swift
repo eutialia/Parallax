@@ -76,6 +76,7 @@ public final class FakeSMBWorld: @unchecked Sendable {
         /// Whether `connectError` is thrown AFTER the connection has been built and delivered.
         var failsAfterBuilding = false
         var contents = Data()
+        var contentsByPath: [String: Data] = [:]
         var fileSizeOutcome = FileSizeOutcome.fromContents
         var readOutcome = ReadOutcome.fromContents
         var listingOutcome = ListingOutcome.entries([])
@@ -149,6 +150,11 @@ public final class FakeSMBWorld: @unchecked Sendable {
 
     public func setContents(_ data: Data) {
         state.withLock { $0.contents = data }
+    }
+
+    /// The bytes of the one file at `path`; every other file keeps the shared contents.
+    public func setContents(_ data: Data, atPath path: String) {
+        state.withLock { $0.contentsByPath[path] = data }
     }
 
     public func setFileSizeOutcome(_ outcome: FileSizeOutcome) {
@@ -268,7 +274,7 @@ public final class FakeSMBWorld: @unchecked Sendable {
                 return s.fileSizeOutcome
             }
             switch outcome {
-            case .fromContents: return Int64(state.withLock { $0.contents.count })
+            case .fromContents: return Int64(state.withLock { ($0.contentsByPath[path] ?? $0.contents).count })
             case .reports(let size): return size
             case .fails(let error): throw error
             }
@@ -284,7 +290,7 @@ public final class FakeSMBWorld: @unchecked Sendable {
             }
             if case .fails(let error) = outcome { throw error }
             // POSIX-pread semantics, matching what AMSMB2 gives the reader.
-            let data = state.withLock { $0.contents }
+            let data = state.withLock { $0.contentsByPath[path] ?? $0.contents }
             guard range.lowerBound < UInt64(data.count) else { return Data() }
             let lower = Int(range.lowerBound)
             let upper = Int(min(range.upperBound, UInt64(data.count)))
