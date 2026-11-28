@@ -190,11 +190,7 @@ public enum PlaybackEngineContract {
         try await requireEventually({ record.inventory(of: opened) != nil }, "the stream never got ready",
                                     timeout: .seconds(15))
 
-        // AVFoundation also offers machine translations into the host's preferred languages,
-        // after the stream's own renditions.
-        let own = Set(["en", "fr", "de"])
         let offered = try #require(record.inventory(of: opened)).subtitles
-            .filter { own.contains($0.languageCode ?? "") }
         #expect(offered.map(\.id) == [.avKitOption(0), .avKitOption(2)], "\(offered)")
         #expect(offered.map(\.languageCode) == ["en", "de"])
         record.stop()

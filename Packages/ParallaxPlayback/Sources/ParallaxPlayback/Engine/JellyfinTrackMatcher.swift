@@ -41,8 +41,7 @@ public enum JellyfinTrackMatcher {
         ordinal: Int,
         optionCount: Int,
         streams: [MediaStreamInfo],
-        defaultStreamIndex: Int?,
-        locale: Locale = .current
+        defaultStreamIndex: Int?
     ) -> String {
         // 1. The manifest named it — trust the option's own name.
         if let name = AVKitTrackNaming.nonGenericDisplayName(optionDisplayName) {
@@ -57,7 +56,7 @@ public enum JellyfinTrackMatcher {
             optionCount: optionCount,
             streams: streams,
             defaultStreamIndex: defaultStreamIndex
-        )?.preferredMenuName(locale: locale) {
+        )?.preferredMenuName() {
             return name
         }
         // 3. No server match — fall to a localized language name, then "Audio N".
@@ -65,8 +64,7 @@ public enum JellyfinTrackMatcher {
             displayName: optionDisplayName,
             languageCode: optionLanguage,
             kind: kind,
-            ordinal: ordinal,
-            locale: locale
+            ordinal: ordinal
         )
     }
 
