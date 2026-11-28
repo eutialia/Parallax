@@ -1,0 +1,36 @@
+1
+00:00:01,000 --> 00:00:01,900
+Hi
+
+2
+00:00:02,000 --> 00:00:02,900
+<font color="#FF0000">Hi</font>
+
+3
+00:00:03,000 --> 00:00:03,900
+<font color="yellow">Hi</font>
+
+4
+00:00:04,000 --> 00:00:04,900
+<FONT COLOR=00FF00>Hi</FONT>
+
+5
+00:00:05,000 --> 00:00:05,900
+<font color="#FF0000">Hi</font> Hi
+
+6
+00:00:06,000 --> 00:00:06,900
+<font color="#FF0000">Hi <font color="#0000FF">Hi</font> Hi</font>
+
+7
+00:00:07,000 --> 00:00:07,900
+<font face="Arial" size="20">Hi</font>
+
+8
+00:00:08,000 --> 00:00:08,900
+<font color="nonsense">Hi</font>
+
+9
+00:00:09,000 --> 00:00:09,900
+<font color='#08f'>Hi</font>
+
