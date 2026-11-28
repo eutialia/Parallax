@@ -272,6 +272,30 @@ struct AVKitEngineEndTests {
         await engine.teardown()
     }
 
+    /// The file's one audio track has no name and an undetermined language, as a transcode's often
+    /// does; the server picked stream 3 as the default.
+    @Test("an unnamed audio track of a Jellyfin stream is named and described from the server's default stream")
+    func jellyfinAudioNaming() async throws {
+        let streams = [
+            MediaStreamInfo(index: 1, kind: .audio, displayTitle: "Commentary - AAC - Stereo", title: "Commentary",
+                            language: "eng", codec: "aac", channels: 2, isExternal: false, isForced: false, isDefault: false),
+            MediaStreamInfo(index: 3, kind: .audio, displayTitle: "English - TrueHD 7.1 - Default", language: "eng",
+                            codec: "truehd", channels: 8, isExternal: false, isForced: false, isDefault: true),
+        ]
+        let engine = AVKitEngine(clock: TestClock())
+        let log = PositionBeatLog(engine)
+        try await engine.load(PlayableAsset(
+            url: try AVKitFixtures.subtitled, startTime: nil, mediaStreams: streams, defaultAudioStreamIndex: 3))
+        try await requireEventually({ !log.readyInventories.isEmpty }, "the file never got ready")
+        let audio = log.readyInventories[0].audio
+        log.stop()
+        await engine.teardown()
+
+        let english = try #require(TrackDisplay.languageName("eng"))
+        #expect(audio.map(\.displayName) == [english], "\(audio)")
+        #expect(audio.map(\.detailLabel) == [streams[1].trackDetailLabel])
+    }
+
     /// Left to itself, AVPlayer offers "CC" for a playlist that says nothing about captions, and
     /// a transcription of the audio for any stream that has some.
     @Test("a file played through the bridge offers no subtitle AVPlayer made up")

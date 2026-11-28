@@ -20,7 +20,10 @@ struct JellyfinTrackMatcherProperties {
         ["ja", "jpn"],
         ["und"],
     ]
-    private static let placeholders = ["Unknown", "UNKNOWN", "und", "Undetermined", "", "   "]
+    private static let placeholders = [
+        "Unknown", "UNKNOWN", "und", "Undetermined", "", "   ",
+        Locale.current.localizedString(forLanguageCode: "und")!,
+    ]
     private static let ownNames = ["Chinese, Traditional (Taiwan)", "English", " Director's Commentary ", "Signs"]
 
     private struct Option: CustomStringConvertible {
