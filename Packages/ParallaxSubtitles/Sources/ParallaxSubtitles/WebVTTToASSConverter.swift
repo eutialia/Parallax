@@ -129,7 +129,14 @@ enum WebVTTToASSConverter {
 
         // Block-at-a-time, because NOTE/STYLE/REGION are defined by the blank
         // line that ends them.
-        for rawBlock in text.components(separatedBy: "\n\n") {
+        let blocks = text.components(separatedBy: "\n\n")
+        // A class the file's own style sheet colors takes that color over the standard one.
+        let classColors = blocks.reduce(into: CueColor.webVTTClasses) { colors, block in
+            let trimmed = block.drop(while: \.isNewline)
+            guard trimmed.hasPrefix("STYLE\n") || trimmed.hasPrefix("STYLE ") else { return }
+            colors.merge(CueColor.classColors(inStyleBlock: trimmed.dropFirst("STYLE".count))) { $1 }
+        }
+        for rawBlock in blocks {
             let lines = rawBlock
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .map(String.init)
@@ -154,7 +161,7 @@ enum WebVTTToASSConverter {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !body.isEmpty else { continue }
 
-            let tokens = CueMarkup.tokenize(body, options: .init(decodesEntities: true))
+            let tokens = CueMarkup.tokenize(body, options: .init(decodesEntities: true, classColors: classColors))
             let placement = override(for: settings(from: timing.settings)) ?? ""
             events.append(
                 ASSEvent(start: timing.start, end: timing.end, text: placement + CueMarkup.assText(tokens))

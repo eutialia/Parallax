@@ -66,6 +66,65 @@ struct ConvertedFileTests {
         #expect(try #require(lessThan.ink).width > (try #require(withoutLessThan.ink).width) + 15)
     }
 
+    /// `colors.srt`, a cue a second: Hi, then Hi inside a font tag colored #FF0000, yellow,
+    /// 00FF00 (uppercase tag, no quotes, no #), #FF0000 with a bare Hi after it, #FF0000 around
+    /// Hi, a #0000FF Hi and a third Hi, a tag with a face and a size only, the color
+    /// "nonsense", and '#08f'.
+    @Test("an SRT font tag colors its text in the hex or named color it gives, the closing tag gives back the color from before it, and a tag with no color it can read draws as the bare text")
+    func srtFontColors() async throws {
+        let renderer = try await loaded("colors.srt")
+        let cues = try await (1...9).asyncMap { try await renderer.drawing(at: Double($0) + 0.5) }
+        let plain = try #require(cues[0].ink)
+
+        #expect(cues[0].box(ofColor: (255, 255, 255)) != nil)
+        for (cue, color) in [(1, (255, 0, 0)), (2, (255, 255, 0)), (3, (0, 255, 0)), (8, (0, 136, 255))] {
+            #expect(cues[cue].box(ofColor: color) != nil, "cue \(cue + 1) has no ink of \(color)")
+            #expect(cues[cue].box(ofColor: (255, 255, 255)) == nil, "cue \(cue + 1) still has white ink")
+            #expect(cues[cue].ink == plain, "cue \(cue + 1) moved or changed size")
+        }
+        let red = try #require(cues[4].box(ofColor: (255, 0, 0)))
+        let white = try #require(cues[4].box(ofColor: (255, 255, 255)))
+        #expect(white.minX > red.maxX, "the Hi after the closing tag: red \(red), white \(white)")
+        let outer = try #require(cues[5].box(ofColor: (255, 0, 0)))
+        let inner = try #require(cues[5].box(ofColor: (0, 0, 255)))
+        #expect(outer.minX < inner.minX && outer.maxX > inner.maxX, "red \(outer) around blue \(inner)")
+        #expect(cues[5].box(ofColor: (255, 255, 255)) == nil)
+        #expect(cues[6] == cues[0], "a face and a size")
+        #expect(cues[7] == cues[0], "an unknown color")
+    }
+
+    @Test("a text color picked in Settings colors the text its author left uncolored, and a colored span keeps its own color")
+    func settingsColorLeavesAuthoredColors() async throws {
+        let cyan = SubtitleStyleOverride(primaryColor: SubtitleColor(red: 0, green: 1, blue: 1))
+        let drawn = try await drawing(of: "colors.srt", at: 5.5, style: cyan)
+
+        let authored = try #require(drawn.box(ofColor: (255, 0, 0)))
+        let picked = try #require(drawn.box(ofColor: (0, 255, 255)))
+        #expect(picked.minX > authored.maxX, "red \(authored), cyan \(picked)")
+        #expect(drawn.box(ofColor: (255, 255, 255)) == nil)
+    }
+
+    /// `colors.vtt`, a cue a second: Hi, then Hi in the classes yellow, red.bg_blue, warn
+    /// (#000080 and then #ff8800 in the STYLE block), note (rgb(0, 128, 255) there), yellow with a bare Hi after
+    /// it, unknown, none, and lime, which the STYLE block gives #800080.
+    @Test("a WebVTT class span draws in the color its class names, one of the standard color classes or the last color the file's STYLE block gives the class, and a class with no color draws as the bare text")
+    func webVTTClassColors() async throws {
+        let renderer = try await loaded("colors.vtt")
+        let cues = try await (1...9).asyncMap { try await renderer.drawing(at: Double($0) + 0.5) }
+        let plain = try #require(cues[0].ink)
+
+        for (cue, color) in [(1, (255, 255, 0)), (2, (255, 0, 0)), (3, (255, 136, 0)), (4, (0, 128, 255)), (8, (128, 0, 128))] {
+            #expect(cues[cue].box(ofColor: color) != nil, "cue \(cue + 1) has no ink of \(color)")
+            #expect(cues[cue].box(ofColor: (255, 255, 255)) == nil, "cue \(cue + 1) still has white ink")
+            #expect(cues[cue].ink == plain, "cue \(cue + 1) moved or changed size")
+        }
+        let yellow = try #require(cues[5].box(ofColor: (255, 255, 0)))
+        let white = try #require(cues[5].box(ofColor: (255, 255, 255)))
+        #expect(white.minX > yellow.maxX, "the Hi after the closing tag: yellow \(yellow), white \(white)")
+        #expect(cues[6] == cues[0], "a class with no color")
+        #expect(cues[7] == cues[0], "no class")
+    }
+
     @Test("an SRT line carrying {\\an8} or {\\a6} draws at the top of the screen", arguments: [
         (1, true), (2, true), (3, true), (4, false),
     ])
@@ -185,6 +244,16 @@ struct ConvertedFileTests {
 
         #expect(unmarked > half)
         #expect(abs(closedHalfway - unmarked) <= unmarked / 33, "closed halfway \(closedHalfway), unmarked \(unmarked)")
+    }
+}
+
+extension Drawing {
+    /// The canvas box of the solid ink within a few levels of `color`.
+    func box(ofColor color: (red: Int, green: Int, blue: Int)) -> CGRect? {
+        box {
+            $0.alpha > 250 && abs(Int($0.red) - color.red) <= 6 && abs(Int($0.green) - color.green) <= 6
+                && abs(Int($0.blue) - color.blue) <= 6
+        }
     }
 }
 

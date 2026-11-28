@@ -131,4 +131,111 @@ struct CueMarkupProperties {
             #expect(Int((read * 100).rounded()) == Int((seconds * 100).rounded()), "run \(run): \(seconds)")
         }
     }
+
+    private static func color(_ random: inout SeededGenerator) -> CueColor {
+        // A third of the colors can be written with three digits.
+        let short = Int.random(in: 0..<3, using: &random) == 0
+        func byte() -> UInt8 { short ? UInt8.random(in: 0...15, using: &random) * 17 : .random(in: 0...255, using: &random) }
+        return CueColor(red: byte(), green: byte(), blue: byte())
+    }
+
+    /// One way a file writes `color`, with the case and spacing files vary.
+    private static func spelling(of color: CueColor, _ random: inout SeededGenerator) -> String {
+        let hex = String(format: "%02x%02x%02x", color.red, color.green, color.blue)
+        let short = hex.enumerated().allSatisfy { $0.offset % 2 == 1 || $0.element == Array(hex)[$0.offset + 1] }
+        var spellings = ["#" + hex, hex, "rgb(\(color.red), \(color.green),\(color.blue))", "rgba(\(color.red),\(color.green),\(color.blue),1)"]
+        if short { spellings.append("#" + hex.enumerated().filter { $0.offset % 2 == 0 }.map { String($0.element) }.joined()) }
+        spellings += CueColor.named.filter { $0.value == color }.keys.sorted()
+        let chosen = spellings.randomElement(using: &random)!
+        return Bool.random(using: &random) ? chosen.uppercased() : chosen
+    }
+
+    @Test("a color reads as the same three bytes however the file spells it, its override block names them blue first, and anything else is no color")
+    func colorsReadBack() throws {
+        var random = SeededGenerator(seed: 0x63_6F6C)
+        for run in 0..<Self.cases {
+            let color = Self.color(&random)
+            let spelled = Self.spelling(of: color, &random)
+
+            let read = CueColor(css: " " + spelled + " ")
+
+            #expect(read == color, "run \(run): \(spelled)")
+            #expect(color.assOverride == String(format: "{\\c&H%02X%02X%02X&}", color.blue, color.green, color.red), "run \(run)")
+        }
+        for junk in ["", "#", "#12", "#1234", "12345", "abc", "#gggggg", "rgb(1,2)", "rgb(256,0,0)", "rgb(a,b,c)", "nonsense", "#1234567"] {
+            #expect(CueColor(css: junk) == nil, "\(junk)")
+        }
+    }
+
+    private struct Piece {
+        let source: String
+        /// The text pieces in order, each with the color it must draw in; nil is the style's.
+        let texts: [(text: String, color: CueColor?)]
+    }
+
+    /// Text and colored spans nested to any depth, in SRT font tags or WebVTT classes. A span
+    /// with no color it can read colors nothing.
+    private static func piece(
+        under outer: CueColor?, depth: Int, classes: [String: CueColor], _ random: inout SeededGenerator
+    ) -> Piece {
+        var source = ""
+        var texts: [(String, CueColor?)] = []
+        for _ in 0..<Int.random(in: 1...3, using: &random) {
+            if depth < 3, Int.random(in: 0..<3, using: &random) == 0 {
+                let color = Bool.random(using: &random) ? Self.color(&random) : nil
+                let useClass = Bool.random(using: &random)
+                let open: String
+                let inner: CueColor?
+                if useClass, let named = classes.keys.sorted().randomElement(using: &random) {
+                    let colored = color != nil
+                    open = colored ? "<c.plain.\(named)>" : "<c.plain>"
+                    inner = colored ? classes[named] : nil
+                } else {
+                    let attribute = color.map { "color=\"\(Self.spelling(of: $0, &random))\"" } ?? "color=\"nonsense\""
+                    open = ["<font face=\"Arial\" \(attribute)>", "<FONT \(attribute) size=3>", "<font \(attribute)>"].randomElement(using: &random)!
+                    inner = color
+                }
+                let nested = piece(under: inner ?? outer, depth: depth + 1, classes: classes, &random)
+                source += open + nested.source + (open.lowercased().hasPrefix("<c") ? "</c>" : "</font>")
+                texts += nested.texts.map { ($0.text, $0.color) }
+            } else {
+                let text = String((0..<Int.random(in: 1...4, using: &random)).map { _ in "abc 喵".randomElement(using: &random)! })
+                source += text
+                texts.append((text, outer))
+            }
+        }
+        return Piece(source: source, texts: texts)
+    }
+
+    @Test("every stretch of text draws in the color of the innermost span around it that gives one, and in the style's color when none does")
+    func textTakesItsInnermostColor() throws {
+        var random = SeededGenerator(seed: 0x73_7061)
+        let classes = ["warn": CueColor(red: 255, green: 136, blue: 0), "yellow": CueColor(red: 255, green: 255, blue: 0)]
+        for run in 0..<Self.cases {
+            let piece = Self.piece(under: nil, depth: 0, classes: classes, &random)
+
+            let tokens = CueMarkup.tokenize(piece.source, options: .init(decodesEntities: false, classColors: classes))
+
+            var current: String?
+            var drawn: [(text: String, color: String?)] = []
+            for token in tokens {
+                switch token {
+                case .override(CueColor.assReset): current = nil
+                case .override(let block): current = block
+                case .text(let text): drawn.append((text, current))
+                }
+            }
+            // Neighboring text under one color is one stretch on both sides.
+            func merged(_ stretches: [(text: String, color: String?)]) -> [String] {
+                stretches.reduce(into: [(text: String, color: String?)]()) { out, next in
+                    if let last = out.last, last.color == next.color {
+                        out[out.count - 1].text += next.text
+                    } else {
+                        out.append(next)
+                    }
+                }.map { "\($0.color ?? "style") \($0.text)" }
+            }
+            #expect(merged(drawn) == merged(piece.texts.map { ($0.text, $0.color?.assOverride) }), "run \(run): \(piece.source)")
+        }
+    }
 }

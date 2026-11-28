@@ -87,18 +87,24 @@ enum CueMarkup {
         /// Decode `&amp;` and friends. WebVTT is HTML-ish and requires it; SRT
         /// carries literal characters.
         var decodesEntities: Bool
+        /// The color each class of a `<c.class>` span gives its text. Empty for SRT, which has
+        /// no classes.
+        var classColors: [String: CueColor] = [:]
     }
 
     /// Turns one cue body into tokens.
     ///
-    /// Angle-bracket tags become ASS overrides (`<i>`, `<b>`, `<u>`) or are
-    /// dropped (`<font>`, `<c>`, `<v Speaker>`, ruby, WebVTT timestamps).
+    /// Angle-bracket tags become ASS overrides (`<i>`, `<b>`, `<u>`, and the color of a
+    /// `<font color>` or a `<c.class>`) or are dropped (`<v Speaker>`, ruby, WebVTT
+    /// timestamps, a font's face and size).
     /// Literal `{\an8}` / `{\a6}` blocks survive untouched: placing an SRT line
     /// at the top of the screen that way is a widespread convention, and libass
     /// honours it once the text reaches it intact.
     static func tokenize(_ body: String, options: MarkupOptions) -> [Token] {
         var tokens: [Token] = []
         var pending = ""
+        /// The color each open `<font>` and `<c>` span set, innermost last.
+        var spans: [CueColor?] = []
 
         func flushText() {
             if !pending.isEmpty {
@@ -123,8 +129,20 @@ enum CueMarkup {
                 if let mapped = assOverride(forHTMLTag: inner) {
                     flushText()
                     tokens.append(.override(mapped))
+                } else if let span = colorSpan(openedBy: inner, classColors: options.classColors) {
+                    spans.append(span)
+                    if let color = span {
+                        flushText()
+                        tokens.append(.override(color.assOverride))
+                    }
+                } else if closesColorSpan(inner), let closed = spans.popLast() {
+                    // The text after the span takes the color of the span around it.
+                    if closed != nil {
+                        flushText()
+                        tokens.append(.override(spans.last { $0 != nil }??.assOverride ?? CueColor.assReset))
+                    }
                 }
-                // Unmapped tags (font, c, v, ruby, timestamps) are simply dropped.
+                // Unmapped tags (v, ruby, timestamps) are simply dropped.
                 index = body.index(after: close)
                 continue
             }
@@ -240,6 +258,49 @@ enum CueMarkup {
         case "/u": return "{\\u0}"
         default: return nil
         }
+    }
+
+    /// The color a `<font ...>` or `<c.class...>` opening tag gives its text: `.some(nil)` when
+    /// it gives none, `.none` for any other tag.
+    private static func colorSpan(
+        openedBy inner: String, classColors: [String: CueColor]
+    ) -> CueColor?? {
+        let trimmed = inner.trimmingCharacters(in: .whitespaces)
+        let name = trimmed.prefix { !$0.isWhitespace && $0 != "." }.lowercased()
+        switch name {
+        case "font":
+            return .some(fontColor(in: trimmed.dropFirst(name.count)))
+        case "c":
+            let classes = trimmed.prefix { !$0.isWhitespace }.split(separator: ".").dropFirst()
+            return .some(classes.lazy.compactMap { classColors[String($0)] }.first)
+        default:
+            return .none
+        }
+    }
+
+    private static func closesColorSpan(_ inner: String) -> Bool {
+        ["/font", "/c"].contains(inner.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// The value of the `color` attribute among a font tag's attributes, quoted or not.
+    private static func fontColor(in attributes: some StringProtocol) -> CueColor? {
+        var rest = Substring(attributes)
+        while let equals = rest.firstIndex(of: "=") {
+            let key = rest[..<equals].split(whereSeparator: \.isWhitespace).last.map { $0.lowercased() }
+            var value = rest[rest.index(after: equals)...].drop(while: \.isWhitespace)
+            if let quote = value.first, quote == "\"" || quote == "'" {
+                value = value.dropFirst()
+                let end = value.firstIndex(of: quote) ?? value.endIndex
+                rest = value[end...].dropFirst()
+                value = value[..<end]
+            } else {
+                let end = value.firstIndex(where: \.isWhitespace) ?? value.endIndex
+                rest = value[end...]
+                value = value[..<end]
+            }
+            if key == "color" { return CueColor(css: value) }
+        }
+        return nil
     }
 
     /// Matches `{\an8}` or `{\a6}` starting at `start`, and nothing else.
