@@ -17,6 +17,9 @@ struct BridgeSession: MediaResponder {
     private let stopwatch: @Sendable () -> @Sendable () -> Duration
     private let cache: SessionBlockCache
     private let demuxers: DemuxerPool
+    /// The file's text subtitle streams, in file order.
+    let subtitles: [EmbeddedSubtitle]
+    let subtitleLines: EmbeddedSubtitleLines
 
     /// Reads the file's headers, keyframe list and opening. Throws a `BridgeRefusal` for a file the
     /// bridge cannot deliver, and the reader's own error when a read fails.
@@ -26,7 +29,8 @@ struct BridgeSession: MediaResponder {
     ) async throws -> BridgeSession {
         do {
             let cache = SessionBlockCache(reader: reader, size: try await reader.fileSize)
-            let demuxer = try await MediaDemuxer.open(cache, listing: listing)
+            let subtitleLines = EmbeddedSubtitleLines()
+            let demuxer = try await MediaDemuxer.open(cache, listing: listing, subtitleLines: subtitleLines)
             let plan = try await BridgePlan(reading: demuxer, support: support, showsHDR: showsHDR)
             if !plan.omittedAudio.isEmpty {
                 Log.playback.info("bridge: audio left out: \(plan.omittedAudio.joined(separator: ", "), privacy: .public)")
@@ -34,7 +38,8 @@ struct BridgeSession: MediaResponder {
             let keyframes = try await demuxer.keyframes()
             return BridgeSession(
                 plan: plan, keyframes: keyframes, stopwatch: LocalMediaServer.stopwatch(on: clock), cache: cache,
-                demuxers: DemuxerPool(first: demuxer, cache: cache, keyframes: keyframes))
+                demuxers: DemuxerPool(first: demuxer, cache: cache, keyframes: keyframes, subtitleLines: subtitleLines),
+                subtitles: demuxer.streams.compactMap(EmbeddedSubtitle.init), subtitleLines: subtitleLines)
         } catch let failure
             where failure is MediaDemuxer.OpenFailure || failure is MediaDemuxer.ReadFailure
             || failure is SegmentWriter.Failure {

@@ -64,19 +64,37 @@ public actor SubtitleRenderer {
     /// - Parameter languageHint: the track's own language label, when known.
     ///   Only a tie-breaker: it decides which Chinese script Han-only lines
     ///   assume when their characters are shared between the two.
-    public func load(
+    ///
+    /// The script is decoded, converted and routed to fonts off the actor, so a frame asked
+    /// for meanwhile is not kept waiting behind it.
+    public nonisolated func load(
         _ data: Data,
         format: SubtitleSourceFormat,
         languageHint: String? = nil
-    ) throws {
-        let engine = try activeEngine()
+    ) async throws {
+        try await install(
+            try Self.script(from: data, format: format, defaultFontFamily: defaultFontFamily, languageHint: languageHint),
+            format: format)
+    }
 
+    private func install(_ script: [UInt8], format: SubtitleSourceFormat) throws {
+        let engine = try activeEngine()
+        var bytes = script
+        registerFonts(for: bytes, format: format, engine: engine)
+        try engine.loadTrack(bytes: &bytes)
+        hasEmittedFrame = false
+    }
+
+    /// The ASS script libass is handed for `data`.
+    private static func script(
+        from data: Data, format: SubtitleSourceFormat, defaultFontFamily: String, languageHint: String?
+    ) throws -> [UInt8] {
         // No bundled file covers every script and no system provider is
         // reachable, so a run libass cannot place draws nothing; and within CJK
         // every regional face covers the whole Han repertoire, so a wrong pick
         // is silent. Routing is therefore planned before libass sees the script
         // and named explicitly, per run.
-        var bytes: [UInt8]
+        let bytes: [UInt8]
         if format.needsConversion {
             guard let text = ASSTextEncoding.utf8(data) else {
                 throw SubtitleError.undecodableText
@@ -124,10 +142,7 @@ public actor SubtitleRenderer {
             bytes = Array(data)
         }
         guard !bytes.isEmpty else { throw SubtitleError.noCues }
-
-        registerFonts(for: bytes, format: format, engine: engine)
-        try engine.loadTrack(bytes: &bytes)
-        hasEmittedFrame = false
+        return bytes
     }
 
     /// Registers the bundled files this script's families live in, and re-runs

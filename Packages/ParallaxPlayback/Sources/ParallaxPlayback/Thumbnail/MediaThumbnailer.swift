@@ -21,7 +21,7 @@ public struct MediaThumbnailer: Thumbnailing {
     public func thumbnail(of reader: any RandomAccessReading) async throws -> ThumbnailFrame {
         try Task.checkCancellation()
         let cache = SessionBlockCache(reader: reader, size: try await reader.fileSize)
-        let demuxer = try await MediaDemuxer.open(cache, skippingAttachments: true)
+        let demuxer = try await MediaDemuxer.open(cache, skippingAttachments: true, subtitleLines: nil)
         try Task.checkCancellation()
         let duration = demuxer.duration.map(Duration.nanoseconds)
         // Skipping attachments drops Matroska's cover with the fonts, so it is found by walking

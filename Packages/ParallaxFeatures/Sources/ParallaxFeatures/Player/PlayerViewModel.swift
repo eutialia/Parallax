@@ -151,6 +151,8 @@ public final class PlayerViewModel {
     /// Jellyfin fills it from `resolved.subtitleStreamURLs`; SMB from the sidecar files found
     /// beside the video.
     private var subtitleURLs: [Int: URL] = [:]
+    /// The line streams of the text subtitles stored in the played file, by stream.
+    private var fileSubtitles: [Int: FileSubtitle] = [:]
     private func subtitleDocument(for track: SubtitleTrack?) -> SubtitleDocument? {
         guard let track, let url = track.id.jellyfinStreamIndex.flatMap({ subtitleURLs[$0] }) else { return nil }
         return SubtitleDocument(url: url, languageCode: track.languageCode)
@@ -712,12 +714,11 @@ public final class PlayerViewModel {
     /// burst coalesces to the last intent (see `togglePlayPause`).
     private var transportTask: Task<Void, Never>?
     private var resolved: ResolvedPlayback?
-    /// Synthetic external subtitle tracks for the SMB path (`resolved` is nil there, so
-    /// the Jellyfin `externalSubtitleTracks(from: resolved)` machinery can't build them).
-    /// Populated in `start(smbItem:)` and re-appended to the engine's inventory on every
-    /// `.ready` beat — the engine reports only EMBEDDED tracks, so without this the sidecar
-    /// subs would be dropped the moment the engine's inventory lands.
-    private var smbExternalSubtitleTracks: [SubtitleTrack] = []
+    /// The SMB path's subtitle rows the app draws itself: the text streams stored in the file,
+    /// then the files beside it. `resolved` is nil there, so the Jellyfin machinery cannot build
+    /// them. Set in `start(smbItem:)` and appended to the engine's inventory on every `.ready`
+    /// beat, which would otherwise replace them.
+    private var smbSubtitleTracks: [SubtitleTrack] = []
     /// Server subtitle stream index → the id of the published menu row that renders it.
     /// Written with the menu in the `.ready` inventory beat; the only reader is the
     /// server-preferred default, which is expressed in STREAM indices while the rows are
@@ -997,7 +998,10 @@ public final class PlayerViewModel {
         selectedSubtitleTrack = fallback
         currentSubtitleStreamIndex = Self.subtitleIndex(of: fallback)
         subtitleFetchFailureTick &+= 1
-        if let fallback, fallback.id.jellyfinStreamIndex == nil {
+        if let fallback, let stored = fallback.id.fileStreamIndex.flatMap({ fileSubtitles[$0] }) {
+            subtitleDisplay.show(stored.lines, languageCode: fallback.languageCode)
+            subtitleLanded(fallback)
+        } else if let fallback, fallback.id.jellyfinStreamIndex == nil {
             Task { [engine] in await engine?.setSubtitleTrack(fallback) }
             subtitleLanded(fallback)
         } else {
@@ -1317,19 +1321,12 @@ public final class PlayerViewModel {
                 throw AppError.playback(.audioSessionFailed)
             }
             try checkStillActive(generation: generation)
-            // Sidecar subs are already filename-matched by the caller; surface them so
-            // `SubtitleDisplay.show` finds the URL by index, exactly like the
-            // Jellyfin path's `resolved.subtitleStreamURLs` in `beginPlayback`.
+            // The rows go up now, before the engine's inventory lands on `.ready`.
             subtitleURLs = smbItem.subtitleURLs
-            // Surface those sidecars as selectable menu entries NOW (before the engine's
-            // embedded inventory lands on .ready), with the resolver's labels. The `.ready`
-            // merge re-appends these to the engine's embedded subs so they survive it —
-            // the Jellyfin `externalSubtitleTracks(from: resolved)` path is nil-`resolved`
-            // on SMB, so this SMB-shaped overload stands in for it.
-            smbExternalSubtitleTracks = PlayerTrackMenus.externalSubtitleTracks(
-                urls: smbItem.subtitleURLs, labels: smbItem.subtitleLabels
-            )
-            availableSubtitleTracks = smbExternalSubtitleTracks
+            fileSubtitles = Dictionary(smbItem.fileSubtitles.map { ($0.stream, $0) }) { first, _ in first }
+            smbSubtitleTracks = PlayerTrackMenus.fileSubtitleTracks(smbItem.fileSubtitles)
+                + PlayerTrackMenus.externalSubtitleTracks(urls: smbItem.subtitleURLs, labels: smbItem.subtitleLabels)
+            availableSubtitleTracks = smbSubtitleTracks
             let asset = PlayerAssetFactory.asset(for: smbItem)
             try await loadAndPlay(asset, reusingEngine: false, generation: generation)
         } catch {
@@ -1826,9 +1823,10 @@ public final class PlayerViewModel {
         trackSwitchFailure = nil
         subtitleDisplay.endSession()
         subtitleURLs = [:]
+        fileSubtitles = [:]
         landedSubtitle = nil
         pendingSubtitlePick = nil
-        smbExternalSubtitleTracks = []
+        smbSubtitleTracks = []
         currentPosition = .zero
         lastPosition = .zero
         // The session is over, so any outstanding scrub target is too — a `retry()`/
@@ -2028,7 +2026,16 @@ public final class PlayerViewModel {
         // via SubtitleOverlayView with the engine's own subtitle held off. An embedded
         // direct-play track carries an `.avKitOption` id the engine renders; `nil`
         // is Off.
-        if let track, let index = track.id.jellyfinStreamIndex {
+        if let track, let stored = track.id.fileStreamIndex.flatMap({ fileSubtitles[$0] }) {
+            // The engine's own subtitle goes off first, as for any subtitle the app draws.
+            let generation = sessionGeneration
+            await engine?.setSubtitleTrack(nil)
+            guard generation == sessionGeneration else { return }
+            selectedSubtitleTrack = track
+            pendingSubtitlePick = SubtitlePick(track: track)
+            subtitleDisplay.show(stored.lines, languageCode: track.languageCode)
+            subtitleLanded(track)
+        } else if let track, let index = track.id.jellyfinStreamIndex {
             // Leaving an active burn-in forces the reload-then-activate path, and must wait
             // for the fresh item before fetching: the outgoing session is still burning the
             // image in, and its subtitleURLs are stale.
@@ -3031,7 +3038,7 @@ public final class PlayerViewModel {
                 let subtitleMenu = PlayerTrackMenus.directPlaySubtitleMenu(
                     engineTracks: tracks.subtitles,
                     resolved: resolved,
-                    smbExternals: smbExternalSubtitleTracks
+                    smbExternals: smbSubtitleTracks
                 )
                 availableSubtitleTracks = subtitleMenu.tracks
                 subtitleRowIDsByStream = subtitleMenu.rowIDsByStream

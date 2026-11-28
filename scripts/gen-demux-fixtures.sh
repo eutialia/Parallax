@@ -866,4 +866,47 @@ video.m3u8
 PLAYLIST
 }
 subtitled_hls
+# A release as fansubs make it: an ASS track and an SRT track inside the file, named for their
+# formats and tagged with no language. A line every four seconds, each two seconds long, so a
+# seek lands between lines. The third ASS line is yellow in the top left corner. The ASS track
+# is flagged for the hard of hearing and the SRT track as forced.
+# text-subtitles-late.mkv is the same file with every stream starting at ten minutes.
+text_subtitles() {
+    local work; work=$(mktemp -d)
+    {
+        cat <<'SCRIPT'
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,2,40,40,40,1
+Style: Corner,Arial,96,&H0000FFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,0,0,7,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+SCRIPT
+        for line in $(seq 0 9); do
+            printf 'Dialogue: 0,0:00:%02d.00,0:00:%02d.00,%s,,0,0,0,,ASS line %d\n' \
+                $((line * 4 + 1)) $((line * 4 + 3)) "$([ "$line" = 2 ] && echo Corner || echo Default)" "$line"
+        done
+    } > "$work/lines.ass"
+    for line in $(seq 0 9); do
+        printf '%d\n00:00:%02d,000 --> 00:00:%02d,000\nSRT line %d\n\n' \
+            $((line + 1)) $((line * 4 + 1)) $((line * 4 + 3)) "$line"
+    done > "$work/lines.srt"
+    numbered text-subtitles-base.mkv 40 -c:v libx264 -preset veryfast -bf 2 -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p
+    mkvmerge --quiet --deterministic 0 -o "$OUT/text-subtitles.mkv" "$OUT/text-subtitles-base.mkv" \
+        --track-name 0:ASS --language 0:und --hearing-impaired-flag 0:yes "$work/lines.ass" \
+        --track-name 0:SRT --language 0:und --forced-display-flag 0:yes "$work/lines.srt"
+    mkvmerge --quiet --deterministic 0 -o "$OUT/text-subtitles-late.mkv" \
+        --sync 0:600000 --sync 1:600000 --sync 2:600000 --sync 3:600000 "$OUT/text-subtitles.mkv"
+    # Its first ten seconds, for the app's own scenarios.
+    mkvmerge --quiet --deterministic 0 -o "${OUT%/Packages/*}/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/Fixtures/text-subtitles-short.mkv" \
+        --split parts:00:00:00-00:00:10 "$OUT/text-subtitles.mkv"
+    rm -r "$work" "$OUT/text-subtitles-base.mkv"
+}
+text_subtitles
 ls -l "$OUT"

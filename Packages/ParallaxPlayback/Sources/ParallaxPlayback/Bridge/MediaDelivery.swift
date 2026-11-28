@@ -11,6 +11,19 @@ public struct MediaDelivery: Sendable {
 
     private static let probeDeadline: Duration = .seconds(4)
 
+    /// The text subtitle streams stored in the file, in file order. Empty for a file AVPlayer
+    /// opens itself, whose subtitles it lists as its own.
+    public var subtitles: [EmbeddedSubtitle] { bridge?.subtitles ?? [] }
+
+    /// The lines of one of `subtitles` read so far, in time order, then each line as the bridge
+    /// first reads it. The bridge reads a line when AVPlayer fetches the pictures stored beside
+    /// it, so a line that starts before a seek's target is not read until playback passes back
+    /// over it. Ends when the delivery stops.
+    public func lines(of subtitle: EmbeddedSubtitle.ID) -> AsyncStream<[EmbeddedSubtitleLine]> {
+        guard let bridge else { return AsyncStream { $0.finish() } }
+        return bridge.subtitleLines.lines(of: subtitle, from: bridge.plan.start)
+    }
+
     /// Reading the file produced no verdict, so nothing is known about its format.
     public enum ProbeFailure: Error {
         case timedOut
@@ -130,6 +143,7 @@ public struct MediaDelivery: Sendable {
     /// parked in a stuck source read is left to the reader's release after 2 s.
     public func stop() async {
         await server.stop()
+        bridge?.subtitleLines.finish()
         guard let bridge, bridge.reads.stop() else { return }
         _ = await Self.race(against: .seconds(2), on: clock) { await bridge.reads.allReturned() }
         let report = bridge.report(of: await server.records)

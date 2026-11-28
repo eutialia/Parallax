@@ -192,6 +192,25 @@ enum PlayerTrackMenus {
         }
     }
 
+    /// The text subtitles stored in the played file, as rows the app draws itself. A row is
+    /// named by the stream's title, else its language, else its place among them.
+    static func fileSubtitleTracks(_ subtitles: [FileSubtitle], locale: Locale = .current) -> [SubtitleTrack] {
+        subtitles.enumerated().map { place, subtitle in
+            let title = subtitle.title?.trimmingCharacters(in: .whitespaces)
+            let format = TrackDisplay.subtitleFormatName(subtitle.format == .ass ? "ass" : "subrip")
+            return SubtitleTrack(
+                id: .fileStream(subtitle.stream),
+                displayName: title.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? TrackDisplay.languageName(subtitle.language, locale: locale) ?? "Subtitle \(place + 1)",
+                languageCode: subtitle.language,
+                isForced: subtitle.isForced,
+                detailLabel: [format, "Embedded"].compactMap(\.self).joined(separator: " · "),
+                isExternal: false,
+                isSDH: subtitle.isHearingImpaired
+            )
+        }
+    }
+
     /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id
     /// (fed straight back to the server as `SubtitleStreamIndex` / to the sidecar loader).
     /// Shared by the transcode menu (all text subs, plus opt-in image subs) and the
