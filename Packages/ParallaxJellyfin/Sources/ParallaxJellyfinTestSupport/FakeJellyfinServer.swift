@@ -243,6 +243,13 @@ public final class FakeJellyfinServer: Observable, Sendable {
         }
     }
 
+    /// `username`'s audio language preference as the server stores it.
+    public func audioLanguage(of username: String) -> String? {
+        state.withLock { state in
+            state.users.first { $0.name == username }.flatMap { state.configurations[$0.id]?.audioLanguagePreference }
+        }
+    }
+
     /// The Jellyfin version the server reports, 12.2.0 unless set. Settable mid-test, as a server
     /// that was upgraded or rolled back is.
     @discardableResult
