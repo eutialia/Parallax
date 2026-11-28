@@ -1,0 +1,19 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BorderStyle, Outline, Shadow, Alignment
+Style: Upright,DFKai-SB,60,&H00FFFFFF,&H00000000,1,0,0,5
+Style: Vertical,@DFKai-SB,60,&H00FFFFFF,&H00000000,1,0,0,5
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.90,Upright,,0,0,0,,一
+Dialogue: 0,0:00:02.00,0:00:02.90,Vertical,,0,0,0,,一
+Dialogue: 0,0:00:03.00,0:00:03.90,Upright,,0,0,0,,{\fn@MS Mincho}一
+Dialogue: 0,0:00:04.00,0:00:04.90,Upright,,0,0,0,,ㅡ
+Dialogue: 0,0:00:05.00,0:00:05.90,Vertical,,0,0,0,,ㅡ
+Dialogue: 0,0:00:06.00,0:00:06.90,Upright,,0,0,0,,{\fn@SimHei}ㅡ一
+Dialogue: 0,0:00:07.00,0:00:07.90,Vertical,,0,0,0,,{\fnSimHei}一

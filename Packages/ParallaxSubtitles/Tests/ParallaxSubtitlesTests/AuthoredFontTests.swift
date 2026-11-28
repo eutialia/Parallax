@@ -80,6 +80,26 @@ struct AuthoredFontTests {
         #expect(line != (try await crlf.drawing(at: 2.5)))
     }
 
+    /// `vertical.ass`, a cue a second, each a flat stroke: 一 in a style named DFKai-SB, in one
+    /// named @DFKai-SB, and after an inline @MS Mincho; the Hangul ㅡ, which a Chinese track
+    /// draws from the Korean face, in each of the two styles; ㅡ一 after an inline @SimHei;
+    /// and 一 in the @ style after an inline SimHei.
+    @Test("a font name that starts with @ draws East Asian glyphs turned a quarter turn: as a style's font, as an inline font, on a run that takes another face, and on the text after that run; an inline font without the @ draws them upright")
+    func verticalFontNamesTurnGlyphs() async throws {
+        let subtitle = try await loaded("vertical.ass", languageHint: "zh-Hans")
+        let inks = try await (1...7).asyncMap { try #require(try await subtitle.drawing(at: Double($0) + 0.5).ink) }
+        func flat(_ ink: CGRect) -> Bool { ink.width > ink.height * 3 }
+        func tall(_ ink: CGRect) -> Bool { ink.height > ink.width * 3 }
+
+        #expect(flat(inks[0]), "upright style: \(inks[0])")
+        #expect(tall(inks[1]), "@ style: \(inks[1])")
+        #expect(tall(inks[2]), "inline @ font: \(inks[2])")
+        #expect(flat(inks[3]), "Hangul, upright style: \(inks[3])")
+        #expect(tall(inks[4]), "Hangul, @ style: \(inks[4])")
+        #expect(inks[5].height > inks[0].height * 4 && inks[5].width > inks[1].width * 4, "two turned strokes side by side: \(inks[5])")
+        #expect(flat(inks[6]), "inline font without @ in the @ style: \(inks[6])")
+    }
+
     /// `authored-zh.ass` cues 7 and 8 use an Open Sans and a Times New Roman style;
     /// `authored-latin.ass` is the same two lines with no Chinese in the track.
     @Test("in an authored Chinese track, a style used only by English lines draws them from the Latin face, keeping its serif intent", arguments: [
