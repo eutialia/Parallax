@@ -92,7 +92,7 @@ public final class StubHTTPTransport: Observable, @unchecked Sendable {
     private var fallbackReply = Reply()
     private var responder: (@Sendable (Exchange) -> Reply)?
     private var holds: (@Sendable (String) -> Bool)?
-    private var heldDeliveries: [() -> Void] = []
+    private var heldDeliveries: [(URLError.Code?) -> Void] = []
     /// Tells `Observations` the parked requests changed, so a wait on `heldReplyCount` re-reads it.
     private let registrar = ObservationRegistrar()
 
@@ -152,7 +152,28 @@ public final class StubHTTPTransport: Observable, @unchecked Sendable {
             return heldDeliveries
         }
         announceHeldReplies()
-        parked.forEach { $0() }
+        parked.forEach { $0(nil) }
+    }
+
+    /// Answers the parked requests, each computed now, and keeps parking the ones that follow.
+    public func answerHeldReplies() {
+        let parked = lock.withLock {
+            defer { heldDeliveries.removeAll() }
+            return heldDeliveries
+        }
+        announceHeldReplies()
+        parked.forEach { $0(nil) }
+    }
+
+    /// Ends the parked requests the way `URLSession` ends one that outlived its timeout, and
+    /// keeps parking the ones that follow.
+    public func timeOutHeldReplies() {
+        let parked = lock.withLock {
+            defer { heldDeliveries.removeAll() }
+            return heldDeliveries
+        }
+        announceHeldReplies()
+        parked.forEach { $0(.timedOut) }
     }
 
     /// How many requests are parked, waiting for `releaseReplies()`.
@@ -168,7 +189,7 @@ public final class StubHTTPTransport: Observable, @unchecked Sendable {
     }
 
     /// Keeps `delivery` for `releaseReplies()` when replies to `path` are held. False means answer now.
-    fileprivate func park(_ path: String, _ delivery: @escaping () -> Void) -> Bool {
+    fileprivate func park(_ path: String, _ delivery: @escaping (URLError.Code?) -> Void) -> Bool {
         let parked = lock.withLock {
             guard holds?(path) == true else { return false }
             heldDeliveries.append(delivery)
@@ -275,7 +296,11 @@ final class StubURLProtocol: URLProtocol {
             return
         }
         let request = request
-        let deliver = {
+        let deliver = { (failure: URLError.Code?) in
+            if let failure {
+                self.client?.urlProtocol(self, didFailWithError: URLError(failure))
+                return
+            }
             let reply = transport.handle(request)
             if let code = reply.transportFailure {
                 self.client?.urlProtocol(self, didFailWithError: URLError(code))
@@ -296,11 +321,11 @@ final class StubURLProtocol: URLProtocol {
         // A held reply is delivered back on this loading thread's run loop: the client expects
         // its callbacks on the thread that called `startLoading`.
         let runLoop = CFRunLoopGetCurrent()
-        let parked = transport.park(url.path) {
-            CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue, deliver)
+        let parked = transport.park(url.path) { failure in
+            CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) { deliver(failure) }
             CFRunLoopWakeUp(runLoop)
         }
-        if !parked { deliver() }
+        if !parked { deliver(nil) }
     }
 
     override func stopLoading() {}

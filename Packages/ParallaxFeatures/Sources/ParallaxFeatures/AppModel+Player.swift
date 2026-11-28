@@ -60,7 +60,6 @@ extension AppModel {
         // (Keychain stays out of the player) and everything else over HTTP.
         let resolver = services.smbPlaybackResolver
         let session = services.urlSession
-        let timeout = services.subtitleFetchTimeout
         return PlayerViewModel(
             deviceProfileBuilder: services.deviceProfileBuilder,
             clock: clock,
@@ -77,7 +76,7 @@ extension AppModel {
                 if url.scheme == "smb" {
                     return await resolver.subtitleData(for: url, ref: ref).map(SubtitleFetchOutcome.data) ?? .rejected
                 }
-                return await Self.fetchSubtitle(url, over: session, timeout: timeout)
+                return await Self.fetchSubtitle(url, over: session)
             },
             smbResumeStore: services.smbResumeStore
         )
@@ -91,7 +90,6 @@ extension AppModel {
         let info = await services.playbackInfoFactory(session)
         let repo = await services.jellyfinLibraryRepoFactory(session)
         let urlSession = services.urlSession
-        let timeout = services.subtitleFetchTimeout
         return PlayerViewModel(
             deviceProfileBuilder: services.deviceProfileBuilder,
             clock: clock,
@@ -103,7 +101,7 @@ extension AppModel {
             audioSession: services.audioSession,
             nowPlaying: services.makeNowPlaying(),
             fetchDetail: { try await repo.detail(for: $0) },
-            subtitleFetch: { await Self.fetchSubtitle($0, over: urlSession, timeout: timeout) },
+            subtitleFetch: { await Self.fetchSubtitle($0, over: urlSession) },
             rememberTrackSelection: { await info.rememberTrackSelection($0) },
             fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
             fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
@@ -127,19 +125,22 @@ extension AppModel {
         )
     }
 
+    /// Seconds a subtitle request waits for an answer before the pick rolls back. Jellyfin sends
+    /// nothing while it extracts an embedded track and keeps extracting after the client gives up,
+    /// so a short wait costs nothing: a later pick is served from its cache.
+    private nonisolated static let subtitleFetchTimeout: TimeInterval = 5
+
     /// URLSession does not throw on HTTP 4xx/5xx — it returns the error body. Without the status
     /// guard a server-side conversion failure hands back HTML/JSON "subtitles" and the ass→VTT
     /// fallback never fires.
-    private nonisolated static func fetchSubtitle(
-        _ url: URL, over session: URLSession, timeout: Duration
-    ) async -> SubtitleFetchOutcome {
+    private nonisolated static func fetchSubtitle(_ url: URL, over session: URLSession) async -> SubtitleFetchOutcome {
         let started = ContinuousClock().now
         // `…/Subtitles/{index}/…` on Jellyfin; the URL itself carries the token, so it stays out.
         let track = url.pathComponents.drop { $0 != "Subtitles" }.dropFirst().first ?? "?"
         let data: Data
         let response: URLResponse
         do {
-            let request = URLRequest(url: url, timeoutInterval: timeout / .seconds(1))
+            let request = URLRequest(url: url, timeoutInterval: subtitleFetchTimeout)
             (data, response) = try await session.data(for: request)
         } catch {
             let code = (error as? URLError)?.code

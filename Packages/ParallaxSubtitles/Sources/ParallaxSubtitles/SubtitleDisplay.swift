@@ -310,12 +310,3 @@ public final class SubtitleDisplay {
         cache = [:]
     }
 }
-
-#if DEBUG
-extension SubtitleDisplay {
-    /// Awaits the in-flight fetch and load, so a test can read the renderer without racing it.
-    public func awaitFetch() async {
-        await fetchTask?.value
-    }
-}
-#endif

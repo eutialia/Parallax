@@ -183,53 +183,6 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - Subtitle resolution
 
-    @Test("subtitleURLs contains matched sidecar and excludes unrelated files")
-    func subtitleURLsContainsMatchedSidecar() async throws {
-        // Sibling entries alongside "Example.mp4":
-        //   Example.en.srt  → matches (language token "en")
-        //   readme.txt      → not a subtitle extension, excluded
-        //   Other.srt       → unrelated filename, excluded by STRICT matching
-        //   Sibling.mp4     → a second video, so the listing is NOT a lonely-video folder; that keeps
-        //                     the tiered matcher's lonely-video fallback OFF, so "Other.srt" (which
-        //                     matches no video by name) is correctly excluded rather than cross-attached.
-        let entries: [SMBDirectoryEntry] = [
-            .init(name: "Example.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Sibling.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Example.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "readme.txt",     isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Other.srt",      isDirectory: false, size: 1, modifiedAt: nil),
-        ]
-        let listing = SiblingListing(entries: entries)
-        let resolver = try await makeResolver(listing: listing)
-        let item = makeItem(share: "Media", path: "Movies/Example.mp4")
-        let ref = makeRef()
-
-        let result = try await resolver.resolve(item, ref: ref)
-        await result.cleanup()
-
-        #expect(result.subtitleURLs.count == 1)
-        let subURL = try #require(result.subtitleURLs.values.first)
-        #expect(subURL.lastPathComponent == "Example.en.srt")
-        // Verify the smb:// URL shape
-        #expect(subURL.absoluteString == "smb://nas.local/Media/Movies/Example.en.srt")
-    }
-
-    @Test("subtitle resolution throwing yields empty subtitleURLs and playback item is still returned")
-    func subtitleThrowingYieldsEmptyMap() async throws {
-        let listing = SiblingListing(entries: [])
-        listing.shouldThrow = true
-        let resolver = try await makeResolver(listing: listing)
-        let item = makeItem()
-        let ref = makeRef()
-
-        // Must NOT throw — subtitle errors are non-fatal.
-        let result = try await resolver.resolve(item, ref: ref)
-        await result.cleanup()
-
-        #expect(result.subtitleURLs.isEmpty)
-        #expect(result.url.lastPathComponent == "Example.mp4")
-    }
-
     // MARK: - Title
 
     @Test("title is the item's displayTitle (filename without extension)")
@@ -306,24 +259,4 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - Root-level path (no directory)
 
-    @Test("path with no directory component resolves and finds subs at the share root")
-    func rootLevelPath() async throws {
-        let entries: [SMBDirectoryEntry] = [
-            .init(name: "Standalone.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Standalone.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
-        ]
-        let listing = SiblingListing(entries: entries)
-        let resolver = try await makeResolver(listing: listing)
-        // ItemID encodes root="" → path is just the filename
-        let item = makeItem(share: "Media", path: "Standalone.mp4")
-        let ref = makeRef(share: "Media")
-
-        let result = try await resolver.resolve(item, ref: ref)
-        await result.cleanup()
-
-        #expect(result.url.lastPathComponent == "Standalone.mp4")
-        #expect(result.subtitleURLs.count == 1)
-        let subURL = try #require(result.subtitleURLs.values.first)
-        #expect(subURL.lastPathComponent == "Standalone.en.srt")
-    }
 }

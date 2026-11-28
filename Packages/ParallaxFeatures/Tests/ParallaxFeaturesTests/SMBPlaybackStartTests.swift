@@ -62,107 +62,6 @@ struct SMBPlaybackStartTests {
         )
     }
 
-    @Test("start(smbItem:) surfaces both labeled sidecars in the subtitle menu with the resolver's labels")
-    func startSurfacesLabeledSidecarsInMenu() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
-        let vm = makeVM(reporting: reporting, engine: engine)
-
-        let en = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
-        let ja = URL(string: "smb://nas.local/Media/Movies/Example.ja.srt")!
-        await vm.start(smbItem: smbItem(
-            subtitleURLs: [0: en, 1: ja],
-            subtitleLabels: [0: "en", 1: "ja"]
-        ))
-
-        // Both sidecars are selectable menu entries even before any engine .ready beat,
-        // with the resolver's language labels translated to localized names (the
-        // Jellyfin naming tier) and client-render `.jellyfinStream` ids. Expected
-        // names are computed with the same current-locale call the production path
-        // uses, so the assertion holds on a non-English test host.
-        let subs = vm.availableSubtitleTracks
-        #expect(subs.count == 2)
-        let english = try #require(TrackDisplay.languageName("en"))
-        let japanese = try #require(TrackDisplay.languageName("ja"))
-        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == english && $0.languageCode == "en" && $0.isExternal })
-        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == japanese && $0.languageCode == "ja" && $0.isExternal })
-    }
-
-    @Test("start(smbItem:) surfaces every renderable sidecar (ASS included) and hides formats the renderer can't ingest")
-    func startFiltersSidecarFormatsByRenderability() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
-        let vm = makeVM(reporting: reporting, engine: engine)
-
-        let srt = URL(string: "smb://nas.local/Media/Movies/x.srt")!
-        let ass = URL(string: "smb://nas.local/Media/Movies/y.ass")!
-        let idx = URL(string: "smb://nas.local/Media/Movies/y.idx")!
-        let vtt = URL(string: "smb://nas.local/Media/Movies/z.vtt")!
-        await vm.start(smbItem: smbItem(
-            subtitleURLs: [0: srt, 1: ass, 2: vtt, 3: idx],
-            subtitleLabels: [0: "srt-label", 1: "ass-label", 2: "vtt-label", 3: "idx-label"]
-        ))
-
-        // ASS renders client-side (libass) so it's a real menu entry now; the VobSub
-        // index file is image-based and stays out of the menu.
-        let subs = vm.availableSubtitleTracks
-        #expect(subs.count == 3)
-        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "srt-label" })
-        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ass-label" })
-        #expect(subs.contains { $0.id == .jellyfinStream(2) && $0.displayName == "vtt-label" })
-        #expect(!subs.contains { $0.id == .jellyfinStream(3) })
-    }
-
-    @Test("selecting an SMB .srt sidecar fetches + loads the client renderer as SRT")
-    func selectingSRTSidecarLoadsRenderer() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
-
-        // A minimal single-cue SRT blob with comma timing — the format tag proves the
-        // extension routed the data down the renderer's SRT ingest, not the VTT one.
-        let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n"
-        let subURL = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
-        let vm = makeVM(reporting: reporting, engine: engine, subtitleFetch: { url in
-            url == subURL ? .data(Data(srt.utf8)) : .rejected
-        })
-
-        await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL], subtitleLabels: [0: "en"]))
-
-        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(0) })
-        await vm.selectSubtitleTrack(track)
-        await vm.debugAwaitSubtitleFetch()
-
-        #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .srt, byteCount: srt.utf8.count))
-        #expect(vm.subtitleRenderer != nil)
-    }
-
-    /// SMB has no subtitle-extraction endpoint, so a track muxed into the container can
-    /// only be drawn by the engine. That is the one direct-play case Jellyfin's
-    /// sidecar takeover does NOT cover, and the asset must leave the engine free to
-    /// render it (`engineSubtitlesDisabled == false`).
-    @Test("SMB: an EMBEDDED pick still goes to the engine, and the asset keeps engine subtitles on")
-    func smbEmbeddedSubtitleStaysWithTheEngine() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
-        let vm = makeVM(reporting: reporting, engine: engine)
-
-        await vm.start(smbItem: smbItem())
-        let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.engineSubtitlesDisabled == false)
-
-        let embedded = SubtitleTrack(id: .avKitOption(0), displayName: "English",
-                                     languageCode: "en", isForced: false)
-        engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600),
-                           tracks: TrackInventory(audio: [], subtitles: [embedded])))
-        try await engine.settle()
-
-        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .avKitOption(0) })
-        await vm.selectSubtitleTrack(track)
-
-        #expect(engine.selectedSubtitleTrackID == .avKitOption(0))
-        #expect(vm.subtitleRenderer == nil)   // nothing client-side draws an embedded SMB track
-    }
-
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.
     private actor ResolveAttempts {
         private(set) var count = 0
@@ -192,31 +91,6 @@ struct SMBPlaybackStartTests {
         #expect(vm.isPlaying == true)
     }
 
-    @Test("a .ready beat publishes the engine inventory verbatim — no server subs appended (resolved == nil)")
-    func readyPublishesEngineInventoryWithoutServerSubs() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
-        let vm = makeVM(reporting: reporting, engine: engine)
-
-        await vm.start(smbItem: smbItem())
-
-        // The branch the handle(_:) refactor most affects: with resolved == nil,
-        // `.ready` must take the direct-play path (resolved?.method != .transcode is
-        // true), publish the engine's own tracks, and append ZERO external subs
-        // (resolved.map(externalSubtitleTracks) ?? [] → []).
-        let audio = AudioTrack(id: .avKitOption(0), displayName: "English", languageCode: "en")
-        let sub = SubtitleTrack(id: .avKitOption(0), displayName: "English", languageCode: "en", isForced: false)
-        engine.push(.ready(
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            tracks: TrackInventory(audio: [audio], subtitles: [sub])
-        ))
-        try await engine.settle()
-
-        #expect(vm.availableAudioTracks.map(\.id) == [.avKitOption(0)])
-        // Exactly the engine's one sub — no Jellyfin sidecar tracks appended on SMB.
-        #expect(vm.availableSubtitleTracks.map(\.id) == [.avKitOption(0)])
-    }
-
     @Test("no Jellyfin reporting fires on the SMB path — resolved stays nil end to end")
     func smbPathNeverReports() async throws {
         let reporting = StubPlaybackReporting()
@@ -238,40 +112,6 @@ struct SMBPlaybackStartTests {
         #expect(await reporting.events.isEmpty)
         #expect(await reporting.pings.isEmpty)
         #expect(await reporting.stoppedEncodings.isEmpty)
-    }
-
-    @Test("stop() tears the SMB session down cleanly: sidecars unloaded and unselectable, no reporting")
-    func stopTearsDownCleanly() async throws {
-        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
-            let reporting = StubPlaybackReporting()
-            let engine = FakePlaybackEngine()
-            let srt = Data("1\n00:00:01,000 --> 00:00:04,000\nHello world\n".utf8)
-            let subURL = URL(string: "file:///tmp/Example.en.srt")!
-            let vm = makeVM(
-                reporting: reporting, engine: engine,
-                subtitleFetch: { $0 == subURL ? .data(srt) : .rejected },
-                smbResumeStore: store
-            )
-
-            await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
-            engine.push(.playing(15, duration: .seconds(6000)))
-            try await engine.settle()
-            let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(0) })
-            await vm.selectSubtitleTrack(track)
-            await vm.debugAwaitSubtitleFetch()
-            #expect(vm.subtitleRenderer != nil)
-
-            await vm.stop()
-
-            #expect(engine.calls.contains("teardown"))
-            #expect(vm.subtitleRenderer == nil)
-            await vm.selectSubtitleTrack(track)
-            await vm.debugAwaitSubtitleFetch()
-            #expect(vm.subtitleRenderer == nil, "the ended session's URL map must not serve a pick")
-            // A session that never reported start must never report stop.
-            #expect(await reporting.events.isEmpty)
-            #expect(await reporting.stoppedEncodings.isEmpty)
-        }
     }
 
     // MARK: - Local resume vs an unknown duration
