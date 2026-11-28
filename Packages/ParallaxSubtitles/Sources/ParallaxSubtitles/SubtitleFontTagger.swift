@@ -120,22 +120,25 @@ enum SubtitleFontTagger {
     /// Sizes are never touched: they belong to the author. Neither is the
     /// author's own `\fn` — a tagged run closes by restoring whatever font was
     /// in force where it started (`Closer.authorFont`).
-    static func authoredTagged(_ text: String, plan: SubtitleFontPlan) -> String {
-        rewritten(text, routing: plan.symbolRouting, closesWith: .authorFont) { line, runClass in
+    ///
+    /// - Parameter styleIsVertical: the event's style names its font with the `@` marker. A
+    ///   tagged run keeps the marker of the font in force where it starts.
+    static func authoredTagged(_ text: String, plan: SubtitleFontPlan, styleIsVertical: Bool = false) -> String {
+        rewritten(text, routing: plan.symbolRouting, closesWith: .authorFont(styleIsVertical: styleIsVertical)) { line, runClass in
             plan.family(forRun: runClass, line: line, scope: .divergentLines)
                 .map { Tags(family: $0) }
         }
     }
 
     /// What a tagged run reverts to when it ends.
-    private enum Closer {
+    private enum Closer: Equatable {
         /// A bare `{\fn}`: libass reverts to the CURRENT style's font, which
         /// keeps the user's style override in charge. Right for converted
         /// scripts, whose text carries no author `\fn` to preserve.
         case styleFont
         /// The font the author had in force at that point — a bare reset there
         /// would silently discard their own `\fn` for the rest of the line.
-        case authorFont
+        case authorFont(styleIsVertical: Bool)
     }
 
     /// The `{...}` pair wrapping one run.
@@ -143,9 +146,9 @@ enum SubtitleFontTagger {
         let family: String
         var size: Double? = nil
 
-        var open: String {
+        func open(vertical: Bool = false) -> String {
             let sizeTag = size.map { "\\fs" + String(format: "%.1f", $0) } ?? ""
-            return "{\\fn\(SubtitleFontTagger.tagSafe(family))\(sizeTag)}"
+            return "{\\fn\(vertical ? ASSScriptScan.verticalMarker : "")\(SubtitleFontTagger.tagSafe(family))\(sizeTag)}"
         }
 
         /// - Parameter family: the author's in-force family, or nil for the
@@ -202,7 +205,7 @@ enum SubtitleFontTagger {
             let argument = rest[marker.upperBound...].prefix { $0 != "\\" && $0 != "}" }
             rest = rest[argument.endIndex...]
             let name = ASSScriptScan.normalizedFontName(String(argument))
-            result = name.isEmpty ? nil : name
+            result = name.isEmpty ? nil : ASSScriptScan.verticalMarker(of: String(argument)) + name
         }
         return result
     }
@@ -230,7 +233,14 @@ enum SubtitleFontTagger {
         var out = ""
         var openTags: Tags?
         var runClass: SubtitleScript.Class = .common
-        let inForce = { (font: String?) in closer == .authorFont ? font : nil }
+        let inForce = { (font: String?) in closer == .styleFont ? nil : font }
+        /// Whether the font in force names itself with the `@` marker.
+        let vertical = { (font: String?) in
+            switch closer {
+            case .styleFont: false
+            case .authorFont(let styleIsVertical): font.map { $0.hasPrefix(ASSScriptScan.verticalMarker) } ?? styleIsVertical
+            }
+        }
 
         func close(restoring font: String?) {
             if let openTags { out += openTags.close(restoring: inForce(font)) }
@@ -250,7 +260,7 @@ enum SubtitleFontTagger {
                     // straight after a backslash would become text. The word
                     // joiner in between draws nothing and breaks the pair.
                     if out.last == "\\" { out += "\u{2060}" }
-                    out += wanted.open
+                    out += wanted.open(vertical: vertical(authorFont))
                     openTags = wanted
                 }
                 out.append(character)
@@ -424,6 +434,15 @@ enum ASSScriptScan {
         }
         families.remove("")
         return families
+    }
+
+    /// Before a font name, `@` asks libass to draw East Asian glyphs turned a quarter turn,
+    /// for vertical text.
+    static let verticalMarker = "@"
+
+    /// `@` when `raw` carries the marker, else nothing.
+    static func verticalMarker(of raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(verticalMarker) ? verticalMarker : ""
     }
 
     /// Strips the `@` vertical-layout marker and whitespace — `@X` names the

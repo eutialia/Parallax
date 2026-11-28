@@ -28,6 +28,8 @@ struct AuthoredFontSubstitutionProperties {
         let lineEnding: String
         let fontColumn: Int
         let textColumn: Int
+        let styleNameColumn: Int
+        let eventStyleColumn: Int
         /// Every font the script names, in a style or inline.
         let fonts: Set<String>
 
@@ -68,7 +70,9 @@ struct AuthoredFontSubstitutionProperties {
         let ending = Bool.random(using: &random) ? "\n" : "\r\n"
         return Script(
             text: lines.joined(separator: ending) + ending, lineEnding: ending,
-            fontColumn: styleColumns.firstIndex(of: "Fontname")!, textColumn: eventColumns.count - 1, fonts: fonts)
+            fontColumn: styleColumns.firstIndex(of: "Fontname")!, textColumn: eventColumns.count - 1,
+            styleNameColumn: styleColumns.firstIndex(of: "Name")!, eventStyleColumn: eventColumns.firstIndex(of: "Style")!,
+            fonts: fonts)
     }
 
     private static func fields(_ line: String, upTo column: Int = .max) -> [String] {
@@ -78,7 +82,30 @@ struct AuthoredFontSubstitutionProperties {
 
     private static let shipped = Set(SubtitleFontBundle.facesByFamily.keys)
 
-    @Test("substitution changes font names and adds font tags, and every other byte of the script stays")
+    private static func unmarked(_ name: String) -> String {
+        name.hasPrefix("@") ? String(name.dropFirst()) : name
+    }
+
+    /// For each character a field shows, whether the font in force names itself with `@`.
+    /// A bare `\fn` goes back to the style's font.
+    private static func turned(in field: String, styleIsVertical: Bool) -> [Bool] {
+        var vertical = styleIsVertical
+        var out: [Bool] = []
+        for token in SubtitleFontTagger.tokenize(field) {
+            switch token {
+            case .override(let block):
+                for name in block.dropFirst().dropLast().components(separatedBy: "\\fn").dropFirst() {
+                    let name = name.prefix { $0 != "\\" }
+                    vertical = name.isEmpty ? styleIsVertical : name.hasPrefix("@")
+                }
+            case .character(let character) where character != "\u{2060}": out.append(vertical)
+            case .character, .escaped, .lineBreak: break
+            }
+        }
+        return out
+    }
+
+    @Test("substitution changes font names and adds font tags, every character keeps the @ of the font it is under, and every other byte of the script stays")
     func onlyFontNamesChange() {
         var random = SeededGenerator(seed: 0x73_7562)
         for run in 0..<Self.cases {
@@ -93,10 +120,16 @@ struct AuthoredFontSubstitutionProperties {
             let context = "run \(run): \(script.text.debugDescription)"
             let before = Self.lines(of: script.text), after = Self.lines(of: out)
             #expect(after.count == before.count, "\(context)")
+            var verticalStyles: Set<String> = []
             for (old, new) in zip(before, after) {
                 if old.hasPrefix("Style:") {
                     var was = Self.fields(old), now = Self.fields(new)
-                    #expect(Self.shipped.contains(now[script.fontColumn]), "\(context)")
+                    let font = (was: was[script.fontColumn].trimmingCharacters(in: .whitespaces), now: now[script.fontColumn])
+                    #expect(Self.shipped.contains(Self.unmarked(font.now)), "\(context)")
+                    #expect(font.now.hasPrefix("@") == font.was.hasPrefix("@"), "\(context)")
+                    if font.was.hasPrefix("@") {
+                        verticalStyles.insert(was[script.styleNameColumn].trimmingCharacters(in: .whitespaces))
+                    }
                     was.remove(at: script.fontColumn)
                     now.remove(at: script.fontColumn)
                     #expect(now == was, "\(context)")
@@ -113,9 +146,14 @@ struct AuthoredFontSubstitutionProperties {
                     for block in SubtitleFontTagger.tokenize(now[script.textColumn]) {
                         guard case .override(let block) = block else { continue }
                         for name in block.dropFirst().dropLast().components(separatedBy: "\\fn").dropFirst() where !name.isEmpty {
-                            #expect(Self.shipped.contains(name), "\(context): \(new.debugDescription)")
+                            #expect(Self.shipped.contains(Self.unmarked(name)), "\(context): \(new.debugDescription)")
                         }
                     }
+                    let vertical = verticalStyles.contains(was[script.eventStyleColumn].trimmingCharacters(in: .whitespaces))
+                    #expect(
+                        Self.turned(in: now[script.textColumn], styleIsVertical: vertical)
+                            == Self.turned(in: was[script.textColumn], styleIsVertical: vertical),
+                        "\(context): \(new.debugDescription)")
                 } else {
                     #expect(new == old, "\(context)")
                 }

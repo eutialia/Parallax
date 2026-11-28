@@ -109,6 +109,7 @@ enum AuthoredFontSubstitution {
         let scan = scan ?? ASSScriptScan.scan(script: script)
         var columns = ASSScriptScan.Columns()
         var familyByStyle: [String: String] = [:]
+        var verticalStyles: Set<String> = []
         var inStyles = false
         var inEvents = false
 
@@ -134,11 +135,12 @@ enum AuthoredFontSubstitution {
                 rewritten = substitutedStyle(
                     content, plan: plan, columns: columns,
                     cjkBearingStyles: scan.cjkBearingStyles,
-                    familyByStyle: &familyByStyle
+                    familyByStyle: &familyByStyle, verticalStyles: &verticalStyles
                 )
             } else if line.hasPrefix("Dialogue:") {
                 rewritten = substitutedDialogue(
-                    content, plan: plan, columns: columns, familyByStyle: familyByStyle
+                    content, plan: plan, columns: columns, familyByStyle: familyByStyle,
+                    verticalStyles: verticalStyles
                 )
             }
 
@@ -159,7 +161,8 @@ enum AuthoredFontSubstitution {
         plan: SubtitleFontPlan,
         columns: ASSScriptScan.Columns,
         cjkBearingStyles: Set<String>,
-        familyByStyle: inout [String: String]
+        familyByStyle: inout [String: String],
+        verticalStyles: inout Set<String>
     ) -> String {
         var (prefix, fields) = ASSScriptScan.splitASSFields(line)
         guard fields.indices.contains(columns.styleFont) else { return line }
@@ -174,8 +177,12 @@ enum AuthoredFontSubstitution {
             : nil
 
         let family = SubtitleFontBundle.family(design: design, language: language)
-        if let name { familyByStyle[name] = family }
-        fields[columns.styleFont] = family
+        let marker = ASSScriptScan.verticalMarker(of: fields[columns.styleFont])
+        if let name {
+            familyByStyle[name] = family
+            if !marker.isEmpty { verticalStyles.insert(name) }
+        }
+        fields[columns.styleFont] = marker + family
         return ASSScriptScan.joinASSFields(prefix: prefix, fields: fields)
     }
 
@@ -185,7 +192,8 @@ enum AuthoredFontSubstitution {
         _ line: String,
         plan: SubtitleFontPlan,
         columns: ASSScriptScan.Columns,
-        familyByStyle: [String: String]
+        familyByStyle: [String: String],
+        verticalStyles: Set<String>
     ) -> String {
         var (prefix, fields) = ASSScriptScan.splitASSFields(line, maxSplits: columns.eventText)
         guard fields.count == columns.eventText + 1 else { return line }
@@ -193,10 +201,9 @@ enum AuthoredFontSubstitution {
         // The face this event's own style resolved to — what decides whether a
         // run needs a tag at all, and which symbols the style can already draw.
         var styleFamily = SubtitleFontBundle.family(design: .sans, language: nil)
-        if fields.indices.contains(columns.eventStyle),
-           let resolved = familyByStyle[
-               ASSScriptScan.normalizedStyleName(fields[columns.eventStyle])
-           ] {
+        let style = fields.indices.contains(columns.eventStyle)
+            ? ASSScriptScan.normalizedStyleName(fields[columns.eventStyle]) : nil
+        if let resolved = style.flatMap({ familyByStyle[$0] }) {
             styleFamily = resolved
         }
 
@@ -207,7 +214,8 @@ enum AuthoredFontSubstitution {
             plan: plan.with(
                 design: SubtitleFontBundle.design(forFamily: styleFamily),
                 styleFamily: styleFamily
-            )
+            ),
+            styleIsVertical: style.map(verticalStyles.contains) == true
         )
         return ASSScriptScan.joinASSFields(prefix: prefix, fields: fields)
     }
@@ -234,7 +242,7 @@ enum AuthoredFontSubstitution {
             rest = rest[argument.endIndex...]
             let authored = ASSScriptScan.normalizedFontName(String(argument))
             guard !authored.isEmpty else { continue }
-            out += SubtitleFontBundle.family(
+            out += ASSScriptScan.verticalMarker(of: String(argument)) + SubtitleFontBundle.family(
                 design: design(forAuthoredName: authored), language: plan.trackDefaultLanguage
             )
         }
