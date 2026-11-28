@@ -3,6 +3,7 @@ import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxSubtitles
 
 extension AppModel {
     /// The player's whole session, for as long as the calling task lives: builds the player for
