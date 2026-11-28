@@ -276,6 +276,23 @@ struct AVKitEngineEndTests {
         await engine.teardown()
     }
 
+    /// Left to itself, AVPlayer offers "CC" for a playlist that says nothing about captions, and
+    /// a transcription of the audio for any stream that has some.
+    @Test("a file played through the bridge offers no subtitle AVPlayer made up")
+    func bridgedFileOffersNoSubtitleOfAVPlayersOwn() async throws {
+        let file = try await DeliveredFile.start("four-audio-tracks")
+        let engine = AVKitEngine(clock: TestClock())
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture(url: file.delivery.url))
+        try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
+        let offered = log.readyInventories[0].subtitles
+        log.stop()
+        await engine.teardown()
+        await file.stop()
+
+        #expect(offered.map(\.displayName) == [])
+    }
+
     @Test("a bridged file plays through the app's engine")
     func bridgedFilePlays() async throws {
         let file = try await DeliveredFile.start("frame-numbers")

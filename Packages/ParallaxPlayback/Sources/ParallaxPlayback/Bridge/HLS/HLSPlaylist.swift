@@ -57,6 +57,9 @@ enum HLSPlaylist {
 
     /// Every audio track is in one group, whatever its codec, so the viewer can switch between
     /// all of them. A track with no title is named in the device's language.
+    ///
+    /// `CLOSED-CAPTIONS=NONE` is there because without it AVPlayer offers a "CC" subtitle for
+    /// captions the video might carry, and the bridge copies none.
     static func master(for plan: BridgePlan) -> String {
         let video = plan.video.rendition
         let size = video.parameters.pixelSize
@@ -79,7 +82,7 @@ enum HLSPlaylist {
             #EXTM3U
             #EXT-X-VERSION:7
             #EXT-X-INDEPENDENT-SEGMENTS
-            \(audio.joined())#EXT-X-STREAM-INF:BANDWIDTH=\(plan.peakBitrate),CODECS="\(codecs)"\(dolbyVision),RESOLUTION=\(size.width)x\(size.height)\(frameRate),VIDEO-RANGE=\(video.parameters.videoRange)\(audio.isEmpty ? "" : ",AUDIO=\"audio\"")
+            \(audio.joined())#EXT-X-STREAM-INF:BANDWIDTH=\(plan.peakBitrate),CODECS="\(codecs)"\(dolbyVision),RESOLUTION=\(size.width)x\(size.height)\(frameRate),VIDEO-RANGE=\(video.parameters.videoRange),CLOSED-CAPTIONS=NONE\(audio.isEmpty ? "" : ",AUDIO=\"audio\"")
             \(BridgeResource.playlist(.video).path)
 
             """
