@@ -2499,11 +2499,20 @@ public final class PlayerViewModel {
             // sidecar URLs, its clock and its menus are all about to be replaced. Settling
             // here installs an overlay a queued Off would never clear, and a fetch between
             // iterations lets the intermediate session's observed beat release the seek hold
-            // and snap the bar back. Ride the dimensions forward instead — a newer pick of
-            // the same dimension supersedes, everything else settles on the LAST reload.
+            // and snap the bar back. So the subtitle rides forward to settle on the LAST
+            // reload, unless a newer subtitle pick supersedes it.
+            //
+            // What this reload changed is playing all the same, and it is the stream a failed
+            // next reload falls back to. The audio pick is remembered now, and the subtitle
+            // rides forward as the one already standing, so that failure restores nothing
+            // older than this session and names only the pick that failed.
             guard !pendingReload.changesTracks else {
-                if pendingReload.audio == nil { pendingReload.audio = intent.audio }
-                if pendingReload.subtitle == nil { pendingReload.subtitle = intent.subtitle }
+                if pendingReload.audio == nil, let audio = intent.audio {
+                    persistTrackSelection(.audio(languageCode: audio.pick.languageCode))
+                }
+                if pendingReload.subtitle == nil, let subtitle = intent.subtitle {
+                    pendingReload.subtitle = landed(subtitle)
+                }
                 return
             }
             if let audio = intent.audio {
@@ -2544,6 +2553,15 @@ public final class PlayerViewModel {
     /// than per intent: a failed run restores from two intents at once (the one that failed
     /// and whatever was queued behind it), and only the older `previous` of each dimension is
     /// the selection that actually stood.
+    /// `change` as the next reload carries it once its own reload has landed: the pick is what
+    /// the session shows, so it is also what to go back to. A burn-in the server declined is
+    /// not on screen, and keeps the subtitle from before it.
+    private func landed(_ change: PendingReload.SubtitleChange) -> PendingReload.SubtitleChange {
+        let declined = change.pick.map { $0.isBurnedIn && !serverBurnsInSubtitle(at: Self.subtitleIndex(of: $0)) } ?? false
+        return PendingReload.SubtitleChange(
+            pick: change.pick, previous: declined ? change.previous : change.pick, reportOnLand: change.reportOnLand)
+    }
+
     private func restoreSelections(audio: PendingReload.AudioChange?, subtitle: PendingReload.SubtitleChange?) {
         if let audio { selectedAudioTrack = audio.previous }
         if let subtitle {

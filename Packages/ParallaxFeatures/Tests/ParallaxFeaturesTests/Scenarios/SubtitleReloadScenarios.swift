@@ -219,6 +219,80 @@ struct SubtitleReloadScenarios {
         #expect(player.trackSwitchFailure?.fallback == .subtitle(french))
     }
 
+    /// The audio switch landed: its stream is the one the failed reload falls back to.
+    @Test("when a subtitle pick fails after the audio switch it waited for has landed, the new audio stays and only the subtitle goes back")
+    func aFailedSubtitlePickKeepsTheAudioThatLanded() async throws {
+        let (den, world, player) = try await openRan(frenchUp: true)
+        let english = try audio("English", of: player)
+        let french = try subtitle("French", of: player)
+        let switching = try await reloading(den, world) { await player.selectAudioTrack(english) }
+
+        await player.selectSubtitleTrack(try subtitle("English", of: player))
+        await player.selectSubtitleTrack(nil)
+        den.answerHeldResponses()
+        try await world.until { den.heldResponseCount == 1 && den.playbackRequests.count == 2 }
+        den.failNextPlaybackInfo()
+        den.releaseResponses()
+        await switching.value
+
+        #expect(den.playbackRequests.map(\.subtitleStreamIndex) == [nil, Self.frenchIndex, -1])
+        #expect(den.playbackRequests.map(\.audioStreamIndex) == [nil, 2, 2])
+        #expect(player.selectedAudioTrack == english)
+        #expect(player.selectedSubtitleTrack == french)
+        try await world.until { player.sidecarSubtitleInfo != nil }
+        #expect(player.trackSwitchFailure?.requested == .subtitle(nil))
+        #expect(player.trackSwitchFailure?.fallback == .subtitle(french))
+        try await world.until { () async -> Bool in den.audioLanguage(of: "ana") == "eng" }
+    }
+
+    /// The burn-in landed: the stream the failed reload falls back to has it painted in, so the
+    /// text subtitle from before must not be drawn over it.
+    @Test("when an audio pick fails after the burn-in it waited for has landed, the burn-in stays and only the audio goes back")
+    func aFailedAudioPickKeepsTheBurnInThatLanded() async throws {
+        let (den, world, player) = try await openRan(frenchUp: true)
+        let japanese = try audio("Japanese", of: player)
+        let english = try audio("English", of: player)
+        let picture = try subtitle("English", of: player)
+        let picking = try await reloading(den, world) { await player.selectSubtitleTrack(picture) }
+
+        await player.selectAudioTrack(english)
+        den.answerHeldResponses()
+        try await world.until { den.heldResponseCount == 1 && den.playbackRequests.count == 2 }
+        den.failNextPlaybackInfo()
+        den.releaseResponses()
+        await picking.value
+
+        #expect(den.playbackRequests.map(\.subtitleStreamIndex) == [nil, Self.pictureIndex, Self.pictureIndex])
+        #expect(den.playbackRequests.map(\.audioStreamIndex) == [nil, 1, 2])
+        #expect(player.selectedSubtitleTrack == picture)
+        #expect(player.subtitleRenderer == nil)
+        #expect(player.sidecarSubtitleInfo == nil)
+        #expect(player.selectedAudioTrack == japanese)
+        #expect(player.trackSwitchFailure?.requested == .audio(english))
+        #expect(player.trackSwitchFailure?.fallback == .audio(japanese))
+    }
+
+    @Test("a burn-in the server declined, with an audio pick waiting behind it, still goes back to the subtitle from before and offers the pick again")
+    func aDeclinedBurnInBehindAnAudioPickStillGoesBack() async throws {
+        let (den, world, player) = try await openRan(frenchUp: true, decliningBurnIn: true)
+        let english = try audio("English", of: player)
+        let picture = try subtitle("English", of: player)
+        let french = try subtitle("French", of: player)
+        let picking = try await reloading(den, world) { await player.selectSubtitleTrack(picture) }
+
+        await player.selectAudioTrack(english)
+        den.releaseResponses()
+        await picking.value
+
+        #expect(den.playbackRequests.map(\.subtitleStreamIndex) == [nil, Self.pictureIndex, Self.pictureIndex, Self.frenchIndex])
+        #expect(den.playbackRequests.map(\.audioStreamIndex) == [nil, 1, 2, 2])
+        #expect(player.selectedAudioTrack == english)
+        #expect(player.selectedSubtitleTrack == french)
+        try await world.until { player.sidecarSubtitleInfo != nil }
+        #expect(player.trackSwitchFailure?.requested == .subtitle(picture))
+        #expect(player.trackSwitchFailure?.fallback == .subtitle(french))
+    }
+
     @Test("a text subtitle whose reload has an audio pick waiting behind it is still drawn when both have landed")
     func aSubtitleReloadFollowedByAnAudioPickStillDraws() async throws {
         let (den, world, player) = try await openRan(frenchUp: false)
