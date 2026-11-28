@@ -1,28 +1,20 @@
 import CoreGraphics
 import Observation
 
-/// What the subtitle overlay draws from: a canvas and a frame for a playhead time.
-public protocol SubtitleFrameSource: AnyObject, Sendable {
-    func setCanvas(size: CGSize, scale: CGFloat, storageSize: CGSize?) async
-    func frame(at seconds: Double) async -> SubtitleFrame?
-}
-
-extension SubtitleRenderer: SubtitleFrameSource {}
-
 /// The player's side of the subtitle overlay: the loaded source, the engine clock and the clock
 /// the driver ticks on.
 @MainActor
 public struct SubtitleFeed {
     /// The loaded source and its generation, or nil when the overlay has nothing to draw.
     /// Generation, not identity: a freed renderer's address can be reused by the next one.
-    let source: () -> (source: any SubtitleFrameSource, generation: Int)?
+    let source: () -> (source: SubtitleRenderer, generation: Int)?
     /// The engine's playhead in seconds, or nil while it can't be read (no engine, or an
     /// invalid clock time).
     let engineSeconds: () -> Double?
     let clock: any Clock<Duration>
 
     public init(
-        source: @escaping () -> (source: any SubtitleFrameSource, generation: Int)?,
+        source: @escaping () -> (source: SubtitleRenderer, generation: Int)?,
         engineSeconds: @escaping () -> Double?,
         clock: any Clock<Duration>
     ) {

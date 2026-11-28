@@ -3236,11 +3236,6 @@ extension PlayerViewModel {
     /// Debug HUD only — exposes the otherwise-private `resolved`.
     public var debugResolved: ResolvedPlayback? { resolved }
 
-    /// What one source format is handed, given the appearance the overlay last pushed.
-    func debugEffectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
-        subtitleDisplay.debugEffectiveStyleOverride(for: format)
-    }
-
     /// Awaits the in-flight sidecar fetch+load (`SubtitleDisplay.awaitFetch`) so a test can assert
     /// `subtitleRenderer`/`sidecarSubtitleInfo` deterministically instead of sleeping past the Task hop. The
     /// engine-beat analog is `FakePlaybackEngine.settle()`; this covers the ONE piece of

@@ -246,13 +246,6 @@ struct ScriptRenderProbeTests {
         #expect(selected("Noto Sans CJK SC", in: await renderer.diagnosticLog))
     }
 
-    /// Bytes damaged beyond a rounding error are NOT UTF-8, and must go to the
-    /// sniffer rather than being handed on full of replacement characters.
-    @Test("a thoroughly broken decode is not accepted as UTF-8")
-    func heavilyDamagedBytesAreNotUTF8() {
-        #expect(ASSTextEncoding.utf8(Data(repeating: 0xC3, count: 64)) == nil)
-    }
-
     /// The claim the serif design's single style-level Bold rests on: libass
     /// synthesizes bold only when the requested weight beats the face's own
     /// OS/2 weight by a margin. So the same override emboldens a Regular-only

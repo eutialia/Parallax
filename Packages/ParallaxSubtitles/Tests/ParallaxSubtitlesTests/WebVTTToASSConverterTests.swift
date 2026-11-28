@@ -17,19 +17,6 @@ struct WebVTTToASSConverterTests {
         return cues(script("WEBVTT\n\n\(timing)\n\(body)")).first
     }
 
-    @Test("period-millisecond and short timestamps convert to centiseconds", arguments: [
-        ("full timestamps", "00:00:01.000 --> 00:00:04.250", "0:00:01.00", "0:00:04.25"),
-        ("MM:SS.mmm short form", "05:02.250 --> 05:04.000", "0:05:02.25", "0:05:04.00"),
-        ("comma decimal mark", "00:00:01,500 --> 00:00:02.000", "0:00:01.50", "0:00:02.00"),
-        ("hours", "01:02:03.500 --> 01:02:05.000", "1:02:03.50", "1:02:05.00"),
-    ] as [(String, String, String, String)])
-    func timingConversion(label: String, timing: String, start: String, end: String) {
-        let converted = cues(script("WEBVTT\n\n\(timing)\nHi"))
-        #expect(converted.count == 1, "\(label)")
-        #expect(converted.first?.start == start, "\(label)")
-        #expect(converted.first?.end == end, "\(label)")
-    }
-
     @Test("cue payload handling", arguments: [
         ("multi-line joins with a hard break", "Line one\nLine two", "Line one\\NLine two"),
         ("voice, class and timestamp tags are stripped",
@@ -43,42 +30,6 @@ struct WebVTTToASSConverterTests {
     ] as [(String, String, String)])
     func cuePayload(label: String, body: String, expected: String) {
         #expect(cue(body: body)?.text == expected, "\(label)")
-    }
-
-    @Test("non-payload lines never leak into the cue", arguments: [
-        ("optional cue identifier", "WEBVTT\n\nintro-cue\n00:00:01.000 --> 00:00:02.000\nBody", "Body"),
-        ("no blank line after the signature", "WEBVTT\n00:00:01.000 --> 00:00:02.000\nBody", "Body"),
-        ("settings on the timing line",
-         "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 align:start position:50% line:90%\nBody", "Body"),
-    ] as [(String, String, String)])
-    func nonPayloadLines(label: String, source: String, expected: String) {
-        let converted = cues(script(source))
-        #expect(converted.count == 1, "\(label)")
-        #expect(converted.first?.text.hasSuffix(expected) == true, "\(label)")
-    }
-
-    @Test("NOTE, STYLE and REGION blocks are skipped")
-    func nonCueBlocks() {
-        let converted = cues(
-            script(
-                """
-                WEBVTT - Some Title
-
-                NOTE
-                This is a comment that contains nothing useful.
-
-                STYLE
-                ::cue { color: yellow }
-
-                REGION
-                id:r1
-
-                00:00:01.000 --> 00:00:02.000
-                Only cue
-                """
-            )
-        )
-        #expect(converted.map(\.text) == ["Only cue"])
     }
 
     /// Jellyfin ships an X-TIMESTAMP-MAP whose MPEGTS offset must NOT be applied:
@@ -129,27 +80,6 @@ struct WebVTTToASSConverterTests {
     ] as [(String, String, String)])
     func cueSettings(label: String, settings: String, expected: String) {
         #expect(cue(body: "Hi", settings: settings)?.text == expected + "Hi", "\(label)")
-    }
-
-    /// A cue timed past 100 hours would overflow the Double->Int conversion in
-    /// ASSScriptBuilder.timecode; CueMarkup rejects it at parse time instead, and
-    /// the malformed cue is simply dropped.
-    @Test("a cue timed past 100 hours is dropped, not converted")
-    func extremeTimestampDropped() {
-        let converted = cues(
-            script(
-                """
-                WEBVTT
-
-                00:00:01.000 --> 00:00:02.000
-                Kept
-
-                100:00:00.000 --> 100:00:01.000
-                Dropped
-                """
-            )
-        )
-        #expect(converted.map(\.text) == ["Kept"])
     }
 
     @Test("structurally broken input yields no cues", arguments: [

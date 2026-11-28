@@ -19,6 +19,8 @@ let package = Package(
     dependencies: [
         // Prebuilt static xcframeworks: Libass + freetype/fribidi/harfbuzz/unibreak.
         .package(url: "https://github.com/mpvkit/libass-build.git", from: "0.17.5"),
+        // For the test target only: its clock. The library links nothing but libass.
+        .package(path: "../ParallaxCore"),
     ],
     targets: [
         .target(
@@ -53,7 +55,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ParallaxSubtitlesTests",
-            dependencies: ["ParallaxSubtitles"],
+            dependencies: [
+                "ParallaxSubtitles",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
+            resources: [ .copy("Fixtures") ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
     ]

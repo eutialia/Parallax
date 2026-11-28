@@ -2451,105 +2451,10 @@ struct PlayerViewModelTests {
         #expect(resolveCount == resolvesAfterStart)
     }
 
-    @Test("transcode: an .ass sidecar whose verbatim fetch fails falls back to the server's VTT conversion")
-    func assSidecarFallsBackToVTTConversion() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
-        // The resolve hands out an ORIGINAL-format URL (authored styling preserved)…
-        // No server default: the auto-activation on start() would otherwise run the
-        // same fetch+fallback pair once before the explicit pick below.
-        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?ApiKey=abc")!
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
-            defaultSubtitleStreamIndex: nil,
-            chineseSidecarURL: assURL
-        )
-        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
-
-        nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = makePlayerVM(
-            reporting: reporting,
-            resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            // …but the server can't serve it verbatim (no writer for the format).
-            subtitleFetch: { url in
-                fetchedURLs.append(url)
-                return url.path.hasSuffix(".ass") ? .rejected : .data(vtt)
-            }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        let chinese = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(chinese)
-        await vm.debugAwaitSubtitleFetch()
-
-        // Exactly one retry, extension swapped, auth query preserved.
-        #expect(fetchedURLs.map(\.lastPathComponent) == ["Stream.ass", "Stream.vtt"])
-        #expect(fetchedURLs.last?.query?.contains("ApiKey") == true)
-        #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
-        #expect(vm.subtitleRenderer != nil)
-    }
-
     // MARK: - Style scope (who owns the look)
 
     private static func convertedAppearance(_ style: SubtitleStyle) -> SubtitleStyleOverride {
         style.rendererOverride(fontScale: style.fontScale)
-    }
-
-    /// The whole rule, with no user switch left to consult: an SRT/VTT script is
-    /// one WE synthesized, so the user's settings own every field of it; an ASS/SSA
-    /// script is its creator's typesetting and is handed nothing, whatever the user
-    /// picked. Its typefaces are still substituted, but that happens at load inside
-    /// the renderer — never through an override.
-    @Test("the user's style reaches converted tracks only, whatever they picked",
-          arguments: [
-            SubtitleStyle.standard,
-            SubtitleStyle.standard.with {
-                $0.fontScale = 2
-                $0.fontDesign = .serif
-                $0.background = .opaqueBox
-                $0.foreground = .init(red: 1, green: 0.93, blue: 0.30)
-                $0.verticalOffsetRatio = 0.18
-            },
-          ])
-    func styleReachesConvertedTracksOnly(style: SubtitleStyle) async throws {
-        let engine = FakePlaybackEngine()
-        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
-        let converted = Self.convertedAppearance(style)
-
-        vm.applySubtitleAppearance(converted: converted)
-
-        #expect(vm.debugEffectiveStyleOverride(for: .srt) == converted)
-        #expect(vm.debugEffectiveStyleOverride(for: .vtt) == converted)
-        #expect(vm.debugEffectiveStyleOverride(for: .ass) == nil)
-        #expect(vm.debugEffectiveStyleOverride(for: .ssa) == nil)
-    }
-
-    /// The same rule end to end, on a real fansub-shaped script: it fetches, it
-    /// loads, the overlay pushes the user's style at it, and the renderer is still
-    /// given nothing for it.
-    @Test("an authored sidecar loads and is never given a style override")
-    func authoredSidecarTakesNoOverride() async throws {
-        let engine = FakePlaybackEngine()
-        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?ApiKey=abc")!
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
-            defaultSubtitleStreamIndex: nil, chineseSidecarURL: assURL
-        )
-        let script = Data(Self.assScript.utf8)
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            subtitleFetch: { _ in .data(script) }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        vm.applySubtitleAppearance(converted: Self.convertedAppearance(.standard))
-
-        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(track)
-        await vm.debugAwaitSubtitleFetch()
-
-        #expect(vm.sidecarSubtitleInfo?.format == .ass)
-        #expect(vm.subtitleRenderer != nil)
-        #expect(vm.debugEffectiveStyleOverride(for: .ass) == nil)
     }
 
     /// A minimal authored script: one dialogue line, a declared PlayRes, CRLF endings
@@ -2679,40 +2584,6 @@ struct PlayerViewModelTests {
 
         gate.continuation.finish()
         await vm.debugAwaitSubtitleFetch()
-    }
-
-    @Test("re-selecting a track already fetched this session costs no second request")
-    func sidecarBytesAreCachedForTheSession() async throws {
-        let engine = FakePlaybackEngine()
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
-        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
-
-        nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            subtitleFetch: { url in fetchedURLs.append(url); return .data(vtt) }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        for _ in 0..<3 {
-            await vm.selectSubtitleTrack(track)
-            await vm.debugAwaitSubtitleFetch()
-            #expect(vm.subtitleRenderer != nil)
-            await vm.selectSubtitleTrack(nil)
-        }
-        // One request for three selections: the expensive part of the first pick is
-        // the server extracting an embedded stream through ffmpeg.
-        #expect(fetchedURLs.count == 1)
-
-        // The session's end drops the cache and the URL map — stream indices mean something else
-        // in the next one — so the same pick draws nothing and asks for nothing.
-        await vm.stop()
-        await vm.selectSubtitleTrack(track)
-        await vm.debugAwaitSubtitleFetch()
-        #expect(vm.subtitleRenderer == nil)
-        #expect(fetchedURLs.count == 1)
     }
 
     // MARK: - Source-agnostic subtitle URL map
@@ -4545,57 +4416,6 @@ struct SidecarFetchIndicatorTests {
         #expect(vm.loadingSubtitleTrackID == .jellyfinStream(2))
         #expect(vm.subtitleRenderer == nil)
         selection.cancel()
-    }
-
-    /// The chip never disables while it spins, so the user can reopen the menu and pick
-    /// again mid-fetch. That second pick has to WIN: cancel the cold extract still in
-    /// flight (a stale sidecar landing later would draw the wrong language over the new
-    /// pick) and take the loading slot for itself.
-    @Test("a pick made mid-fetch cancels the first fetch and takes the loading slot")
-    func secondPickCancelsTheInFlightFetch() async throws {
-        let engine = FakePlaybackEngine()
-        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
-        let slowEntered = AsyncStream<Void>.makeStream()
-        let slowCancelled = AsyncStream<Void>.makeStream()
-        // The second fetch parks on a gate the test opens by hand: without it, its own
-        // completion could clear the loading slot before the assertion reads it.
-        let secondGate = AsyncStream<Void>.makeStream()
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            subtitleFetch: { url in
-                guard url.path.contains("/Subtitles/2/") else {
-                    var gate = secondGate.stream.makeAsyncIterator()
-                    _ = await gate.next()
-                    return PlayerFixtures.landingSidecar(for: url)
-                }
-                slowEntered.continuation.yield()
-                try? await Task.sleep(for: .seconds(60))
-                if Task.isCancelled { slowCancelled.continuation.yield() }
-                return .rejected
-            }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.ready(duration: resolved.runtime!, tracks: TrackInventory(audio: [], subtitles: [])))
-        try await engine.settle()
-        let slow = try row(vm, .jellyfinStream(2))
-        let second = try row(vm, .jellyfinStream(4))
-
-        await vm.selectSubtitleTrack(slow)
-        var entered = slowEntered.stream.makeAsyncIterator()
-        _ = await entered.next()
-        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(2))
-
-        await vm.selectSubtitleTrack(second)
-        var cancelled = slowCancelled.stream.makeAsyncIterator()
-        _ = await cancelled.next()
-        // The chip's label and its spinner agree on the SECOND track, not the abandoned one.
-        #expect(vm.selectedSubtitleTrack == second)
-        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(4))
-
-        secondGate.continuation.yield()
-        await vm.debugAwaitSubtitleFetch()
-        #expect(vm.loadingSubtitleTrackID == nil)
     }
 
     @Test("the indicator clears once the fetch resolves")

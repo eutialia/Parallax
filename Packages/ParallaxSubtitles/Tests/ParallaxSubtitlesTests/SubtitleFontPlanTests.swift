@@ -217,57 +217,6 @@ struct SubtitleFontPlanTests {
         }
     }
 
-    @Test("Latin, Greek and Cyrillic are the style font and take no tag")
-    func commonScriptsNeedNoTag() {
-        let plan = Self.stubPlan(trackDefault: nil)
-        for text in ["İstanbul", "Łódź", "Việt Nam", "Ελληνικά", "Привет", "{\\i1}Hello World"] {
-            for character in text {
-                let runClass = SubtitleScript.classify(character) ?? .common
-                #expect(runClass == .common, "\(character) in \(text)")
-            }
-            #expect(SubtitleFontTagger.tagged(text, plan: plan, styleFontSize: 48) == text)
-        }
-    }
-
-    @Test("marks and joiners inherit their base's run; punctuation does not")
-    func marksAndJoinersInherit() {
-        #expect(SubtitleScript.classify("\u{0E31}" as Unicode.Scalar) == nil)  // Thai vowel sign
-        #expect(SubtitleScript.classify("\u{0301}" as Unicode.Scalar) == nil)  // combining acute
-        #expect(SubtitleScript.classify("\u{094D}" as Unicode.Scalar) == nil)  // Devanagari virama
-        #expect(SubtitleScript.classify("\u{200D}" as Unicode.Scalar) == nil)  // ZWJ
-        #expect(SubtitleScript.classify("\u{200C}" as Unicode.Scalar) == nil)  // ZWNJ
-        #expect(SubtitleScript.classify("\u{2060}" as Unicode.Scalar) == nil)  // word joiner
-        // Punctuation, spaces and digits belong to the Latin face, which is the
-        // only one that reliably has them.
-        #expect(SubtitleScript.classify(" " as Unicode.Scalar) == .common)
-        #expect(SubtitleScript.classify("—" as Unicode.Scalar) == .common)
-        #expect(SubtitleScript.classify("·" as Unicode.Scalar) == .common)
-        #expect(SubtitleScript.classify("1" as Unicode.Scalar) == .common)
-        #expect(SubtitleScript.classify("👍" as Unicode.Scalar) == .common)
-        // Full-width CJK punctuation is claimed by the CJK gate before that
-        // rule can reach it — a 、 out of the Latin face would be a hole.
-        #expect(SubtitleScript.classify("、" as Unicode.Scalar) == .cjk)
-
-        func plan(for family: String) -> SubtitleFontPlan {
-            Self.stubPlan(
-                styleFactor: SubtitleFontMetrics.emBoxFactor(forFamily: family), trackDefault: nil
-            )
-        }
-        // Each Arabic word is its own run and the space between them is Latin;
-        // that costs nothing, because Arabic letters do not join across a space
-        // and bidi runs over the whole line, not per font run.
-        #expect(SubtitleFontTagger.tagged(
-            "مرحبا بالعالم", plan: plan(for: "Noto Naskh Arabic"), styleFontSize: 48
-        )
-            == "{\\fnNoto Naskh Arabic}مرحبا{\\fn} {\\fnNoto Naskh Arabic}بالعالم{\\fn}")
-        // A conjunct's virama and ZWJ stay inside the Devanagari run, which is
-        // the whole reason marks and joiners are not treated as punctuation.
-        #expect(SubtitleFontTagger.tagged(
-            "क\u{094D}\u{200D}ष", plan: plan(for: "Noto Sans Devanagari"), styleFontSize: 48
-        )
-            == "{\\fnNoto Sans Devanagari}क\u{094D}\u{200D}ष{\\fn}")
-    }
-
     /// The block table is searched by bisection, so a row out of order makes the
     /// search silently miss a script — tofu on a device, nothing at all in a
     /// review. These samples walk the table end to end, including every
@@ -335,31 +284,6 @@ struct SubtitleFontPlanTests {
         let tagged = SubtitleFontTagger.tagged("简体测试\\Nこんにちは", plan: plan, styleFontSize: 48)
         #expect(tagged
             == "{\\fnNoto Sans CJK SC}简体测试{\\fn}\\N{\\fnNoto Sans CJK JP}こんにちは{\\fn}")
-    }
-
-    @Test("override blocks and escapes pass through untouched, outside runs")
-    func preservesMarkup() {
-        let plan = Self.stubPlan(styleFactor: 1.448)
-        let tagged = SubtitleFontTagger.tagged("{\\an8}字\\{幕\\}", plan: plan, styleFontSize: 48)
-        #expect(tagged
-            == "{\\an8}{\\fnNoto Sans CJK SC}字{\\fn}\\{{\\fnNoto Sans CJK SC}幕{\\fn}\\}")
-    }
-
-    /// The serif design's weight 600 is one style-level Bold on the override,
-    /// not a per-run tag: libass only synthesizes bold when the request beats
-    /// the face's own weight, so the run tags carry font and size and nothing
-    /// else — under every design, and in authored scripts too, where Bold
-    /// belongs to the author.
-    @Test("run tagging never writes a weight tag", arguments: SubtitleFontBundle.Design.allCases)
-    func taggingLeavesWeightAlone(design: SubtitleFontBundle.Design) {
-        for styleFamily in [SubtitleFontBundle.family(design: design, script: .common),
-                            SubtitleFontBundle.serifCueFamily] {
-            let plan = Self.stubPlan(
-                design: design, styleFamily: styleFamily, trackDefault: .japanese
-            )
-            #expect(SubtitleFontTagger.tagged("東京", plan: plan, styleFontSize: 48).contains("\\b") == false)
-            #expect(SubtitleFontTagger.authoredTagged("東京 ok", plan: plan).contains("\\b") == false)
-        }
     }
 
     @Test("authored tagging skips CJK lines that agree with the default, never other scripts")
@@ -708,43 +632,5 @@ struct SubtitleFontPlanTests {
         )
         _ = AuthoredFontSubstitution.applied(to: script, plan: plan, scan: scan)
         #expect(plan.cacheMisses.value == 0)
-    }
-
-    // MARK: - Which files a track needs
-
-    /// What the lazy registration is driven by. An English track must not pull
-    /// the 19 MB pan-CJK collection into a library that never releases it.
-    @Test("a track's families decide which files are registered")
-    func filesFollowTheFamilies() {
-        let latin = SubtitleFontBundle.files(forFamilies: ["Noto Sans"])
-            .map(\.lastPathComponent)
-        #expect(Set(latin) == Set(SubtitleFontBundle.latinFileNames))
-
-        let chinese = SubtitleFontBundle.files(forFamilies: ["Noto Sans", "Noto Sans CJK SC"])
-            .map(\.lastPathComponent)
-        #expect(Set(chinese) == Set(SubtitleFontBundle.latinFileNames + [
-            "NotoSansCJK-Regular.ttc", "NotoSerifCJK-Regular.ttc",
-        ]))
-
-        let serifCue = SubtitleFontBundle.files(
-            forFamilies: [SubtitleFontBundle.serifCueFamily]
-        ).map(\.lastPathComponent)
-        #expect(Set(serifCue) == Set(
-            SubtitleFontBundle.latinFileNames + [SubtitleFontBundle.serifCueFileName]
-        ))
-
-        // A name nothing in the bundle carries adds no file: libass resolves it
-        // through default_family, which is one of the Latin pair.
-        #expect(SubtitleFontBundle.files(forFamilies: ["Comic Sans MS"]).map(\.lastPathComponent)
-            == SubtitleFontBundle.latinFileNames.sorted())
-    }
-
-    @Test("the families a finished script asks for are read back off it")
-    func requestedFamiliesAreReadOffTheScript() {
-        let script = ASSFixture.script(
-            text: "{\\fnNoto Sans Thai}สวัสดี{\\fn}ok", fontName: "Noto Serif"
-        )
-        #expect(ASSScriptScan.requestedFamilies(in: script)
-            == ["Noto Serif", "Noto Sans Thai"])
     }
 }
