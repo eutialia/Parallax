@@ -229,19 +229,21 @@ struct AVKitEngineEndTests {
     }
 
     /// The streams a Jellyfin server lists for the subtitled stream, numbered as Jellyfin numbers
-    /// them: the video first.
+    /// them: the video first. The English stream carries a title of its own.
     private static let subtitledStreams = [
         MediaStreamInfo(index: 0, kind: .video, displayTitle: "H264", language: nil, codec: "h264", channels: nil,
                         isExternal: false, isForced: false, isDefault: true),
-        MediaStreamInfo(index: 1, kind: .subtitle, displayTitle: "English - WEBVTT", language: "eng", codec: "webvtt",
-                        channels: nil, isExternal: false, isForced: false, isDefault: false),
+        MediaStreamInfo(index: 1, kind: .subtitle, displayTitle: "English - WEBVTT", title: "English CC", language: "eng",
+                        codec: "webvtt", channels: nil, isExternal: false, isForced: false, isDefault: false),
         MediaStreamInfo(index: 2, kind: .subtitle, displayTitle: "French - Forced - WEBVTT", language: "fre", codec: "webvtt",
                         channels: nil, isExternal: false, isForced: true, isDefault: false),
         MediaStreamInfo(index: 3, kind: .subtitle, displayTitle: "German - WEBVTT", language: "ger", codec: "webvtt",
                         channels: nil, isExternal: false, isForced: false, isDefault: false),
     ]
 
-    @Test("choosing a Jellyfin subtitle shows that subtitle, a forced-only track is offered only as forced, and the option index never shifts by one")
+    /// The manifest says NAME="Unknown" for every rendition, and AVFoundation names each by its
+    /// LANGUAGE instead; that name stands over the server's title.
+    @Test("choosing a subtitle a Jellyfin stream offers shows that subtitle's cues, and the menu names it by its language")
     func jellyfinSubtitleChoice() async throws {
         let server = try HLSLoopbackServer.serving(
             directory: AVKitFixtures.subtitledStream, withholding: [], until: ResponseGate())
@@ -256,19 +258,13 @@ struct AVKitEngineEndTests {
         try await requireEventually({ !log.readyInventories.isEmpty }, "the stream never got ready")
         let offered = log.readyInventories[0].subtitles
 
-        // AVFoundation also offers a machine translation into each of the host's preferred
-        // languages, after the stream's own renditions.
-        let french = offered.filter { $0.languageCode == "fr" }
-        let frenchAsFull = french.filter { !$0.isForced }
-        #expect(frenchAsFull.isEmpty, "the forced-only track was offered as a full one: \(offered)")
+        #expect(offered.map(\.displayName) == ["English", "German"], "\(offered)")
+        #expect(offered.map(\.detailLabel) == [Self.subtitledStreams[1].trackDetailLabel, Self.subtitledStreams[3].trackDetailLabel])
         // Each cue names the rendition it was written for.
-        let written = ["en": "eng", "fr": "fra", "de": "deu"]
-        let own = offered.filter { written[$0.languageCode ?? ""] != nil }
-        let fullOwn = own.filter { !$0.isForced }.compactMap(\.languageCode)
-        #expect(fullOwn == ["en", "de"], "\(offered)")
-        for track in own.reversed() {
+        let written = ["en": "eng", "de": "deu"]
+        for track in offered.reversed() {
             await engine.setSubtitleTrack(track)
-            let expected = try #require(written[track.languageCode ?? ""])
+            let expected = try #require(written[track.languageCode ?? ""], "\(track)")
             try await pollUntil({ cues.latest == expected }, timeout: .seconds(4))
             #expect(cues.latest == expected, "chose \(track.displayName)")
         }

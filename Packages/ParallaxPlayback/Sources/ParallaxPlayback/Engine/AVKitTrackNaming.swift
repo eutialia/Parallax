@@ -25,27 +25,14 @@ enum AVKitTrackNaming {
     ///
     /// Priority: a meaningful `displayName` → localized language name → "Audio N"/"Subtitle N".
     /// `ordinal` is the 1-based position among displayed tracks of this kind.
-    /// `locale` controls the language-name localization (injected in tests so
-    /// assertions don't depend on the host locale).
     static func resolvedName(
         displayName: String,
         languageCode: String?,
         kind: Kind,
-        ordinal: Int,
-        locale: Locale = .current
+        ordinal: Int
     ) -> String {
-        meaningfulName(displayName: displayName, languageCode: languageCode, locale: locale)
+        nonGenericDisplayName(displayName) ?? TrackDisplay.languageName(languageCode)
             ?? "\(kind.label) \(ordinal)"
-    }
-
-    /// The first two naming tiers — a non-placeholder `displayName`, else a
-    /// localized language name — or `nil` when neither is usable.
-    static func meaningfulName(
-        displayName: String,
-        languageCode: String?,
-        locale: Locale = .current
-    ) -> String? {
-        nonGenericDisplayName(displayName) ?? TrackDisplay.languageName(languageCode, locale: locale)
     }
 
     /// Just the first tier: the option's own name when it isn't a placeholder,

@@ -76,10 +76,12 @@ final class AppWorld {
     /// Launches the app the way a cold start does: `run()` and `bootstrap()`, as the app root's
     /// tasks call them. `signedIn` accounts and `savedSMB` servers (with their passwords) were saved
     /// by an earlier launch; `discovering` are the servers that answer a LAN discovery broadcast.
-    /// `avPlayer` is what the device's AVPlayer plays.
+    /// `avPlayer` is what the device's AVPlayer plays. `savedSettings` are settings blobs an
+    /// earlier build wrote, by key.
     static func launch(
         signedIn accounts: [(server: FakeJellyfinServer, user: String)] = [],
         savedSMB: [(server: SMBServerData, password: String)] = [],
+        savedSettings: [String: Data] = [:],
         discovering lanServers: [FakeJellyfinServer] = [],
         launchReveal: LaunchRevealCoverage = .home,
         avPlayer: AVPlayerSupport = .baseline
@@ -127,6 +129,7 @@ final class AppWorld {
             diagnostics: .offline
         )
 
+        savedSettings.forEach { environment.defaults.set($1, forKey: $0) }
         let earlierLaunch = AppModel(environment: environment)
         for account in accounts {
             try await earlierLaunch.services.serverStore.add(account.server.session(signedInAs: account.user))
