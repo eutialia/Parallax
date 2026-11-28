@@ -44,13 +44,12 @@ enum AVKitTrackNaming {
         return trimmed
     }
 
-    /// AVFoundation returns a localized "Unknown" when an option has no name and
-    /// no determinable language. We can't reproduce every locale's placeholder,
-    /// but the common (English) device case shows literally "Unknown"; treat
-    /// that and the undetermined ISO codes as non-meaningful so we fall through
-    /// to a better label.
+    /// AVFoundation names an option with no name of its own by its language, and one of
+    /// undetermined language by the locale's name for `und` ("Unknown language"); a manifest's
+    /// own placeholder reads "Unknown". None of these names the track.
     private static func isGenericPlaceholder(_ name: String) -> Bool {
         let lowered = name.lowercased()
         return lowered == "unknown" || lowered == "und" || lowered == "undetermined"
+            || lowered == Locale.current.localizedString(forLanguageCode: "und")?.lowercased()
     }
 }
