@@ -317,11 +317,5 @@ extension SubtitleDisplay {
     public func awaitFetch() async {
         await fetchTask?.value
     }
-
-    /// What one source format is handed, given the appearance the overlay last pushed. The
-    /// converted-vs-authored rule lives in `effectiveStyleOverride` and nothing else observes it.
-    public func debugEffectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
-        effectiveStyleOverride(for: format)
-    }
 }
 #endif
