@@ -1,0 +1,21 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Red,Arial,28,&H000000FF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Green,Arial,28,&H0000FF00,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Blue,Arial,28,&H00FF0000,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: RedBlueRing,Arial,28,&H000000FF,&H000000FF,&H00FF0000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.90,Red,,0,0,0,,Colour
+Dialogue: 0,0:00:02.00,0:00:02.90,Green,,0,0,0,,Colour
+Dialogue: 0,0:00:03.00,0:00:03.90,Blue,,0,0,0,,Colour
+Dialogue: 0,0:00:04.00,0:00:04.90,RedBlueRing,,0,0,0,,Colour

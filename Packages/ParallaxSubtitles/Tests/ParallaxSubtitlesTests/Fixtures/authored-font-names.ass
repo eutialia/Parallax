@@ -1,0 +1,63 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Name1,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name2,MS Sans Serif,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name3,Comic Sans MS,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name4,Flaming Text,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name5,Microsoft YaHei,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name6,微軟正黑體,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name7,FZLanTingHei,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name8,SimHei,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name9,MS PGothic,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name10,方正准圆_GBK,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name11,PingFang SC,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name12,DFKai-SB,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name13,MS Mincho,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name14,ＭＳ 明朝,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name15,Hiragino Mincho ProN,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name16,Noto Serif CJK,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name17,Times New Roman,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name18,SimSun,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name19,NSimSun,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name20,STSong,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name21,PMingLiU,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name22,宋体,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: Name23,細明體,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: RefSans,Noto Sans,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+Style: RefSerif,Noto Serif,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.90,Name1,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:02.00,0:00:02.90,Name2,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:03.00,0:00:03.90,Name3,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:04.00,0:00:04.90,Name4,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:05.00,0:00:05.90,Name5,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:06.00,0:00:06.90,Name6,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:07.00,0:00:07.90,Name7,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:08.00,0:00:08.90,Name8,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:09.00,0:00:09.90,Name9,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:10.00,0:00:10.90,Name10,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:11.00,0:00:11.90,Name11,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:12.00,0:00:12.90,Name12,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:13.00,0:00:13.90,Name13,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:14.00,0:00:14.90,Name14,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:15.00,0:00:15.90,Name15,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:16.00,0:00:16.90,Name16,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:17.00,0:00:17.90,Name17,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:18.00,0:00:18.90,Name18,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:19.00,0:00:19.90,Name19,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:20.00,0:00:20.90,Name20,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:21.00,0:00:21.90,Name21,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:22.00,0:00:22.90,Name22,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:23.00,0:00:23.90,Name23,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:24.00,0:00:24.90,RefSans,,0,0,0,,Hamburgefonstiv
+Dialogue: 0,0:00:25.00,0:00:25.90,RefSerif,,0,0,0,,Hamburgefonstiv

@@ -152,7 +152,7 @@ public actor SubtitleRenderer {
         } else {
             files = SubtitleFontBundle.fileURLs
         }
-        LibassLibrary.shared.ensureRegistered(files: files, log: engine.messageLog)
+        LibassLibrary.shared.ensureRegistered(files: files)
         engine.refreshFontsIfNeeded()
     }
 
@@ -233,7 +233,7 @@ public actor SubtitleRenderer {
         // not only from `load`. No-op when it already is.
         if let family = override.fontFamily {
             LibassLibrary.shared.ensureRegistered(
-                files: SubtitleFontBundle.files(forFamilies: [family]), log: engine.messageLog
+                files: SubtitleFontBundle.files(forFamilies: [family])
             )
             engine.refreshFontsIfNeeded()
         }
@@ -394,13 +394,6 @@ public actor SubtitleRenderer {
             intent: .defaultIntent
         )
     }
-
-    // MARK: - Diagnostics
-
-    /// libass' captured message log (font selection, parse warnings). Empty until
-    /// the engine exists. The only ground truth for which font a glyph run used —
-    /// a missing glyph renders as a perfectly valid tofu box.
-    var diagnosticLog: [String] { engine?.messageLog.lines ?? [] }
 
     // MARK: - Engine lifecycle
 

@@ -45,11 +45,8 @@ struct SubtitleFontPlan {
     let trackDefaultLanguage: CJKFontPlan.Language?
     /// Per-line CJK classification computed once at plan time — detection runs
     /// a recognizer, and tagging revisits every line. A stored nil is an answer
-    /// ("no CJK here"), and telling it apart from "never seen" is what makes a
-    /// cache miss detectable.
+    /// ("no CJK here"), apart from "never seen", which falls back to detection.
     let languageByLine: [String: CJKFontPlan.Language?]
-    /// Shared with every `with(design:)` copy — they classify the same lines.
-    let cacheMisses = CacheMisses()
 
     init(
         design: SubtitleFontBundle.Design,
@@ -63,30 +60,6 @@ struct SubtitleFontPlan {
         self.styleFontEmBoxFactor = styleFontEmBoxFactor
         self.trackDefaultLanguage = trackDefaultLanguage
         self.languageByLine = languageByLine
-    }
-
-    /// Counts classifications that missed the per-line cache.
-    ///
-    /// Every visual line of a loaded track was classified at plan time, so a
-    /// miss means the lookup key drifted from the plan's key — which costs a
-    /// fresh `NLLanguageRecognizer` per cue and, worse, is invisible in the
-    /// output. A CRLF script's stray `\r` did exactly that; this is what the
-    /// regression test asserts on.
-    final class CacheMisses: @unchecked Sendable {
-        private let lock = NSLock()
-        private var count = 0
-
-        var value: Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return count
-        }
-
-        func increment() {
-            lock.lock()
-            defer { lock.unlock() }
-            count += 1
-        }
     }
 
     // MARK: - Routing
@@ -112,9 +85,7 @@ struct SubtitleFontPlan {
 
     /// The CJK language governing `line`, from the plan's cache.
     func language(ofLine line: String) -> CJKFontPlan.Language? {
-        let cached = languageByLine[Self.cacheKey(line)]
-        if cached == nil { cacheMisses.increment() }
-        return cached ?? CJKFontPlan.language(
+        languageByLine[Self.cacheKey(line)] ?? CJKFontPlan.language(
             of: line, trackDefault: trackDefaultLanguage ?? .japanese
         )
     }
