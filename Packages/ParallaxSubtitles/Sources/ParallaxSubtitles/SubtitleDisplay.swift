@@ -115,6 +115,10 @@ public final class SubtitleDisplay {
     /// Told when a load didn't land (no answer, an error, or bytes that don't parse), so the
     /// player can put its selection back.
     public var onFailed: (@MainActor (SubtitleDocument) -> Void)?
+    /// Told when the line stream on screen cannot be drawn from its first lines on: its text
+    /// is in no encoding the renderer reads. Nothing stays drawn. A stream with no line yet
+    /// has not failed.
+    public var onStreamFailed: (@MainActor () -> Void)?
     /// Told when a load's renderer is installed and drawing: the pick has landed.
     public var onLanded: (@MainActor (SubtitleDocument) -> Void)?
     /// Last appearance pushed by the overlay (`applyAppearance`) — replayed onto every
@@ -242,12 +246,16 @@ public final class SubtitleDisplay {
         }.value
         if Task.isCancelled { return }
         guard let installed, installed.family == effectiveFontFamily(for: written.format) else {
-            _ = await install(data: written.data, format: written.format, languageCode: streamed.languageCode)
+            if case .failed(let error) = await install(data: written.data, format: written.format, languageCode: streamed.languageCode) {
+                failStream(error)
+            }
             return
         }
         do {
             try await installed.renderer.load(written.data, format: written.format, languageHint: streamed.languageCode)
         } catch {
+            // The lines drawn so far stay up: one bad line late in a film is no reason to take
+            // the subtitle away.
             Self.log.error("subtitle lines failed to load: \(error)")
             return
         }
@@ -257,12 +265,26 @@ public final class SubtitleDisplay {
             data: written.data, languageCode: streamed.languageCode, family: installed.family)
     }
 
+    /// Lines that hold no cue yet are no failure: the next ones may.
+    private func failStream(_ error: any Error) {
+        if case SubtitleError.noCues = error { return }
+        clear()
+        onStreamFailed?()
+    }
+
     private func land(_ data: Data, format: SubtitleSourceFormat, document: SubtitleDocument) async {
-        if await install(data: data, format: format, languageCode: document.languageCode) {
-            onLanded?(document)
-        } else if !Task.isCancelled {
-            fail(document)
+        switch await install(data: data, format: format, languageCode: document.languageCode) {
+        case .installed: onLanded?(document)
+        case .failed: fail(document)
+        case .superseded: break
         }
+    }
+
+    private enum Install {
+        case installed
+        /// A newer pick took over while this one loaded.
+        case superseded
+        case failed(any Error)
     }
 
     /// The CURRENT pick didn't land: leaving the previous subtitle's bitmaps on screen would lie
@@ -285,12 +307,12 @@ public final class SubtitleDisplay {
     /// Builds + publishes the renderer for fetched bytes. A fresh renderer per
     /// load keeps subtitle switches simple (no cross-track libass state); the overlay
     /// detects the swap via `rendererGeneration`. Undecodable data is logged and
-    /// reported as `false`; the caller decides what a failed load undoes.
+    /// reported as `.failed`; the caller decides what a failed load undoes.
     private func install(
         data: Data,
         format: SubtitleSourceFormat,
         languageCode: String?
-    ) async -> Bool {
+    ) async -> Install {
         // Built around the style's font family so the CJK plan resolves through
         // ITS cascade — serif must reach a Mincho face for Japanese lines, which
         // a sans-based plan would tag right past.
@@ -302,18 +324,18 @@ public final class SubtitleDisplay {
             // A STALE failure must not tear down the newer pick's in-flight load —
             // `clear` cancels `fetchTask`, which by now may belong to the next
             // selection. Same guard the success path has.
-            if Task.isCancelled { return false }
+            if Task.isCancelled { return .superseded }
             Self.log.error("subtitle load failed (\(String(describing: format))): \(error)")
-            return false
+            return .failed(error)
         }
         await renderer.setStyleOverride(effectiveStyleOverride(for: format))
-        if Task.isCancelled { return false }
+        if Task.isCancelled { return .superseded }
         installed = Installed(renderer: renderer,
                               info: SidecarSubtitleInfo(format: format, byteCount: data.count),
                               data: data, languageCode: languageCode, family: family)
         fetching = nil
         rendererGeneration &+= 1
-        return true
+        return .installed
     }
 
     /// The family the renderer plans fonts around — the style override's
@@ -360,10 +382,10 @@ public final class SubtitleDisplay {
             }
             fetchTask?.cancel()
             fetchTask = Task { [weak self] in
-                guard await self?.install(
+                guard case .failed = await self?.install(
                     data: installed.data, format: format,
                     languageCode: installed.languageCode
-                ) == false, !Task.isCancelled else { return }
+                ) else { return }
                 self?.clear()
             }
             return

@@ -129,6 +129,40 @@ struct SubtitleLineDisplayTests {
         #expect(display.renderer == nil)
     }
 
+    @Test("lines that hold no text yet are waited on, lines whose text cannot be read fail the subtitle once with nothing drawn, and an unreadable line after readable ones leaves those drawn")
+    func unreadableLinesFail() async throws {
+        let unreadable = SubtitleLine(start: .seconds(5), duration: .seconds(2), content: Data(repeating: 0xFF, count: 8))
+        let blank = SubtitleLine(start: .seconds(1), duration: .seconds(2), content: Data(" ".utf8))
+        let display = SubtitleDisplay { _ in .rejected }
+        var failures = 0
+        display.onStreamFailed = { failures += 1 }
+
+        let slow = StoredLines(srt: [(5, 2, "Second line")])
+        display.show(slow.stream, languageCode: nil)
+        slow.arrive([blank])
+        for _ in 0..<50 { await Task.yield() }
+        slow.arrive(slow.all)
+        try await Self.until(display) { await Self.draws($0, at: 6) }
+        #expect(failures == 0)
+
+        let broken = StoredLines(srt: [])
+        display.show(broken.stream, languageCode: nil)
+        let shown = display.rendererGeneration
+        broken.arrive([unreadable])
+        for await generation in Observations({ display.rendererGeneration }) where generation > shown { break }
+        #expect(failures == 1)
+        #expect(display.renderer == nil)
+
+        let mixed = StoredLines(srt: [(1, 2, "Hello there")])
+        display.show(mixed.stream, languageCode: nil)
+        mixed.arrive(mixed.all)
+        try await Self.until(display) { await Self.draws($0, at: 2) }
+        mixed.arrive([unreadable])
+        for _ in 0..<200 { await Task.yield() }
+        #expect(failures == 1)
+        #expect(await Self.draws(try #require(display.renderer), at: 2))
+    }
+
     /// Lines as a Matroska file stores them, handed to whoever is listening when they arrive.
     @MainActor
     final class StoredLines {

@@ -153,6 +153,9 @@ public final class PlayerViewModel {
     private var subtitleURLs: [Int: URL] = [:]
     /// The line streams of the text subtitles stored in the played file, by stream.
     private var fileSubtitles: [Int: FileSubtitle] = [:]
+    /// What was on screen when the selected subtitle of the file's own was picked. Such a pick
+    /// lands at once, before any of its lines is read, so this is what a failure goes back to.
+    private var subtitleBeforeFileSubtitle: SubtitleTrack?
     private func subtitleDocument(for track: SubtitleTrack?) -> SubtitleDocument? {
         guard let track, let url = track.id.jellyfinStreamIndex.flatMap({ subtitleURLs[$0] }) else { return nil }
         return SubtitleDocument(url: url, languageCode: track.languageCode)
@@ -968,6 +971,9 @@ public final class PlayerViewModel {
         subtitleDisplay.onFailed = { [weak self] document in
             self?.sidecarFailed(document)
         }
+        subtitleDisplay.onStreamFailed = { [weak self] in
+            self?.fileSubtitleFailed()
+        }
         subtitleDisplay.onLanded = { [weak self] document in
             // A stale document — the selection has moved on — landed nothing anyone asked for.
             guard let self, let track = selectedSubtitleTrack, subtitleDocument(for: track) == document
@@ -991,9 +997,20 @@ public final class PlayerViewModel {
     /// ends at Off instead of trying again.
     private func sidecarFailed(_ document: SubtitleDocument) {
         guard subtitleDocument(for: selectedSubtitleTrack) == document else { return }
-        pendingSubtitlePick = nil
         // A burn-in is no fallback: the session a sidecar loads on no longer paints it.
-        let fallback = landedSubtitle.flatMap { $0.isBurnedIn ? nil : $0 }
+        fallBack(to: landedSubtitle.flatMap { $0.isBurnedIn ? nil : $0 })
+    }
+
+    /// The selected subtitle of the file's own cannot be drawn, so the selection goes back to
+    /// what was on screen before it was picked, as for a sidecar that failed.
+    private func fileSubtitleFailed() {
+        guard let failed = selectedSubtitleTrack, failed.id.fileStreamIndex != nil else { return }
+        fallBack(to: subtitleBeforeFileSubtitle.flatMap { $0 == failed ? nil : $0 })
+    }
+
+    private func fallBack(to fallback: SubtitleTrack?) {
+        pendingSubtitlePick = nil
+        subtitleBeforeFileSubtitle = nil
         landedSubtitle = nil
         selectedSubtitleTrack = fallback
         currentSubtitleStreamIndex = Self.subtitleIndex(of: fallback)
@@ -2033,6 +2050,7 @@ public final class PlayerViewModel {
             guard generation == sessionGeneration else { return }
             selectedSubtitleTrack = track
             pendingSubtitlePick = SubtitlePick(track: track)
+            subtitleBeforeFileSubtitle = landedSubtitle
             subtitleDisplay.show(stored.lines, languageCode: track.languageCode)
             subtitleLanded(track)
         } else if let track, let index = track.id.jellyfinStreamIndex {
