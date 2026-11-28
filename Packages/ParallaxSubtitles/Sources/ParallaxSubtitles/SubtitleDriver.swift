@@ -1,9 +1,8 @@
 import CoreGraphics
 import Observation
-import ParallaxSubtitles
 
 /// What the subtitle overlay draws from: a canvas and a frame for a playhead time.
-nonisolated public protocol SubtitleFrameSource: AnyObject, Sendable {
+public protocol SubtitleFrameSource: AnyObject, Sendable {
     func setCanvas(size: CGSize, scale: CGFloat, storageSize: CGSize?) async
     func frame(at seconds: Double) async -> SubtitleFrame?
 }
@@ -12,6 +11,7 @@ extension SubtitleRenderer: SubtitleFrameSource {}
 
 /// The player's side of the subtitle overlay: the loaded source, the engine clock and the clock
 /// the driver ticks on.
+@MainActor
 public struct SubtitleFeed {
     /// The loaded source and its generation, or nil when the overlay has nothing to draw.
     /// Generation, not identity: a freed renderer's address can be reused by the next one.
@@ -21,12 +21,22 @@ public struct SubtitleFeed {
     let engineSeconds: () -> Double?
     let clock: any Clock<Duration>
 
+    public init(
+        source: @escaping () -> (source: any SubtitleFrameSource, generation: Int)?,
+        engineSeconds: @escaping () -> Double?,
+        clock: any Clock<Duration>
+    ) {
+        self.source = source
+        self.engineSeconds = engineSeconds
+        self.clock = clock
+    }
 }
 
 /// Polls the engine clock ~15×/s and keeps the frame the track says belongs on screen now.
 /// Playback-state beats (0.5s) are far too coarse for sub-second cues, so it reads the engine
 /// clock directly. Owned by one overlay mount; the overlay draws `shownFrame`.
 @Observable
+@MainActor
 public final class SubtitleDriver {
     /// Where the overlay wants the canvas, in points.
     public struct Canvas: Equatable, Sendable {

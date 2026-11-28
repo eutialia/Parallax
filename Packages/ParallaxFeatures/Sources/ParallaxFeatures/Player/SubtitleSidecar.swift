@@ -3,38 +3,6 @@ import CoreGraphics
 import ParallaxPlayback
 import ParallaxSubtitles
 
-/// What the sidecar renderer was loaded with. The debug panel shows it, and the
-/// style push keys off `format`: SRT/VTT carry no authored look, so the user's
-/// style always applies; ASS/SSA keeps its creator's, always.
-public struct SidecarSubtitleInfo: Equatable, Sendable {
-    public let format: SubtitleSourceFormat
-    public let byteCount: Int
-}
-
-/// What one sidecar request brought back.
-public enum SubtitleFetchOutcome: Sendable {
-    case data(Data)
-    /// No answer in time: Jellyfin is still extracting the stream, and a later request is served
-    /// from its cache.
-    case notReady
-    /// An error status, an empty body, or no connection.
-    case rejected
-}
-
-extension SubtitleSourceFormat {
-    /// Maps a sidecar file/URL extension to the renderer's ingest format. Anything
-    /// unrecognized is treated as WebVTT — Jellyfin's conversion fallback serves
-    /// VTT for every format we don't request verbatim.
-    init(sidecarExtension ext: String) {
-        switch ext.lowercased() {
-        case "ass": self = .ass
-        case "ssa": self = .ssa
-        case "srt": self = .srt
-        default: self = .vtt
-        }
-    }
-}
-
 extension SubtitleStyle {
     /// The user's overlay style expressed as the renderer's selective override,
     /// with the caller-computed font scale and the tuned rest position as

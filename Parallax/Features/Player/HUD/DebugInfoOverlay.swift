@@ -4,6 +4,7 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
 import ParallaxFeatures
+import ParallaxSubtitles
 
 /// A debug-only panel surfacing what's *actually* playing on device: the
 /// server's routing decision + per-stream metadata, and the engine's live
