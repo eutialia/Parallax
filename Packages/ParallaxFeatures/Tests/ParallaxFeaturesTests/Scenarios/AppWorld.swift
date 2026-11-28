@@ -352,14 +352,26 @@ final class AppWorld {
     /// The engine fetches every video segment of the film it was handed, as AVPlayer does while
     /// it buffers. Only a film the app delivers through its bridge has segments.
     func engineFetchesTheWholeFilm(sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        try await engineFetches(sourceLocation: sourceLocation) { $0[...] }
+    }
+
+    /// The engine fetches only the last video segment, as AVPlayer does after a seek to the
+    /// end of a film it has buffered none of.
+    func engineFetchesTheFilmsLastPart(sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        try await engineFetches(sourceLocation: sourceLocation) { $0.suffix(1) }
+    }
+
+    private func engineFetches(
+        sourceLocation: SourceLocation, _ wanted: ([Substring]) -> ArraySlice<Substring>
+    ) async throws {
         let master = try #require(engine.loadedAssets.last?.url, sourceLocation: sourceLocation)
         let folder = master.deletingLastPathComponent()
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
         let playlist = String(decoding: try await session.data(from: folder.appending(path: "v.m3u8")).0, as: UTF8.self)
         let segments = playlist.split(separator: "\n").filter { $0.hasSuffix(".m4s") }
-        try #require(!segments.isEmpty, "\(playlist)", sourceLocation: sourceLocation)
-        for segment in segments { _ = try await session.data(from: folder.appending(path: String(segment))) }
+        try #require(segments.count > 1, "\(playlist)", sourceLocation: sourceLocation)
+        for segment in wanted(segments) { _ = try await session.data(from: folder.appending(path: String(segment))) }
     }
 
     /// The stream played to its end.
