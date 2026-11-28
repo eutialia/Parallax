@@ -1,0 +1,27 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,ParallaxEmbeddedProbe,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1
+
+[Fonts]
+fontname: ParallaxEmbeddedProbe_0.ttf
+!!%!!!!+!)!!!Q!A4V-P-F=#629!!!#M!!!!9'.N98!!$!"U!!!"$!!!!#RH<(FG!\Y'3A!!!4A!!!!E
+;'6B:''I1[)!!!&=!!!!.GBI:7%&L!(X!!!"F!!!!#2I<82Y",!!-A!!!<A!!!!)<'^D91!!!#1!!!(!
+!!!!$'VB?(!!"!!'!!!"T!!!!#"O97VF$OU?61!!!?Q!!!$#='^T>0_@!$)!!!+Q!!!!)!!%!@1"E!!&
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!%!!!!!!!!!!!!!!!"/4UZ&!%!!11""
+!S$`/!!!!S!!S!!!!!%!!!!!!@1#P!!!!%%!!1!!!!%!!Q!"!!!!$!!%!#!!!!!%!!1!!1!!!%(``Q!!
+!%(````!!!%!!!!!!!%!-A!!!II#P!!$!!!"!1%"!$)!!!*9!!!!!!+]!!$^2!!!!!%!!!!"!!$[VRKL
+8Q]]^1!,!_A!!!!!!!!!!!!!!!!!!!!!!!!!!!++!LQ!!!!)!!)!!1!!!!!!!1!!!S$`/!!!!LQ!!!!!
+!II!!1!!!!!!!!!!!!!!!!!!!!)"^!!!!LQ!-A!!!!!!!!!!!!!!*!!"!!!!!A!%!!%!!!!!!!)!!!!!
+!!!!!!!!!!!!!!!!!!!!"!!W!!-!!11*!!%!+A!!!!-!!11*!!)!$A!K!!-!!11*!!1!+A!Y!!-!!11*
+!!9!+A"C!&!!91"S!'%!<!"M!'%!?!"&!'U!9A"F!'1!:!"F!'1!5!"S!']!9A"F!&)!:1"H!(5!<!"B
+!()!5!"B!()!91"M!'Q!91"Y!%5!<1"C!'5!:!"E!'5!:!"1!()!<Q"C!'5!5!"B!()!91"M!'Q!91"Y
+!%5!<1"C!'5!:!"E!'5!:!"1!()!<Q"C!'5!!!!$!!!!!!!!`ZQ!-A!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.90,Default,,0,0,0,,A

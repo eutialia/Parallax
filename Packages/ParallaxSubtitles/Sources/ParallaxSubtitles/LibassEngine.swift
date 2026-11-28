@@ -35,16 +35,15 @@ final class LibassLibrary: @unchecked Sendable {
     /// libass has no internal synchronisation, and sharing the library makes two
     /// renderers' calls meet inside it: `library->fontdata` is read lazily by
     /// every renderer's `fontselect` (FreeType opens faces straight out of that
-    /// array on first use), and the message callback is per library, so message
-    /// ROUTING is only unambiguous while one call is in flight. Rather than
+    /// array on first use). Rather than
     /// reason case-by-case about which pairs can overlap, EVERY libass call in
     /// this package runs under this one lock — including `ass_render_frame`. It
     /// is a few hundred microseconds of critical section against at most two live
     /// renderers (player overlay + settings preview), which is not a contention
     /// problem worth a finer scheme.
     ///
-    /// Recursive because the message callback re-enters it: libass invokes the
-    /// callback synchronously, on the thread already inside a locked call.
+    /// Recursive because a renderer is built inside `perform` and reads
+    /// `currentFontGeneration`, which takes the lock again.
     private let lock = NSRecursiveLock()
 
     private var handle: OpaquePointer?
@@ -60,31 +59,14 @@ final class LibassLibrary: @unchecked Sendable {
     /// re-reads the library's font data — so this is how one knows to re-run it.
     private var fontGeneration = 0
 
-    /// The renderer whose log the messages of the call in flight belong to.
-    /// `ass_set_message_cb` is per LIBRARY, so with one shared library the only
-    /// way to keep `SubtitleRenderer.diagnosticLog` per renderer is to route on
-    /// "who is currently inside libass" — which the lock makes unambiguous.
-    private var currentLog: LibassEngine.MessageLog?
-
-    /// Where the one-time bootstrap's own chatter goes, so that whichever renderer
-    /// happens to trigger it does not inherit lines the others never see.
-    let bootstrapLog = LibassEngine.MessageLog()
-
     private init() {}
 
-    /// Runs `body` against the shared library with every message libass emits
-    /// inside it appended to `log`. Returns nil only when the library could not
-    /// be created at all.
-    func perform<T>(
-        log: LibassEngine.MessageLog?,
-        _ body: (OpaquePointer) throws -> T
-    ) rethrows -> T? {
+    /// Runs `body` against the shared library under the lock. Returns nil only
+    /// when the library could not be created at all.
+    func perform<T>(_ body: (OpaquePointer) throws -> T) rethrows -> T? {
         lock.lock()
         defer { lock.unlock() }
         guard let library = bootstrappedHandle() else { return nil }
-        let previous = currentLog
-        currentLog = log
-        defer { currentLog = previous }
         return try body(library)
     }
 
@@ -98,16 +80,13 @@ final class LibassLibrary: @unchecked Sendable {
     /// deliberately driven by what a real track asks for rather than by what the
     /// bundle contains.
     @discardableResult
-    func ensureRegistered(files: [URL], log: LibassEngine.MessageLog? = nil) -> Int {
+    func ensureRegistered(files: [URL]) -> Int {
         lock.lock()
         defer { lock.unlock() }
         guard let library = bootstrappedHandle() else { return fontGeneration }
         let wanted = files.filter { !registeredFiles.contains($0.lastPathComponent) }
         guard !wanted.isEmpty else { return fontGeneration }
 
-        let previous = currentLog
-        currentLog = log
-        defer { currentLog = previous }
         register(SubtitleFontBundle.registrations(for: wanted), into: library)
         return fontGeneration
     }
@@ -119,24 +98,12 @@ final class LibassLibrary: @unchecked Sendable {
         return fontGeneration
     }
 
-    /// Files libass has been given, for tests that pin the lazy-registration
-    /// contract. Never a decision input: `ensureRegistered` is the only reader
-    /// that matters.
-    var registeredFileNames: Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        return registeredFiles
-    }
-
     /// `perform` for a body that is itself optional. The library's "could not
     /// init" nil and the body's own nil mean the same thing to every caller in
     /// this file — an operation that produced nothing — so they flatten rather
     /// than nest into `T??`.
-    func performOptional<T>(
-        log: LibassEngine.MessageLog?,
-        _ body: (OpaquePointer) throws -> T?
-    ) rethrows -> T? {
-        try perform(log: log, body) ?? nil
+    func performOptional<T>(_ body: (OpaquePointer) throws -> T?) rethrows -> T? {
+        try perform(body) ?? nil
     }
 
     /// Caller holds the lock.
@@ -149,33 +116,13 @@ final class LibassLibrary: @unchecked Sendable {
             return nil
         }
 
-        // Route libass' messages (stderr by default) into whichever ring buffer
-        // owns the call in flight. The callback carries no context: the library
-        // is a singleton and the routing target is the lock-guarded `currentLog`.
-        ass_set_message_cb(
-            library,
-            { level, format, args, _ in
-                guard let format, level <= 6 else { return }
-                var buffer = [CChar](repeating: 0, count: 512)
-                if let args {
-                    vsnprintf(&buffer, buffer.count, format, args)
-                } else {
-                    strlcpy(&buffer, format, buffer.count)
-                }
-                LibassLibrary.shared.appendToCurrentLog(
-                    level: level,
-                    message: String(validating: buffer.prefix { $0 != 0 }, as: UTF8.self) ?? ""
-                )
-            },
-            nil
-        )
+        // Without a callback libass writes its messages to stderr.
+        ass_set_message_cb(library, { _, _, _, _ in }, nil)
 
-        currentLog = bootstrapLog
         register(
             SubtitleFontBundle.registrations(for: SubtitleFontBundle.latinFileURLs),
             into: library
         )
-        currentLog = nil
 
         handle = library
         return library
@@ -201,12 +148,6 @@ final class LibassLibrary: @unchecked Sendable {
             fontGeneration += 1
         }
     }
-
-    fileprivate func appendToCurrentLog(level: Int32, message: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        currentLog?.append(level: level, message: message)
-    }
 }
 
 /// Owns the per-renderer libass handles for their whole lifetime.
@@ -221,27 +162,11 @@ final class LibassLibrary: @unchecked Sendable {
 /// only ever touched by `SubtitleRenderer`, which is an actor. The `ASS_Library`
 /// it renders against is shared process-wide (`LibassLibrary`), so every call
 /// reaching libass — including per-frame rendering — goes through
-/// `LibassLibrary.perform`, which serialises it and tags its messages.
+/// `LibassLibrary.perform`, which serialises it.
 final class LibassEngine {
 
     let renderer: OpaquePointer
     private(set) var track: UnsafeMutablePointer<ASS_Track>?
-
-    /// libass' own diagnostics (font selection, parse complaints), captured via the
-    /// message callback instead of the default stderr spam. Font problems are
-    /// invisible in the output bitmap — a missing glyph renders as a perfectly
-    /// valid tofu box — so this log is the only ground truth for "which font did
-    /// libass actually use". Ring-buffered; only ever written while the shared
-    /// library lock is held, and only by calls this engine made.
-    final class MessageLog {
-        private(set) var lines: [String] = []
-        func append(level: Int32, message: String) {
-            if lines.count >= 400 { lines.removeFirst(100) }
-            lines.append("[\(level)] \(message)")
-        }
-    }
-
-    let messageLog: MessageLog
 
     /// The `Name` buffer for `ass_set_selective_style_override`, alive as long as
     /// the renderer is.
@@ -263,13 +188,11 @@ final class LibassEngine {
     init?(defaultFontFamily: String) {
         // Allocated first so a failure here needs no libass teardown.
         guard let overrideStyleName = strdup("Default") else { return nil }
-        let log = MessageLog()
-        guard let built = Self.makeRenderer(log: log, defaultFontFamily: defaultFontFamily) else {
+        guard let built = Self.makeRenderer(defaultFontFamily: defaultFontFamily) else {
             free(overrideStyleName)
             return nil
         }
         self.overrideStyleName = overrideStyleName
-        self.messageLog = log
         self.renderer = built.renderer
         self.fontGeneration = built.generation
         self.defaultFontFamily = defaultFontFamily
@@ -303,7 +226,7 @@ final class LibassEngine {
 
         func schedule() {
             Task.detached(priority: .utility) {
-                _ = LibassLibrary.shared.perform(log: nil) { _ in
+                _ = LibassLibrary.shared.perform { _ in
                     if let track { ass_free_track(track) }
                     ass_renderer_done(renderer)
                 }
@@ -328,10 +251,9 @@ final class LibassEngine {
     /// one — but it now only indexes font data the library already owns instead
     /// of copying ~50 MB, which is what makes a second renderer cheap.
     private static func makeRenderer(
-        log: MessageLog,
         defaultFontFamily: String
     ) -> (renderer: OpaquePointer, generation: Int)? {
-        return LibassLibrary.shared.performOptional(log: log) { library in
+        return LibassLibrary.shared.performOptional { library in
             guard let renderer = ass_renderer_init(library) else { return nil }
             setFonts(on: renderer, defaultFontFamily: defaultFontFamily)
             // Hinting fights smooth scaling and breaks positioned scripts.
@@ -366,22 +288,21 @@ final class LibassEngine {
     func refreshFontsIfNeeded() {
         let generation = LibassLibrary.shared.currentFontGeneration
         guard generation != fontGeneration else { return }
-        _ = LibassLibrary.shared.perform(log: messageLog) { _ in
+        _ = LibassLibrary.shared.perform { _ in
             Self.setFonts(on: renderer, defaultFontFamily: defaultFontFamily)
         }
         fontGeneration = generation
     }
 
-    /// Runs `body` on this engine's renderer under the shared library lock, with
-    /// libass' messages routed to this engine's log. The renderer's existence
+    /// Runs `body` on this engine's renderer under the shared library lock. The renderer's existence
     /// proves the library exists, so this never fails.
     @discardableResult
     func withRenderer<T>(_ body: (OpaquePointer) -> T) -> T? {
-        LibassLibrary.shared.perform(log: messageLog) { _ in body(renderer) }
+        LibassLibrary.shared.perform { _ in body(renderer) }
     }
 
     func renderFrame(atMilliseconds time: Int64, changed: inout Int32) -> UnsafeMutablePointer<ASS_Image>? {
-        LibassLibrary.shared.performOptional(log: messageLog) { _ in
+        LibassLibrary.shared.performOptional { _ in
             ass_render_frame(renderer, track, time, &changed)
         }
     }
@@ -392,7 +313,7 @@ final class LibassEngine {
         // A script's [Fonts] attachments do NOT reach the shared library: font
         // extraction is off (see LibassLibrary), so the candidate set stays the
         // bundle's for every renderer.
-        let parsed = LibassLibrary.shared.performOptional(log: messageLog) { library in
+        let parsed = LibassLibrary.shared.performOptional { library in
             bytes.withUnsafeMutableBufferPointer { buffer -> UnsafeMutablePointer<ASS_Track>? in
                 guard let base = buffer.baseAddress else { return nil }
                 return base.withMemoryRebound(to: CChar.self, capacity: buffer.count) { chars in
@@ -403,12 +324,12 @@ final class LibassEngine {
 
         guard let loaded = parsed else { throw SubtitleError.noCues }
         guard loaded.pointee.n_events > 0 else {
-            _ = LibassLibrary.shared.perform(log: messageLog) { _ in ass_free_track(loaded) }
+            _ = LibassLibrary.shared.perform { _ in ass_free_track(loaded) }
             throw SubtitleError.noCues
         }
 
         if let track {
-            _ = LibassLibrary.shared.perform(log: messageLog) { _ in ass_free_track(track) }
+            _ = LibassLibrary.shared.perform { _ in ass_free_track(track) }
         }
         track = loaded
     }

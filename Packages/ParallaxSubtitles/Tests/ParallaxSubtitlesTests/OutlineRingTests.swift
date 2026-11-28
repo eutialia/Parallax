@@ -1,50 +1,26 @@
 import CoreGraphics
 import Foundation
+import ParallaxSubtitles
 import Testing
 
-@testable import ParallaxSubtitles
+/// The ring around a converted line, read off the pixels: one opaque black band of the same
+/// width on every side, ending abruptly, around a crisp fill. This is what catches the ring
+/// turning back into a shadow or a blur.
+@Suite("Outline ring")
+struct OutlineRingTests {
 
-/// The canonical plain-text look, asserted on the pixels libass produced: a crisp
-/// glyph inside ONE opaque black ring, with no blur and no offset anywhere.
-///
-/// This is the suite that catches the ring turning back into a shadow. Every
-/// property below is one the eye reads instantly and the Swift side cannot see:
-/// the band is the same width on all four sides, it ends abruptly instead of
-/// fading, and it is fully black rather than a tinted haze.
-@Suite("Outline rendering")
-struct OutlineRenderTests {
-
-    /// A single tall stem at 4× the tuned size, on a 1:1 720-line canvas: the
-    /// bands are then wide enough in whole pixels to measure.
-    private static let scale = 4.0
-
-    private static func override() -> SubtitleStyleOverride {
-        SubtitleStyleOverride(
-            fontScale: scale,
-            primaryColor: SubtitleColor(red: 0.92, green: 0.92, blue: 0.92),
-            opaqueBox: false,
-            outlineEmRatio: SubtitleRenderer.convertedScriptOutlineEmRatio
+    /// One tall stem at four times the size, so the bands are wide enough in whole pixels to
+    /// measure.
+    private func stem() async throws -> RenderedPixels {
+        let style = SubtitleStyleOverride(
+            fontScale: 4, primaryColor: SubtitleColor(red: 0.92, green: 0.92, blue: 0.92), opaqueBox: false
         )
+        return try #require(try await drawing(of: "stem.srt", at: 2, style: style).pixels)
     }
 
-    private func renderStem() async throws -> RenderedPixels {
-        let renderer = SubtitleRenderer()
-        await renderer.setCanvas(
-            size: CGSize(width: 1280, height: 720), scale: 1,
-            storageSize: CGSize(width: 1280, height: 720)
-        )
-        try await renderer.load(SRTFixture.data(text: "I"), format: .srt)
-        await renderer.setStyleOverride(Self.override())
-        let frame = try #require(await renderer.frame(at: 2.0))
-        return try rendered(try #require(frame.image))
-    }
-
-    private func bands(
-        _ pixels: RenderedPixels,
-        _ stem: (left: (x: Int, y: Int), right: (x: Int, y: Int),
-                 top: (x: Int, y: Int), bottom: (x: Int, y: Int))
-    ) -> [(String, [UInt8])] {
-        [
+    private func bands(_ pixels: RenderedPixels) throws -> [(String, [UInt8])] {
+        let stem = try #require(pixels.stem)
+        return [
             ("left", pixels.outlineBand(from: stem.left, dx: -1, dy: 0)),
             ("right", pixels.outlineBand(from: stem.right, dx: 1, dy: 0)),
             ("above", pixels.outlineBand(from: stem.top, dx: 0, dy: -1)),
@@ -52,55 +28,82 @@ struct OutlineRenderTests {
         ]
     }
 
-    // MARK: - Assertions
-
-    /// Above and below are compared exactly: the one property a drop shadow can
-    /// never have is that nothing is displaced.
+    /// Above and below are compared exactly: a drop shadow is displaced, a ring never is.
     @Test("the ring is the same width on all four sides")
     func ringIsUniform() async throws {
-        let pixels = try await renderStem()
-        let measured = bands(pixels, try #require(pixels.stem))
-        let widths = measured.map(\.1.count)
+        let measured = try bands(try await stem()).map { ($0.0, $0.1.count) }
+        let widths = measured.map(\.1)
 
         #expect(widths.min() ?? 0 >= 4, "the ring is too thin to measure: \(measured)")
-        #expect((widths.max() ?? 0) - (widths.min() ?? 0) <= 1,
-                "the ring is not uniform: \(measured.map { ($0.0, $0.1.count) })")
-        let width = Dictionary(uniqueKeysWithValues: measured.map { ($0.0, $0.1.count) })
+        #expect((widths.max() ?? 0) - (widths.min() ?? 0) <= 1, "the ring is not uniform: \(measured)")
+        let width = Dictionary(uniqueKeysWithValues: measured)
         #expect(width["above"] == width["below"], "the ring is offset: \(width)")
     }
 
-    /// A ring ends where the stroke ends. Anything that takes more than the
-    /// antialiasing to reach transparency is a blur wearing a ring's name.
     @Test("the ring's outer edge is hard, not a falloff")
     func ringEdgeIsHard() async throws {
-        let pixels = try await renderStem()
-        for (name, band) in bands(pixels, try #require(pixels.stem)) {
+        for (name, band) in try bands(try await stem()) {
             let solidEnd = try #require(band.lastIndex { $0 >= 230 }, "\(name): \(band)")
             let fadeStart = band[solidEnd...].firstIndex { $0 < 26 } ?? band.count
-            #expect(fadeStart - solidEnd - 1 <= 2,
-                    "\(name) takes \(fadeStart - solidEnd - 1)px to fade out: \(band)")
+            #expect(fadeStart - solidEnd - 1 <= 2, "\(name) takes \(fadeStart - solidEnd - 1)px to fade out: \(band)")
         }
     }
 
     @Test("the ring is opaque black right against the fill")
     func ringIsOpaque() async throws {
-        let pixels = try await renderStem()
-        for (name, band) in bands(pixels, try #require(pixels.stem)) {
+        for (name, band) in try bands(try await stem()) {
             #expect(band.first ?? 0 >= 242, "\(name) starts at \(band.first ?? 0)/255")
         }
     }
 
+    /// Antialiasing is one pixel of partial coverage; a blurred fill takes the whole blur
+    /// radius to get from the ring to the glyph.
     @Test("the fill keeps a crisp edge on every side")
     func fillEdgeStaysCrisp() async throws {
-        let pixels = try await renderStem()
+        let pixels = try await stem()
         let stem = try #require(pixels.stem)
 
-        // Antialiasing is one pixel of partial coverage; a blurred fill would take
-        // the whole blur radius to get from the ring to the glyph.
         #expect(pixels.partialFillPixels(from: stem.left, dx: -1, dy: 0) <= 2)
         #expect(pixels.partialFillPixels(from: stem.right, dx: 1, dy: 0) <= 2)
         #expect(pixels.partialFillPixels(from: stem.top, dx: 0, dy: -1) <= 2)
         #expect(pixels.partialFillPixels(from: stem.bottom, dx: 0, dy: 1) <= 2)
+    }
+
+    /// Measured off the pixels: `imageRect` is padded for libass' SIMD blitters and
+    /// quantizes by up to 16 px, too coarse for a border of a few.
+    private func ink(outlineUnits: Double, videoHeight: CGFloat = 720, fontScale: Double = 1) async throws -> CGRect {
+        let em = SubtitleRenderer.convertedScriptFontFraction * SubtitleRenderer.convertedScriptPlayRes.height
+        let renderer = try await loaded(
+            "border.srt",
+            style: SubtitleStyleOverride(
+                fontScale: fontScale, primaryColor: SubtitleColor(red: 1, green: 1, blue: 1), opaqueBox: false,
+                outlineEmRatio: outlineUnits / em
+            ),
+            storage: CGSize(width: videoHeight * 16 / 9, height: videoHeight)
+        )
+        return try #require(try await renderer.drawing(at: 2).ink, "nothing was inked")
+    }
+
+    /// libass scales the outline by the factor it scales the glyphs by, so a ring set as a
+    /// fraction of the em stays that fraction at every size.
+    @Test("the ring stays the same fraction of the text at every size setting")
+    func ringFollowsTheSize() async throws {
+        let width = try await ink(outlineUnits: 10).maxX - (try await ink(outlineUnits: 0).maxX)
+        let widthBig = try await ink(outlineUnits: 10, fontScale: 2).maxX - (try await ink(outlineUnits: 0, fontScale: 2).maxX)
+
+        #expect(width > 6, "the ring has to be measurable first: \(width)")
+        #expect(widthBig > width * 1.5 && widthBig < width * 2.5, "2x text drew a \(widthBig)px ring against \(width)px")
+    }
+
+    @Test("the ring is the same over a 360-line video and a 4K one", arguments: [360.0, 2160.0])
+    func ringIgnoresTheVideoSize(videoHeight: CGFloat) async throws {
+        let bare = try await ink(outlineUnits: 0)
+        let reference = try await ink(outlineUnits: 10)
+        let other = try await ink(outlineUnits: 10, videoHeight: videoHeight)
+
+        #expect(reference.width - bare.width > 12, "there has to be a ring to hold still")
+        #expect(abs(other.width - reference.width) <= 2)
+        #expect(abs(other.height - reference.height) <= 2)
     }
 }
 

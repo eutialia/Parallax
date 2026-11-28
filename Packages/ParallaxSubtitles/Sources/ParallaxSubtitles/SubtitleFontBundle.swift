@@ -94,8 +94,8 @@ public enum SubtitleFontBundle {
     }
 
     /// Script → families + files. Every family string here is nameID 1 of a
-    /// shipped face, pinned against the files themselves by
-    /// `BundledFontTests.tableNamesMatchTheFiles` — read out, never assumed.
+    /// shipped face, read out of the files, never assumed. A drifted name draws the
+    /// missing-glyph box, which `ScriptAndRegionFontTests` catches.
     public static let table: [Script: Entry] = {
         var table: [Script: Entry] = [
             .common: Entry(
@@ -187,7 +187,7 @@ public enum SubtitleFontBundle {
     /// hold up the first real pick.
     public static func warmUp() {
         Task.detached(priority: .userInitiated) {
-            _ = LibassLibrary.shared.perform(log: nil) { _ in }
+            _ = LibassLibrary.shared.perform { _ in }
             _ = facesByFamily
         }
     }
