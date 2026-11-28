@@ -24,6 +24,8 @@ struct DemuxedStream: Sendable {
     let title: String?
     /// The container marks the stream as the one to play when the viewer chose none.
     let isDefault: Bool
+    let isForced: Bool
+    let isHearingImpaired: Bool
     let packetTimes: PacketTimes
 
     struct FrameRate: Sendable, Equatable {
@@ -163,6 +165,9 @@ actor MediaDemuxer {
     private let keyframeShowDelay: Int64
     private let listing: KeyframeListing
     private var listed: [IndexedKeyframe]?
+    /// Where the lines of `textSubtitles` go as any read passes them.
+    private let subtitleLines: EmbeddedSubtitleLines?
+    private let textSubtitles: Set<Int>
     /// Where the last packet read from each stream ends, in the stream's ticks, since the last
     /// seek.
     private var packetEnds: [Int32: Int64] = [:]
@@ -177,15 +182,16 @@ actor MediaDemuxer {
 
     /// A demuxer with blocks of its own.
     static func open(_ reader: any RandomAccessReading) async throws -> MediaDemuxer {
-        try await open(SessionBlockCache(reader: reader, size: try await reader.fileSize))
+        try await open(SessionBlockCache(reader: reader, size: try await reader.fileSize), subtitleLines: nil)
     }
 
     /// A demuxer over blocks other demuxers of the file share. With `keyframes`, the list one
     /// of them made, it makes none of its own. With `skippingAttachments`, a Matroska file's
-    /// attachments are passed over unread, its cover art among them.
+    /// attachments are passed over unread, its cover art among them. Every read hands the text
+    /// subtitle lines it passes to `subtitleLines`.
     static func open(
         _ cache: SessionBlockCache, keyframes: [IndexedKeyframe]? = nil, listing: KeyframeListing = .init(),
-        skippingAttachments: Bool = false
+        skippingAttachments: Bool = false, subtitleLines: EmbeddedSubtitleLines?
     ) async throws -> MediaDemuxer {
         let queue = DispatchSerialQueue(label: "parallax.media-demuxer", qos: .userInitiated)
         let opened = try await withCheckedThrowingContinuation { continuation in
@@ -193,11 +199,12 @@ actor MediaDemuxer {
                 continuation.resume(with: Result { try Opened(cache: cache, skippingAttachments: skippingAttachments) })
             }
         }
-        return MediaDemuxer(opened, keyframes: keyframes, listing: listing, queue: queue)
+        return MediaDemuxer(opened, keyframes: keyframes, listing: listing, subtitleLines: subtitleLines, queue: queue)
     }
 
     private init(
-        _ opened: sending Opened, keyframes: [IndexedKeyframe]?, listing: KeyframeListing, queue: DispatchSerialQueue
+        _ opened: sending Opened, keyframes: [IndexedKeyframe]?, listing: KeyframeListing,
+        subtitleLines: EmbeddedSubtitleLines?, queue: DispatchSerialQueue
     ) {
         self.queue = queue
         container = opened.container
@@ -212,6 +219,8 @@ actor MediaDemuxer {
         keyframeShowDelay = opened.keyframeShowDelay
         self.listing = listing
         listed = keyframes
+        self.subtitleLines = subtitleLines
+        textSubtitles = Set(opened.streams.compactMap { EmbeddedSubtitle($0)?.id })
     }
 
     isolated deinit {
@@ -696,6 +705,9 @@ actor MediaDemuxer {
             }
             timeFromThePacketBefore(packet)
             timeFromTheFrameBefore(packet)
+            if let subtitleLines, textSubtitles.contains(Int(packet.pointee.stream_index)), let line = demuxed(packet) {
+                subtitleLines.take(line)
+            }
             return packet
         }
     }
@@ -951,6 +963,8 @@ private struct Opened {
                     ? .init(numerator: Int64(rate.num), denominator: Int64(rate.den)) : nil,
                 language: tag("language").flatMap { $0 == "und" ? nil : $0 }, title: tag("title"),
                 isDefault: stream.disposition & AV_DISPOSITION_DEFAULT != 0,
+                isForced: stream.disposition & AV_DISPOSITION_FORCED != 0,
+                isHearingImpaired: stream.disposition & AV_DISPOSITION_HEARING_IMPAIRED != 0,
                 packetTimes: !bridged.storesPresentationTimes && parameters.reorderDepth > 0 ? .decodeOnly
                     // A keyframe read after a seek may carry no presentation time.
                     : kind == .video && bridged.findsKeyframesByDecodeTime ? .incomplete : .presentation)

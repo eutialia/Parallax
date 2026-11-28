@@ -77,6 +77,7 @@ public struct SMBPlaybackResolver {
             startTime: startTime,
             subtitleURLs: subtitleURLs,
             subtitleLabels: subtitleLabels,
+            fileSubtitles: delivery.subtitles,
             cleanup: { await delivery.stop(discardingConnection: true) }
         )
     }

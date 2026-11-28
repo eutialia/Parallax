@@ -2,6 +2,7 @@ import Foundation
 import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxPlayback
+import ParallaxSubtitles
 
 /// One SMB file being delivered to AVPlayer: the pooled reader and the
 /// delivery reading through it. The reader is this type's from `start` on, whatever happens;
@@ -11,6 +12,33 @@ nonisolated struct SMBDelivery: Sendable {
     private let delivery: MediaDelivery
 
     var url: URL { delivery.url }
+
+    /// The text subtitles stored in the file, each with the lines the delivery reads out of it.
+    var subtitles: [FileSubtitle] {
+        delivery.subtitles.map { subtitle in
+            let (format, lineFormat): (FileSubtitle.Format, SubtitleLineFormat) = switch subtitle.format {
+            case .ass(let header): (.ass, .ass(header: header))
+            case .srt: (.srt, .srt)
+            }
+            return FileSubtitle(
+                stream: subtitle.id, format: format, title: subtitle.title, language: subtitle.language,
+                isForced: subtitle.isForced, isHearingImpaired: subtitle.isHearingImpaired,
+                lines: SubtitleLineStream(format: lineFormat) { [delivery] in
+                    let read = delivery.lines(of: subtitle.id)
+                    return AsyncStream { continuation in
+                        let forwarding = Task {
+                            for await lines in read {
+                                continuation.yield(lines.map {
+                                    SubtitleLine(start: $0.start, duration: $0.duration, content: $0.content)
+                                })
+                            }
+                            continuation.finish()
+                        }
+                        continuation.onTermination = { _ in forwarding.cancel() }
+                    }
+                })
+        }
+    }
 
     /// The probe gave no verdict on the file. `transportFault` is whether the link, not the
     /// file, is to blame.

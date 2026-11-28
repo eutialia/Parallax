@@ -14,7 +14,7 @@ struct RenderedPixels {
     let bytes: [UInt8]
 
     /// Premultiplied BGRA, the layout the blend writes.
-    struct Pixel {
+    struct Pixel: Equatable {
         var blue: UInt8
         var green: UInt8
         var red: UInt8

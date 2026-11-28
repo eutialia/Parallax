@@ -9,12 +9,14 @@ final class DemuxerPool: Sendable {
 
     private let cache: SessionBlockCache
     private let keyframes: [IndexedKeyframe]
+    private let subtitleLines: EmbeddedSubtitleLines
     private let idle: Mutex<[MediaDemuxer]>
 
     /// `first` made `keyframes`; the others are handed them, and read the header from `cache`.
-    init(first: MediaDemuxer, cache: SessionBlockCache, keyframes: [IndexedKeyframe]) {
+    init(first: MediaDemuxer, cache: SessionBlockCache, keyframes: [IndexedKeyframe], subtitleLines: EmbeddedSubtitleLines) {
         self.cache = cache
         self.keyframes = keyframes
+        self.subtitleLines = subtitleLines
         idle = Mutex([first])
     }
 
@@ -24,7 +26,7 @@ final class DemuxerPool: Sendable {
         if let kept = idle.withLock({ $0.popLast() }) {
             demuxer = kept
         } else {
-            demuxer = try await MediaDemuxer.open(cache, keyframes: keyframes)
+            demuxer = try await MediaDemuxer.open(cache, keyframes: keyframes, subtitleLines: subtitleLines)
         }
         defer { idle.withLock { if $0.count < Self.idleKept { $0.append(demuxer) } } }
         return try await body(demuxer)

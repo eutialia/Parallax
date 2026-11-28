@@ -51,6 +51,7 @@ let package = Package(
                 .product(name: "ParallaxTestPolling", package: "ParallaxCore"),
                 .product(name: "JellyfinAPI", package: "jellyfin-sdk-swift"),
             ],
+            resources: [.copy("Fixtures")],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),

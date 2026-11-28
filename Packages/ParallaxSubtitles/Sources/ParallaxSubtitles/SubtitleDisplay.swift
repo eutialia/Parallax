@@ -85,6 +85,19 @@ public final class SubtitleDisplay {
 
     private var fetchTask: Task<Void, Never>?
 
+    /// The line stream on screen, with every line it has handed over.
+    private struct Streamed {
+        let format: SubtitleLineFormat
+        let languageCode: String?
+        var lines: Set<SubtitleLine> = []
+        /// How many of `lines` the renderer was last loaded with.
+        var drawn = 0
+    }
+    private var streamed: Streamed?
+    /// Loads the stream's lines into the renderer. Lines that arrive during a load wait for
+    /// the next, so a burst of them costs one load, not one each.
+    private var lineLoad: Task<Void, Never>?
+
     /// The document the live `fetchTask` FETCH belongs to; nil once its install lands or fails
     /// (or when the slot holds a same-document style rebuild). Guards the rebuild path:
     /// cancelling another document's in-flight fetch to rebuild from the INSTALLED payload
@@ -128,6 +141,7 @@ public final class SubtitleDisplay {
 
     isolated deinit {
         fetchTask?.cancel()
+        lineLoad?.cancel()
         stylePushChain?.cancel()
     }
 
@@ -150,6 +164,9 @@ public final class SubtitleDisplay {
     /// is whatever the release shipped.
     public func show(_ document: SubtitleDocument) {
         fetchTask?.cancel()
+        lineLoad?.cancel()
+        lineLoad = nil
+        streamed = nil
         let url = document.url
         if let cached = cache[url] {
             fetching = nil
@@ -189,6 +206,55 @@ public final class SubtitleDisplay {
             self?.cache[url] = (data, format)
             await self?.land(data, format: format, document: document)
         }
+    }
+
+    /// Draws a subtitle whose lines arrive while it plays. Nothing is drawn until the first
+    /// line arrives, and every later line joins the ones already drawn.
+    public func show(_ stream: SubtitleLineStream, languageCode: String?) {
+        clear()
+        streamed = Streamed(format: stream.format, languageCode: languageCode)
+        fetchTask = Task { [weak self] in
+            for await lines in stream.lines() {
+                guard let self, !Task.isCancelled else { return }
+                self.streamed?.lines.formUnion(lines)
+                self.loadStreamedLines()
+            }
+        }
+    }
+
+    private func loadStreamedLines() {
+        guard lineLoad == nil else { return }
+        lineLoad = Task { [weak self] in
+            while let self, !Task.isCancelled, let streamed = self.streamed, streamed.lines.count != streamed.drawn {
+                self.streamed?.drawn = streamed.lines.count
+                await self.draw(streamed)
+            }
+            if !Task.isCancelled { self?.lineLoad = nil }
+        }
+    }
+
+    /// The first lines build the renderer. Later ones are loaded into it, so the overlay keeps
+    /// its canvas and the line on screen stays up. A renderer built around another font is
+    /// replaced, and draws until its replacement is up.
+    private func draw(_ streamed: Streamed) async {
+        let written = await Task.detached {
+            SubtitleLineDocument.document(of: streamed.lines, format: streamed.format)
+        }.value
+        if Task.isCancelled { return }
+        guard let installed, installed.family == effectiveFontFamily(for: written.format) else {
+            _ = await install(data: written.data, format: written.format, languageCode: streamed.languageCode)
+            return
+        }
+        do {
+            try await installed.renderer.load(written.data, format: written.format, languageHint: streamed.languageCode)
+        } catch {
+            Self.log.error("subtitle lines failed to load: \(error)")
+            return
+        }
+        if Task.isCancelled { return }
+        self.installed = Installed(
+            renderer: installed.renderer, info: SidecarSubtitleInfo(format: written.format, byteCount: written.data.count),
+            data: written.data, languageCode: streamed.languageCode, family: installed.family)
     }
 
     private func land(_ data: Data, format: SubtitleSourceFormat, document: SubtitleDocument) async {
@@ -260,6 +326,9 @@ public final class SubtitleDisplay {
     public func clear() {
         fetchTask?.cancel()
         fetchTask = nil
+        lineLoad?.cancel()
+        lineLoad = nil
+        streamed = nil
         fetching = nil
         installed = nil
         rendererGeneration &+= 1
@@ -281,6 +350,14 @@ public final class SubtitleDisplay {
         // its own completion, and cancelling it here would strand the newer
         // pick on the old subtitle's payload.
         if fetching == nil, effectiveFontFamily(for: format) != installed.family {
+            // A line stream keeps listening: its next load builds the renderer anew.
+            if streamed != nil {
+                lineLoad?.cancel()
+                lineLoad = nil
+                streamed?.drawn = 0
+                loadStreamedLines()
+                return
+            }
             fetchTask?.cancel()
             fetchTask = Task { [weak self] in
                 guard await self?.install(

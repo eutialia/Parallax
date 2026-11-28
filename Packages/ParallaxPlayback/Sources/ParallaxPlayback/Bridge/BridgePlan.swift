@@ -188,6 +188,9 @@ struct BridgePlan: Sendable {
     let omittedAudio: [String]
     /// Bits per second of the densest segment, all streams of the file counted.
     let peakBitrate: Int
+    /// Nanoseconds in the file's own time: where the first picture shows, which AVPlayer makes
+    /// item time zero.
+    let start: Int64
 
     static let videoTimescale: Int64 = 120_000
     /// A segment is at least this long. Index entries closer together are merged.
@@ -325,6 +328,7 @@ struct BridgePlan: Sendable {
                 leadingSilence: copied?.leadingSilence(on: rendition.clock, from: cuts.boundaries[0])))
         }
         self.audio = audio
+        start = videoStart
         defaultAudio = renditions.firstIndex { $0.stream.isDefault } ?? renditions.indices.first
         omittedAudio = audioDecisions.compactMap(\.omitted)
         // A converted audio track is counted at the rate of its samples, which no FLAC frame
