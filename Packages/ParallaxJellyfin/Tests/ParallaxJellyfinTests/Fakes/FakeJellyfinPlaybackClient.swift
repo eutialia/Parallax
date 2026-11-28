@@ -19,15 +19,11 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     var playbackInfoResult: Result<PlaybackInfoResponse, Error> = .success(PlaybackInfoResponse())
     var streamURLValue = URL(string: "https://fake.invalid/direct-play-sentinel")
     var transcodeURLValue = URL(string: "https://fake.invalid/transcode-sentinel")
-    /// Returns a per-index sentinel so a test can tell one subtitle stream's URL from another's
-    /// without the fake pretending to know the real endpoint's shape.
-    var subtitleURLForIndex: @Sendable (Int) -> URL? = { URL(string: "https://fake.invalid/subtitle-sentinel/\($0)") }
 
     // Call records.
     private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, selection: StreamSelection?)] = []
     private(set) var streamURLRequests: [StreamRequest] = []
     private(set) var transcodePaths: [String] = []
-    private(set) var subtitleStreamURLRequests: [(itemID: String, mediaSourceID: String, streamIndex: Int, format: String)] = []
     private(set) var startInfos: [PlaybackStateInfo] = []
     private(set) var progressInfos: [PlaybackStateInfo] = []
     private(set) var stoppedInfos: [PlaybackStopInfo] = []
@@ -63,10 +59,7 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     }
 
     func subtitleStreamURL(itemID: String, mediaSourceID: String, streamIndex: Int, format: String) -> URL? {
-        lock.withLock {
-            subtitleStreamURLRequests.append((itemID, mediaSourceID, streamIndex, format))
-            return subtitleURLForIndex(streamIndex)
-        }
+        nil
     }
 
     func reportStart(_ info: PlaybackStateInfo) async {

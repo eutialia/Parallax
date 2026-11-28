@@ -18,9 +18,9 @@ enum PlayerTrackMenus {
     /// Only an image stream the engine can't be matched to falls back to a server
     /// burn-in pick — a full re-encode, so it is the last resort, not the default.
     ///
-    /// **SMB keeps the engine's inventory**: there is no extraction endpoint for a
-    /// local container, so its embedded tracks can only be engine-rendered. The
-    /// filename-matched sidecars are appended.
+    /// **SMB keeps the engine's inventory** and appends `smbExternals`: the text
+    /// subtitles stored in the file (`fileSubtitleTracks`) and the subtitle files
+    /// matched to it by name, all drawn by our own libass.
     static func directPlaySubtitleMenu(
         engineTracks: [SubtitleTrack],
         resolved: ResolvedPlayback?,
@@ -194,14 +194,14 @@ enum PlayerTrackMenus {
 
     /// The text subtitles stored in the played file, as rows the app draws itself. A row is
     /// named by the stream's title, else its language, else its place among them.
-    static func fileSubtitleTracks(_ subtitles: [FileSubtitle], locale: Locale = .current) -> [SubtitleTrack] {
+    static func fileSubtitleTracks(_ subtitles: [FileSubtitle]) -> [SubtitleTrack] {
         subtitles.enumerated().map { place, subtitle in
             let title = subtitle.title?.trimmingCharacters(in: .whitespaces)
             let format = TrackDisplay.subtitleFormatName(subtitle.format == .ass ? "ass" : "subrip")
             return SubtitleTrack(
                 id: .fileStream(subtitle.stream),
                 displayName: title.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? TrackDisplay.languageName(subtitle.language, locale: locale) ?? "Subtitle \(place + 1)",
+                    ?? TrackDisplay.languageName(subtitle.language) ?? "Subtitle \(place + 1)",
                 languageCode: subtitle.language,
                 isForced: subtitle.isForced,
                 detailLabel: [format, "Embedded"].compactMap(\.self).joined(separator: " · "),

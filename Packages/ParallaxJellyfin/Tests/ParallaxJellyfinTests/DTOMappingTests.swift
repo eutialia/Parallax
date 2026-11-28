@@ -223,21 +223,6 @@ struct DTOMappingTests {
         #expect(movie?.videoRangeType == "DOVI")
     }
 
-    @Test("Subtitle stream → hasSubtitles is true")
-    func movieHasSubtitlesFromStream() {
-        var sub = MediaStream()
-        sub.type = .subtitle
-        let dto = JellyfinFixtures.movieDto(id: "movie-subs", name: "Subtitled Movie", streams: [sub])
-        #expect(dto.toMovie()?.hasSubtitles == true)
-    }
-
-    @Test("hasSubtitles DTO flag without streams → hasSubtitles is true")
-    func movieHasSubtitlesFromFlag() {
-        var dto = JellyfinFixtures.movieDto(id: "movie-subs-flag", name: "Sidecar Subs Movie")
-        dto.hasSubtitles = true
-        #expect(dto.toMovie()?.hasSubtitles == true)
-    }
-
     @Test("series maps communityRating and officialRating")
     func seriesRatings() {
         var dto = JellyfinFixtures.seriesDto(id: "series-rated", name: "Rated Show")

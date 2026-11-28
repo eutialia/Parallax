@@ -140,8 +140,8 @@ public struct SubtitleLabelInfo: Sendable, Equatable {
     /// tracks join with " + "), content qualifiers in parens. A label that carries
     /// no recognised token at all ("Default", a release-group tag, "ep12") returns
     /// `fallback` — those raw strings are already the best available name.
-    public func displayName(fallback: String, locale: Locale = .current) -> String {
-        let names = languageTags.compactMap { TrackDisplay.languageName($0, locale: locale) }
+    public func displayName(fallback: String) -> String {
+        let names = languageTags.compactMap { TrackDisplay.languageName($0) }
         var name = names.joined(separator: " + ")
         let qualifier = descriptors.joined(separator: " & ")
         if name.isEmpty {
