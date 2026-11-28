@@ -74,37 +74,6 @@ struct TrackMenuRowIDTests {
         #expect(AudioTrackMenu.focusableLeadingRowID(tracks: [], selectedID: nil) == nil)
     }
 
-    // MARK: - Subtitles
-
-    private static func subtitle(_ index: Int) -> SubtitleTrack {
-        SubtitleTrack(id: .jellyfinStream(index), displayName: "Track \(index)",
-                      languageCode: "eng", isForced: false)
-    }
-
-    @Test("subtitles lead with the selected track")
-    func subtitleSelected() {
-        let tracks = [Self.subtitle(4), Self.subtitle(5)]
-        #expect(SubtitleTrackMenu.leadingRowID(tracks: tracks, selectedID: .jellyfinStream(5))
-                == .track(.jellyfinStream(5)))
-    }
-
-    @Test("subtitles off leads with the Off row", arguments: [nil, TrackID.jellyfinStream(99)])
-    func subtitleOff(selectedID: TrackID?) {
-        let tracks = [Self.subtitle(4), Self.subtitle(5)]
-        #expect(SubtitleTrackMenu.leadingRowID(tracks: tracks, selectedID: selectedID) == .subtitlesOff)
-        #expect(SubtitleTrackMenu.leadingRowID(tracks: [], selectedID: selectedID) == .subtitlesOff)
-    }
-
-    /// One resolver serves scroll and focus here (no row is unpickable), so what's left
-    /// to pin is that it answers the selected row across the whole domain — Off included.
-    @Test("subtitles resolve every selection to its own row",
-          arguments: [nil, TrackID.jellyfinStream(4), .jellyfinStream(5)])
-    func subtitleResolversAgree(selectedID: TrackID?) {
-        let tracks = [Self.subtitle(4), Self.subtitle(5)]
-        let expected: TrackMenuRowID = selectedID.map { .track($0) } ?? .subtitlesOff
-        #expect(SubtitleTrackMenu.leadingRowID(tracks: tracks, selectedID: selectedID) == expected)
-    }
-
     // MARK: - Speed
 
     private static let rates: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]

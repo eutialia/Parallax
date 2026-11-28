@@ -40,13 +40,9 @@ public struct ResolvedPlayback: Sendable {
     /// direct-play/-stream or when the server didn't say.
     public let transcodeReasons: [String]
 
-    /// Whether the client can draw EVERY subtitle this item has — i.e. the server
-    /// handed us a sidecar URL for each reported subtitle stream.
-    ///
-    /// Derived from `subtitleStreamURLs` coverage rather than from a codec check:
-    /// that map IS the server's own answer to "can this stream be delivered as
-    /// text", so a stream missing from it (an image sub, or a text sub the server
-    /// declined to extract) is by definition one the client cannot render.
+    /// Whether the client can draw EVERY subtitle this item has: each reported
+    /// subtitle stream has a sidecar URL in `subtitleStreamURLs`, which
+    /// `PlaybackInfoService` builds for every stream whose codec is text.
     ///
     /// This is what decides `PlayableAsset.engineSubtitlesDisabled`: the engine's
     /// SPU renderer is only safe to blind when nothing is left for it to draw.

@@ -69,15 +69,13 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         return try await client().send(request).value
     }
 
-    /// Builds the `PlaybackInfoDto` POST body for `GetPostedPlaybackInfo`. Pulled out
-    /// as a pure function (the test seam) so the body's fields — notably the
-    /// stream-copy flags — are assertable without a live network round-trip.
+    /// Builds the `PlaybackInfoDto` POST body for `GetPostedPlaybackInfo`.
     ///
     /// The body is the only carrier: the endpoint's query parameters are obsolete and
     /// would override the body field by field. The selected track indices force the
     /// server to build the transcode around that track, and the media source id must
     /// ride along or the server throws both indices away — see `StreamSelection`.
-    static func playbackInfoBody(
+    private static func playbackInfoBody(
         profile: DeviceProfile,
         startTimeTicks: Int?,
         userID: String,
@@ -190,7 +188,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
     }
 
     /// Maps a `GET /Sessions` response to the delivery facts. Pulled out as a
-    /// pure function (the test seam, like `playbackInfoBody`).
+    /// pure function (the test seam).
     ///
     /// Matching: our device ID + a non-nil `transcodingInfo`. `SessionInfoDto`
     /// exposes no play-session identifier, so the caller's playSessionID can't

@@ -82,7 +82,7 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — TranscodingProfile
 
-    @Test("TranscodingProfile targets HLS fMP4 (HEVC needs fMP4; TS black-screens HEVC); subtitles are NOT in the manifest (client renders sidecar VTT)")
+    @Test("TranscodingProfile targets HLS fMP4 (HEVC needs fMP4; TS black-screens HEVC)")
     func transcoding() {
         let profile = DeviceProfileTranslator.deviceProfile(from: caps())
         let trans = profile.transcodingProfiles ?? []
@@ -95,10 +95,6 @@ struct DeviceProfileTranslatorTests {
         // Always request up to 7.1 (8ch); the OS downmixes/spatializes per route.
         // Without this Jellyfin defaults the transcode to 5.1 and downmixes 7.1 sources.
         #expect(trans.first?.maxAudioChannels == "8")
-        // Keep subtitles out of the manifest: the client renders each sidecar VTT
-        // itself, so the look is ours (one cross-engine overlay, future user-
-        // customizable size/position/color) instead of AVKit's OS-overridable native pass.
-        #expect(trans.first?.enableSubtitlesInManifest == false)
         // MinSegments=2 serves the playlist as soon as AVPlayer has enough to start.
         #expect(trans.first?.minSegments == 2)
     }
@@ -113,43 +109,6 @@ struct DeviceProfileTranslatorTests {
         let trans = DeviceProfileTranslator.deviceProfile(from: caps(avPlayer: support)).transcodingProfiles
         #expect(trans?.first?.videoCodec == video)
         #expect(trans?.first?.audioCodec == audio)
-    }
-
-    // MARK: — SubtitleProfiles
-
-    /// Delivery method per format is the whole subtitle policy: TEXT formats are fetched and
-    /// rendered client-side (one cross-engine overlay, and it dodges the in-manifest WebVTT drift),
-    /// while IMAGE formats have no sidecar to render and must be burned in server-side.
-    @Test(
-        "Each text subtitle format declares the only delivery method that can work for it",
-        arguments: ["vtt", "srt", "ass"]
-    )
-    func textSubtitleProfileMethods(format: String) {
-        let subs = DeviceProfileTranslator.deviceProfile(from: caps()).subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == format && $0.method == .external })
-    }
-
-    /// The server matches a subtitle profile by string equality against the stream's own codec, so
-    /// the burn-in declarations are only real if they name the identifiers a server actually
-    /// reports. Pinning the emitted set to the shared Core list — rather than to a re-typed literal
-    /// — is what keeps the profile and `MediaStreamInfo.isImageSubtitle` from drifting: a codec
-    /// added to one is added to both, and a codec in neither can't be picked as burn-in anyway.
-    @Test("Image subtitle formats declare burn-in, one profile per shared codec identifier")
-    func imageSubtitleProfilesMatchSharedCodecList() {
-        let subs = DeviceProfileTranslator.deviceProfile(from: caps()).subtitleProfiles ?? []
-        let encoded = subs.filter { $0.method == .encode }.compactMap(\.format)
-        #expect(Set(encoded) == Set(MediaStreamInfo.imageSubtitleCodecs))
-        #expect(encoded.count == MediaStreamInfo.imageSubtitleCodecs.count, "no duplicate declarations")
-        // The old short spellings matched nothing server-side; they must not come back.
-        #expect(!encoded.contains("pgs"))
-    }
-
-    /// No subtitle may ride in the HLS manifest: an in-manifest WebVTT mis-times on fMP4 segments
-    /// AND AVPlayer auto-renders it underneath our own sidecar (jellyfin#16647).
-    @Test("No subtitle profile uses in-manifest HLS delivery")
-    func noInManifestSubtitles() {
-        let subs = DeviceProfileTranslator.deviceProfile(from: caps()).subtitleProfiles ?? []
-        #expect(subs.contains { $0.method == .hls } == false)
     }
 
     // MARK: — CodecProfiles (unchanged)

@@ -2,9 +2,8 @@ import Foundation
 import Testing
 @testable import ParallaxFileBrowse
 
-/// The resolver owns the SMB side only — directory filtering, the lonely-video count, URL shape.
-/// Label semantics belong to `SubtitleMatcherTests`, which drives the matcher directly; duplicating
-/// its rows here just moved the same matrix one layer up.
+/// The resolver's SMB side: directory filtering, the one-video count, URL shape. Which file goes
+/// with which video is `SMBSubtitleMatchingTests` and `SMBSubtitleResolverProperties`.
 @Suite("SMBSubtitleResolver")
 struct SMBSubtitleResolverTests {
 
@@ -74,11 +73,11 @@ struct SMBSubtitleResolverTests {
 
     @Test("returned URLs are credential-free smb://host/share/dir/name")
     func urlShape() async throws {
-        let resolver = makeSubtitleResolver([SMBEntry.file("Movie.en.srt")], host: "192.168.1.10", root: "")
+        let resolver = makeSubtitleResolver([SMBEntry.file("Movie.en.srt")], root: "")
         let matches = try await resolver.subtitles(for: "Movie.mkv", in: "Movies")
 
         let url = try #require(matches.first?.url)
-        #expect(url.absoluteString == "smb://192.168.1.10/Media/Movies/Movie.en.srt")
+        #expect(url.absoluteString == "smb://nas/Media/Movies/Movie.en.srt")
         #expect(url.absoluteString.contains("@") == false, "credentials are never embedded")
     }
 }

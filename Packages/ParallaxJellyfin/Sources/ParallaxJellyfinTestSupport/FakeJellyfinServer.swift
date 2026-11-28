@@ -171,6 +171,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
         var subtitles: [SubtitleTrack] = []
         var declinesBurnIn = false
         var intro: (start: Int, end: Int)?
+        var playbackInfoAnswer: String?
     }
 
     private struct State {
@@ -188,6 +189,10 @@ public final class FakeJellyfinServer: Observable, Sendable {
         var subtitleRequests: [SubtitleRequest] = []
         var failingPlaybackInfos = 0
         var playbackReports: [PlaybackReport] = []
+        var configurationReads = 0
+        var configurationWrites = 0
+        var failsConfigurationReads = false
+        var playbackDeviceProfiles: [DeviceProfile] = []
     }
 
     private let transport = StubHTTPTransport()
@@ -233,6 +238,52 @@ public final class FakeJellyfinServer: Observable, Sendable {
             configuration.subtitleMode = .always
             state.configurations[id] = configuration
         }
+        return self
+    }
+
+    /// `username`'s subtitle settings: the language, how subtitles show by default, and whether
+    /// the server remembers the subtitle a player picks.
+    @discardableResult
+    public func subtitleSettings(
+        language: String?, mode: SubtitlePlaybackMode?, remembersPicks: Bool = true, for username: String
+    ) -> Self {
+        state.withLock { state in
+            let id = state.users.first { $0.name == username }!.id
+            var configuration = state.configurations[id] ?? UserConfiguration()
+            configuration.subtitleLanguagePreference = language
+            configuration.subtitleMode = mode
+            configuration.isRememberSubtitleSelections = remembersPicks
+            state.configurations[id] = configuration
+        }
+        return self
+    }
+
+    /// How `username`'s subtitles show by default, as the server stores it.
+    public func subtitleMode(of username: String) -> SubtitlePlaybackMode? {
+        state.withLock { state in
+            state.users.first { $0.name == username }.flatMap { state.configurations[$0.id]?.subtitleMode }
+        }
+    }
+
+    /// How many times a client read the signed-in user's configuration.
+    public var configurationReads: Int { state.withLock { $0.configurationReads } }
+
+    /// How many times a client wrote the signed-in user's configuration back.
+    public var configurationWrites: Int { state.withLock { $0.configurationWrites } }
+
+    /// Every read of the signed-in user's configuration from now on answers a server error.
+    public func failConfigurationReads() {
+        state.withLock { $0.failsConfigurationReads = true }
+    }
+
+    /// The device profile each PlaybackInfo negotiation carried, in order.
+    public var playbackDeviceProfiles: [DeviceProfile] { state.withLock { $0.playbackDeviceProfiles } }
+
+    /// `title`'s PlaybackInfo negotiations answer `json`, a body as a Jellyfin server writes it,
+    /// for stream shapes this server does not model. The negotiation is still recorded.
+    @discardableResult
+    public func playbackInfo(of title: String, answers json: String) -> Self {
+        mutate(title) { $0.playbackInfoAnswer = json }
         return self
     }
 
@@ -783,9 +834,12 @@ public final class FakeJellyfinServer: Observable, Sendable {
 
     private func currentUser(_ exchange: StubHTTPTransport.Exchange) -> StubHTTPTransport.Reply {
         guard let userID = authenticatedUser(exchange) else { return StubHTTPTransport.Reply(status: 401) }
-        let (user, configuration) = state.withLock { state in
-            (state.users.first { $0.id == userID }, state.configurations[userID] ?? UserConfiguration())
+        let (user, configuration, fails) = state.withLock { state in
+            state.configurationReads += 1
+            return (state.users.first { $0.id == userID }, state.configurations[userID] ?? UserConfiguration(),
+                    state.failsConfigurationReads)
         }
+        if fails { return StubHTTPTransport.Reply(status: 500) }
         return .encoded(UserDto(configuration: configuration, id: userID, name: user?.name))
     }
 
@@ -793,7 +847,10 @@ public final class FakeJellyfinServer: Observable, Sendable {
         guard let userID = authenticatedUser(exchange),
               let configuration = try? exchange.decodedBody(UserConfiguration.self)
         else { return StubHTTPTransport.Reply(status: 400) }
-        state.withLock { $0.configurations[userID] = configuration }
+        state.withLock { state in
+            state.configurations[userID] = configuration
+            state.configurationWrites += 1
+        }
         return .noContent
     }
 
@@ -807,6 +864,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
         let answer = state.withLock { state -> (CatalogItem, String, fails: Bool)? in
             guard let item = state.catalog.first(where: { $0.id == itemID }) else { return nil }
             state.playSessions += 1
+            if let profile = body.deviceProfile { state.playbackDeviceProfiles.append(profile) }
             state.playbackRequests.append(PlaybackRequest(
                 item: item.name,
                 startSeconds: body.startTimeTicks.map { $0 / 10_000_000 },
@@ -822,6 +880,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
         }
         guard let (item, playSessionID, fails) = answer else { return StubHTTPTransport.Reply(status: 404) }
         if fails { return StubHTTPTransport.Reply(status: 500) }
+        if let json = item.playbackInfoAnswer { return .json(json) }
         let audioIndices = item.audio.indices.map { $0 + 1 }
         let streams = [MediaStream(codec: "h264", height: 1080, index: 0, type: .video, width: 1920)]
             + zip(audioIndices, item.audio).map { index, track in

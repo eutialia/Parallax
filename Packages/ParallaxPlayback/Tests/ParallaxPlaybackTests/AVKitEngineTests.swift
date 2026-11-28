@@ -269,37 +269,6 @@ struct AVKitSubtitleSuppressionTests {
         await engine.teardown()
     }
 
-    /// The invariant the app depends on: after the server-preference audio re-point
-    /// (`PlayerViewModel.applyServerPreferredTracks`), nothing legible is selected.
-    /// AVFoundation documents that automatic media selection criteria re-apply when a
-    /// selection is made in ANOTHER group, which would resurrect the system-language
-    /// subtitle the load- and ready-time deselects had cleared; the engine therefore
-    /// deselects again after every audible selection.
-    ///
-    /// **Honest scope:** this is a LOCK, not a reproduction — measured against this local
-    /// MP4 the re-application does not happen even with the criteria set below, so the test
-    /// stays green with the post-audio deselect removed. It pins the observable contract;
-    /// the deselect earns its keep on the HLS transcode path the fixture cannot reach.
-    @Test("selecting an audio track leaves the legible group unselected")
-    func audioSelectionDoesNotResurrectSubtitles() async throws {
-        let engine = AVKitEngine(clock: TestClock())
-        // Criteria stated rather than inherited: a simulator whose system language matches
-        // neither `eng` nor `fra` would have nothing to re-apply in the first place.
-        engine.avPlayer.setMediaSelectionCriteria(
-            AVPlayerMediaSelectionCriteria(preferredLanguages: ["en"], preferredMediaCharacteristics: nil),
-            forMediaCharacteristic: .legible
-        )
-        let tracks = try await loadAndAwaitReady(engine, disabled: true)
-        let audio = try #require(tracks.audio.first)
-
-        await engine.setAudioTrack(audio)
-
-        let info = await engine.debugSnapshot()
-        #expect(info.legibleOptions.isEmpty == false)   // not a vacuous pass
-        #expect(info.selectedLegible == nil)
-        await engine.teardown()
-    }
-
     /// The control: the refusal above is the ASSET's intent talking, not a broken selector.
     @Test("an ordinary asset still selects, and can still be turned off")
     func ordinaryAssetSelectsNormally() async throws {

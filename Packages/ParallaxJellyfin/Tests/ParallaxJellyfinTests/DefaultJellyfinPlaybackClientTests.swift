@@ -52,48 +52,6 @@ struct DefaultJellyfinPlaybackClientTests {
         #expect(url?.absoluteString.contains("master.m3u8") == true)
         #expect(url?.query?.contains("ApiKey=tok-1") == true)
     }
-
-    /// The sidecar fetch is client-side, so it needs ApiKey in the query AND absolute cue times —
-    /// the in-manifest WebVTT offset drifts on fMP4 segments (jellyfin/jellyfin#16647). This is
-    /// where that URL shape is proven; the resolve tests only prove the wiring to it.
-    @Test("Subtitle sidecar URL carries copyTimestamps and ApiKey")
-    func subtitleStreamURLShape() {
-        let url = client().subtitleStreamURL(
-            itemID: "item-1",
-            mediaSourceID: "ms-1",
-            streamIndex: 3,
-            format: "vtt"
-        )
-        let absolute = url?.absoluteString ?? ""
-        #expect(absolute.contains("/Videos/item-1/ms-1/Subtitles/3/Stream.vtt"))
-        #expect(url?.query?.contains("ApiKey=tok-1") == true)
-        #expect(url?.query?.lowercased().contains("copytimestamps=true") == true)
-    }
-
-    // MARK: - PlaybackInfo POST body
-
-    /// Burn-in paints the subtitle into the picture, which a copied video stream can't carry — so
-    /// that one pick has to withdraw the stream-copy offer. Every other resolve keeps it (a copy
-    /// preserves HDR and costs the server nothing).
-    @Test(
-        "Video stream copy is offered on every resolve except a burn-in subtitle pick",
-        arguments: [
-            (nil as StreamSelection?, true),
-            (StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: 4, subtitleStreamIndex: 1), true),
-            (StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: nil, subtitleStreamIndex: 7, burnsInSubtitle: true), false),
-        ]
-    )
-    func bodyVideoStreamCopyFollowsBurnIn(selection: StreamSelection?, allowsCopy: Bool) {
-        let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
-            profile: DeviceProfileTranslator.deviceProfile(from: JellyfinFixtures.caps()),
-            startTimeTicks: nil,
-            userID: "u1",
-            selection: selection
-        )
-        #expect(body.allowVideoStreamCopy == allowsCopy)
-        // Audio copy is orthogonal — burning a subtitle in never touches the audio stream.
-        #expect(body.allowAudioStreamCopy == true)
-    }
 }
 
 /// The SDK-backed playback client over a stubbed transport, so the endpoints, verbs and POST
